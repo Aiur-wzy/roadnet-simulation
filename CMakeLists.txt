@@ -4,13 +4,15 @@ project(Simulation_Prediction)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-cmake_policy(SET CMP0167 OLD)
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 OLD)
+endif()
 set(Boost_NO_BOOST_CMAKE ON)
 set(Boost_NO_SYSTEM_PATHS ON)
 
-set(Boost_ROOT "/usr/local/opt/boost")
-set(Boost_INCLUDE_DIR "/usr/local/opt/boost/include")
-set(Boost_LIBRARY_DIR "/usr/local/opt/boost/lib")
+if(DEFINED ENV{BOOST_ROOT})
+    set(Boost_ROOT "$ENV{BOOST_ROOT}")
+endif()
 
 # ✅ 不要请求 system
 find_package(Boost REQUIRED COMPONENTS filesystem thread)

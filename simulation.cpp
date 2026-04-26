@@ -306,6 +306,9 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
         float time = 0;
         bool finished = false;
         float wait_time = 0;
+        bool queued = false;
+        int queued_from = -1;
+        int queued_edge_idx = -1;
     };
 
     // 通用最小事件结构（车辆/节点局部队列）
@@ -504,6 +507,9 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
             if (!can_release(vid, node, now)) continue;
 
             waiting_queue[up][in_idx].pop_front();
+            vehicles[vid].queued = false;
+            vehicles[vid].queued_from = -1;
+            vehicles[vid].queued_edge_idx = -1;
             lane_release_count[out_edge_id] += 1;
             schedule_travel(vid, node, nxt, now);
         }
@@ -570,7 +576,12 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
         int in_idx = get_edge_index(prev, cur);
         // 信号节点：先进入等待区，按 release_step 重试（体现多周期等待）
         if (signal_node[cur]) {
-            waiting_queue[prev][in_idx].push_back(vid);
+            if (!(vehicles[vid].queued && vehicles[vid].queued_from == prev && vehicles[vid].queued_edge_idx == in_idx)) {
+                waiting_queue[prev][in_idx].push_back(vid);
+                vehicles[vid].queued = true;
+                vehicles[vid].queued_from = prev;
+                vehicles[vid].queued_edge_idx = in_idx;
+            }
             vehicles[vid].wait_time += release_step;
             push_local(cur, vehicles[vid].time + release_step, vid);
         } else {
@@ -578,9 +589,17 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
             int nxt = Pi[vid][idx + 1];
             int out_idx = get_edge_index(cur, nxt);
             if (out_idx >= 0 && edge_storage_ok(cur, out_idx)) {
+                vehicles[vid].queued = false;
+                vehicles[vid].queued_from = -1;
+                vehicles[vid].queued_edge_idx = -1;
                 schedule_travel(vid, cur, nxt, vehicles[vid].time);
             } else {
-                waiting_queue[prev][in_idx].push_back(vid);
+                if (!(vehicles[vid].queued && vehicles[vid].queued_from == prev && vehicles[vid].queued_edge_idx == in_idx)) {
+                    waiting_queue[prev][in_idx].push_back(vid);
+                    vehicles[vid].queued = true;
+                    vehicles[vid].queued_from = prev;
+                    vehicles[vid].queued_edge_idx = in_idx;
+                }
                 vehicles[vid].wait_time += release_step;
                 push_local(cur, vehicles[vid].time + release_step, vid);
             }

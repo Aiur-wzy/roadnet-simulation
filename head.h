@@ -42,6 +42,15 @@
 
 using namespace std;
 
+inline string resolve_data_base_path() {
+    const char* env_path = std::getenv("ROADNET_DATA_BASE");
+    string base = (env_path != nullptr && strlen(env_path) > 0) ? string(env_path) : string("Manhattan_Data");
+    if (!base.empty() && base.back() != '/') {
+        base.push_back('/');
+    }
+    return base;
+}
+
 // Parallel Computation
 
 class Semaphore
@@ -195,7 +204,7 @@ public:
     // -----------------------------------------------------------------------------
 
     // Define Data Path
-    string Base = "/Users/xuzizhuo/Desktop/Main Folder/My_works/Finished_Projects/ICDE2025_RouteSys/Code/routeSys_Github/Traffic_Simulation_Prediction/Simulation_Prediction/Manhattan_Data/";
+    string Base = resolve_data_base_path();
     // Read Road Network
     void read_graph();       // Can Be "one-way" (edge:651749) or "two-way" (edge:774660)
     // string BJ_NodeWeight = Base + "BJ_NodeWeight";
