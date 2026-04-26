@@ -406,13 +406,33 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
 
     // 全局相位变化事件堆：每个信号节点始终保持“下一个相位变化事件”
     priority_queue<SignalEvent, vector<SignalEvent>, greater<SignalEvent>> signal_events;
-    vector<float> next_phase_change(nodenum, INF);
     for (int n = 0; n < nodenum; ++n) {
         if (signal_node[n]) {
-            next_phase_change[n] = phase_duration;
             signal_events.push({phase_duration, n});
         }
     }
+
+    // 兼容旧路网定义：优先用 edge_id_to_features，其次回退到 roadInfor，最后使用保底值
+    auto get_edge_info = [&](int edge_id, float fallback_len) {
+        EdgeInfo info{1, 10.0f, fallback_len, ""};
+        auto f_it = edge_id_to_features.find(edge_id);
+        if (f_it != edge_id_to_features.end()) {
+            if (f_it->second.lane_num > 0) info.lane_num = f_it->second.lane_num;
+            if (f_it->second.speed > 0) info.speed = f_it->second.speed;
+            if (f_it->second.length > 0) info.length = f_it->second.length;
+            info.edge_str = f_it->second.edge_str;
+            return info;
+        }
+        for (const auto &r : roadInfor) {
+            if (r.roadID == edge_id) {
+                if (r.laneNum > 0) info.lane_num = r.laneNum;
+                if (r.speedLimit > 0) info.speed = (float)r.speedLimit;
+                if (r.length > 0) info.length = (float)r.length;
+                break;
+            }
+        }
+        return info;
+    };
 
     // 下游道路存储约束：
     // 等待区长度 = ceil(waiting/lane) * (vehicle_len + gap)
@@ -420,7 +440,7 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
     auto edge_storage_ok = [&](int from, int idx) {
         int to = graphLength[from][idx].first;
         int edge_id = nodeID2RoadID[make_pair(from, to)];
-        EdgeInfo features = edge_id_to_features[edge_id];
+        EdgeInfo features = get_edge_info(edge_id, graphLength[from][idx].second);
         int lanes = max(1, features.lane_num);
         float length = max(features.length, 1.0f);
         int waiting = (int)waiting_queue[from][idx].size();
@@ -478,7 +498,8 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
             int out_idx = get_edge_index(node, nxt);
             if (out_idx < 0) continue;
             int out_edge_id = nodeID2RoadID[make_pair(node, nxt)];
-            int lanes = max(1, edge_id_to_features[out_edge_id].lane_num);
+            EdgeInfo out_features = get_edge_info(out_edge_id, graphLength[node][out_idx].second);
+            int lanes = max(1, out_features.lane_num);
             if (lane_release_count[out_edge_id] >= lanes) continue;
             if (!can_release(vid, node, now)) continue;
 
@@ -497,8 +518,13 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
         }
     }
 
+    int unfinished = 0;
+    for (const auto &v : vehicles) {
+        if (!v.finished) unfinished += 1;
+    }
+
     // 主循环：比较“下一车辆事件”和“下一信号事件”，始终处理全局最早事件
-    while (!top_queue.empty() || !signal_events.empty()) {
+    while (unfinished > 0 && (!top_queue.empty() || !signal_events.empty())) {
         float next_vehicle_t = top_queue.empty() ? INF : top_queue.top().t;
         float next_signal_t = signal_events.empty() ? INF : signal_events.top().t;
 
@@ -536,6 +562,7 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
 
         if (idx == (int)Pi[vid].size() - 1) {
             vehicles[vid].finished = true;
+            unfinished -= 1;
             continue;
         }
 
