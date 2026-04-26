@@ -293,652 +293,327 @@ vector<vector<pair<int,float>>> Graph::alg1Records(
         vector<vector<int>> &Q, vector<vector<int>> &Pi,
         bool range, bool server, bool catching, bool write, bool latency, string te_choose) {
 
-    // Step 1: Variable Initialization
-    // -------------------------------------------------------
-    benchmark::heap<2, int, int> H(Q.size());
-    // Initialize travel time for routes with 'INF' as temporal information
-    ETA_result.resize(Pi.size());
+    // 统计量初始化，避免主流程打印未定义值
+    minTravel = 0;
+    realTravel = 0;
+    catching_found = 0;
+    catching_no_found = 0;
+
+    // 兼容旧接口：新核心仅支持 latency/range 路径，其他模式自动回退
+    if ((te_choose == "server" && server) || (te_choose == "catching" && catching) || write) {
+        cout << "[alg1Records] server/catching/write mode is deprecated in new engine, fallback to latency." << endl;
+    }
+
+    // 车辆状态：当前所在路径位置、当前事件时间、累计等待时间、是否完成
+    struct VehicleState {
+        int route_id = -1;
+        int node_index = 0;
+        float time = 0;
+        bool finished = false;
+        float wait_time = 0;
+    };
+
+    // 通用最小事件结构（车辆/节点局部队列）
+    struct MinEvent {
+        float t;
+        int id;
+        bool operator>(const MinEvent& other) const {
+            if (t == other.t) return id > other.id;
+            return t > other.t;
+        }
+    };
+
+    // 信号相位变化事件（全局信号事件堆）
+    struct SignalEvent {
+        float t;
+        int node;
+        bool operator>(const SignalEvent& other) const {
+            if (t == other.t) return node > other.node;
+            return t > other.t;
+        }
+    };
+
+    // 在邻接表中找到 from->to 边对应的索引
+    auto get_edge_index = [&](int from, int to) {
+        for (int i = 0; i < graphLength[from].size(); ++i) {
+            if (graphLength[from][i].first == to) return i;
+        }
+        return -1;
+    };
+
+    vector<int> indegree(nodenum, 0);
+    for (int u = 0; u < graphLength.size(); ++u) {
+        for (auto &e : graphLength[u]) indegree[e.first]++;
+    }
+    vector<bool> signal_node(nodenum, false);
+    for (int n = 0; n < nodenum; ++n) {
+        signal_node[n] = indegree[n] > 1;
+    }
+
+    // 基础参数：车辆等效长度、相位数、相位时长、等待重试步长
+    const float vehicle_len = 5.0f;
+    const float vehicle_gap = 1.0f;
+    const int phase_num = 3;
+    const float phase_duration = 20.0f;
+    const float release_step = 1.0f;
+
+    auto turn_to_phase = [&](char d) {
+        if (d == 'l' || d == 'L') return 1;
+        if (d == 'r' || d == 'R') return 2;
+        return 0;
+    };
+
+    // 初始化 ETA 输出结构：每辆车在每个路径节点上的到达时刻
+    ETA_result.assign(Pi.size(), {});
+    vector<VehicleState> vehicles(Pi.size());
     for (int i = 0; i < Pi.size(); ++i) {
         ETA_result[i].resize(Pi[i].size());
-        ETA_result[i][0].first = Pi[i][0];
+        for (int j = 0; j < Pi[i].size(); ++j) {
+            ETA_result[i][j] = {Pi[i][j], INF};
+        }
+        vehicles[i].route_id = i;
+        vehicles[i].time = Q[i][2];
         ETA_result[i][0].second = Q[i][2];
-        for (int k = 1; k < Pi[i].size(); ++k) {
-            ETA_result[i][k].first = Pi[i][k];
-            ETA_result[i][k].second = INF;
-        }
     }
-    // Initialize Road Segment's Traffic Flow
-    vector<vector<pair<int, int>>> F;
-    F.resize(graphLength.size());
-    for (int i = 0; i < F.size(); i++) {
-        F[i].resize(graphLength[i].size());
-        for (int j = 0; j < F[i].size(); j++) {
-            F[i][j].first = graphLength[i][j].first;
-            F[i][j].second = 0;
-        }
-    }
-    // Initialize driving vehicles' ID on edges
-    // node_1: (node_2, (vehicle_1, vehicle_2,...)), (node_3, (vehicle_3, vehicle_4,...))
-    vector<vector<pair<int, vector<int>>>> traveling_vehicles_on_edge;
-    traveling_vehicles_on_edge.reserve(graphLength.size());
+
+    // driving_flow：道路行驶区流量；waiting_queue：路口前等待区队列（FIFO）
+    vector<vector<pair<int, int>>> driving_flow(graphLength.size());
+    vector<vector<deque<int>>> waiting_queue(graphLength.size());
     for (int i = 0; i < graphLength.size(); ++i) {
-        traveling_vehicles_on_edge[i].resize(graphLength[i].size());
+        driving_flow[i].resize(graphLength[i].size());
+        waiting_queue[i].resize(graphLength[i].size());
         for (int j = 0; j < graphLength[i].size(); ++j) {
-            traveling_vehicles_on_edge[i][j].first = graphLength[i][j].first;
+            driving_flow[i][j] = {graphLength[i][j].first, 0};
         }
     }
-    // Initialize time records when traffic flow Change
+
     timeFlowChange.clear();
-    timeFlowChange.resize(F.size());
-    for (int i = 0; i < timeFlowChange.size(); i++) {
-        timeFlowChange[i].resize(F[i].size()); // num of nei
-        for (int j = 0; j < F[i].size(); j++) {
-            timeFlowChange[i][j].first = F[i][j].first;
-        }
-    }
-    // Initialize route label
-    vector<tuple<int, int, float>> label(Q.size());
-    int ini_node_index = 0;
-    for (int i = 0; i < Q.size(); i++) {
-        label[i] = std::make_tuple(i, ini_node_index, Q[i][2]);
-        float current_time = get<2>(label[i]);
-        H.update(i, current_time); // query index, departure time
-    }
-    // Store input features to construct model catching dictionary
-    std::ofstream outFile;
-    if (write) {
-        outFile.open(model_catching);
-        if (!outFile.is_open()) {
-            std::cerr << "Unable to open file: " << model_catching << std::endl;
-            return ETA_result;
+    timeFlowChange.resize(graphLength.size());
+    for (int i = 0; i < graphLength.size(); i++) {
+        timeFlowChange[i].resize(graphLength[i].size());
+        for (int j = 0; j < graphLength[i].size(); j++) {
+            timeFlowChange[i][j].first = graphLength[i][j].first;
         }
     }
 
-    // Step 2: Simulation
-    // -------------------------------------------------------
-    std::chrono::high_resolution_clock::time_point t0_1, t0_2;
-    std::chrono::duration<double> time_span;
-    t0_1=std::chrono::high_resolution_clock::now();
+    // 分层调度结构：
+    // local_queues[node] 维护“到达该 node 的局部最小事件”，top_queue 只维护各局部队列最小值
+    vector<priority_queue<MinEvent, vector<MinEvent>, greater<MinEvent>>> local_queues(nodenum);
+    priority_queue<MinEvent, vector<MinEvent>, greater<MinEvent>> top_queue;
 
-    int current_label_index, current_time, current_node_index;
-    while (!H.empty()){
-        // 提取 vehicle_ID 和 时间
-        H.extract_min(current_label_index, current_time);
-        current_node_index = get<1>(label[current_label_index]);
-        int current_node = Pi[current_label_index][current_node_index];
+    auto push_local = [&](int node, float t, int vid) {
+        local_queues[node].push({t, vid});
+        // 若该事件成为此 node 的当前最小值，则同步推入顶层队列
+        if (!local_queues[node].empty() && local_queues[node].top().id == vid && local_queues[node].top().t == t) {
+            top_queue.push({t, node});
+        }
+    };
 
-        int sock;
-        if (server == true){
-            sock = socket(AF_INET, SOCK_STREAM, 0);
-            if (sock == -1) {
-                std::cerr << "Could not create socket." << std::endl;
-                return {};
-            }
-            sockaddr_in server_addr;
-            server_addr.sin_family = AF_INET;
-            server_addr.sin_port = htons(65432);
-            server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-            // 连接服务器
-            if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-                std::cerr << "Connection failed with error: " << strerror(errno) << std::endl;
-                close(sock);
-                return {};
-            }
+    // 全局相位变化事件堆：每个信号节点始终保持“下一个相位变化事件”
+    priority_queue<SignalEvent, vector<SignalEvent>, greater<SignalEvent>> signal_events;
+    for (int n = 0; n < nodenum; ++n) {
+        if (signal_node[n]) {
+            signal_events.push({phase_duration, n});
+        }
+    }
+
+    // 先把 roadInfor 中可用静态属性抽取出来，避免后续循环频繁线性扫描
+    unordered_map<int, EdgeInfo> road_info_cache;
+    road_info_cache.reserve(roadInfor.size());
+    for (const auto &r : roadInfor) {
+        if (r.roadID < 0) continue;
+        EdgeInfo info;
+        info.lane_num = r.laneNum > 0 ? r.laneNum : 1;
+        info.speed = r.speedLimit > 0 ? (float)r.speedLimit : 10.0f;
+        info.length = r.length > 0 ? (float)r.length : 1.0f;
+        road_info_cache[r.roadID] = info;
+    }
+
+    // 兼容旧路网定义：优先用 edge_id_to_features，其次回退到 roadInfor 缓存，最后使用保底值
+    auto get_edge_info = [&](int edge_id, float fallback_len) {
+        EdgeInfo info{1, 10.0f, fallback_len, ""};
+        auto f_it = edge_id_to_features.find(edge_id);
+        if (f_it != edge_id_to_features.end()) {
+            if (f_it->second.lane_num > 0) info.lane_num = f_it->second.lane_num;
+            if (f_it->second.speed > 0) info.speed = f_it->second.speed;
+            if (f_it->second.length > 0) info.length = f_it->second.length;
+            info.edge_str = f_it->second.edge_str;
+            return info;
+        }
+        auto r_it = road_info_cache.find(edge_id);
+        if (r_it != road_info_cache.end()) {
+            info = r_it->second;
+        }
+        return info;
+    };
+
+    // 下游道路存储约束：
+    // 等待区长度 = ceil(waiting/lane) * (vehicle_len + gap)
+    // 与行驶区占用长度共同约束，决定是否还能接纳新车
+    auto edge_storage_ok = [&](int from, int idx) {
+        int to = graphLength[from][idx].first;
+        int edge_id = nodeID2RoadID[make_pair(from, to)];
+        EdgeInfo features = get_edge_info(edge_id, graphLength[from][idx].second);
+        int lanes = max(1, features.lane_num);
+        float length = max(features.length, 1.0f);
+        int waiting = (int)waiting_queue[from][idx].size();
+        int waiting_rows = (waiting + lanes - 1) / lanes;
+        float waiting_len = waiting_rows * (vehicle_len + vehicle_gap);
+        float moving_len = ((float)driving_flow[from][idx].second / lanes) * vehicle_len;
+        return moving_len + waiting_len + vehicle_len <= length;
+    };
+
+    // 安排一辆车进入 from->to 行驶区，并基于 latency/range 计算到达下游节点时刻
+    auto schedule_travel = [&](int vid, int from, int to, float start_t) {
+        int idx = get_edge_index(from, to);
+        if (idx < 0) return;
+        driving_flow[from][idx].second += 1;
+        int tm = 0;
+        auto tm_it = nodeID2minTime.find(make_pair(from, to));
+        if (tm_it != nodeID2minTime.end()) {
+            tm = tm_it->second;
+        } else {
+            EdgeInfo features = get_edge_info(nodeID2RoadID[make_pair(from, to)], graphLength[from][idx].second);
+            tm = max(1, (int)round(features.length / max(1.0f, features.speed)));
+        }
+        float te = tm;
+        if (latency) {
+            int cflow = driving_flow[from][idx].second;
+            te = range ? flow2time_by_range(from, idx, cflow) : tm * (1 + sigma * pow(cflow / varphi, beta));
+            minTravel += tm;
+            realTravel += (int)te;
+        }
+        vehicles[vid].time = start_t + te;
+        vehicles[vid].node_index += 1;
+        int downstream = Pi[vid][vehicles[vid].node_index];
+        ETA_result[vid][vehicles[vid].node_index].second = vehicles[vid].time;
+        push_local(downstream, vehicles[vid].time, vid);
+    };
+
+    // 路口放行判定：相位是否匹配 + 下游是否有可用存储
+    auto can_release = [&](int vid, int node, float now) {
+        int idx = vehicles[vid].node_index;
+        if (idx >= (int)Pi[vid].size() - 1) return true;
+        int prev = Pi[vid][idx - 1];
+        int cur = Pi[vid][idx];
+        int nxt = Pi[vid][idx + 1];
+        int in_edge_id = nodeID2RoadID[make_pair(prev, cur)];
+        char turn = findNextEdgeDirection(in_edge_id, vid);
+        int phase = (int)floor((now / phase_duration)) % phase_num;
+        if (turn_to_phase(turn) != phase) return false;
+        int out_idx = get_edge_index(cur, nxt);
+        if (out_idx < 0) return false;
+        return edge_storage_ok(cur, out_idx);
+    };
+
+    // 在一次信号事件时刻，按上游顺序尝试放行（FIFO），并受“每下游边按车道数限流”约束
+    auto release_at_signal = [&](int node, float now) {
+        map<int, int> lane_release_count;
+        for (int up = 0; up < graphLength.size(); ++up) {
+            int in_idx = get_edge_index(up, node);
+            if (in_idx < 0) continue;
+            if (waiting_queue[up][in_idx].empty()) continue;
+            int vid = waiting_queue[up][in_idx].front();
+            int idx = vehicles[vid].node_index;
+            if (idx >= (int)Pi[vid].size() - 1) continue;
+            int nxt = Pi[vid][idx + 1];
+            int out_idx = get_edge_index(node, nxt);
+            if (out_idx < 0) continue;
+            int out_edge_id = nodeID2RoadID[make_pair(node, nxt)];
+            EdgeInfo out_features = get_edge_info(out_edge_id, graphLength[node][out_idx].second);
+            int lanes = max(1, out_features.lane_num);
+            if (lane_release_count[out_edge_id] >= lanes) continue;
+            if (!can_release(vid, node, now)) continue;
+
+            waiting_queue[up][in_idx].pop_front();
+            lane_release_count[out_edge_id] += 1;
+            schedule_travel(vid, node, nxt, now);
+        }
+    };
+
+    // 初始发车：把每条路径第一段路程入队，形成第一批车辆到达事件
+    for (int i = 0; i < vehicles.size(); ++i) {
+        if (Pi[i].size() > 1) {
+            schedule_travel(i, Pi[i][0], Pi[i][1], vehicles[i].time);
+        } else {
+            vehicles[i].finished = true;
+        }
+    }
+
+    int unfinished = 0;
+    for (const auto &v : vehicles) {
+        if (!v.finished) unfinished += 1;
+    }
+
+    // 主循环：比较“下一车辆事件”和“下一信号事件”，始终处理全局最早事件
+    while (unfinished > 0 && (!top_queue.empty() || !signal_events.empty())) {
+        float next_vehicle_t = top_queue.empty() ? INF : top_queue.top().t;
+        float next_signal_t = signal_events.empty() ? INF : signal_events.top().t;
+
+        // 优先处理更早（或同时间）的信号事件，随后回填该信号下一次相位事件
+        if (next_signal_t <= next_vehicle_t) {
+            auto ev = signal_events.top();
+            signal_events.pop();
+            release_at_signal(ev.node, ev.t);
+            signal_events.push({ev.t + phase_duration, ev.node});
+            continue;
         }
 
-        // Step 3: If Current Node is The Last One of The Path
-        // -------------------------------------------------------
-        if (current_node_index == (Pi[current_label_index].size() - 1)) {
-            int previous_node = Pi[current_label_index][current_node_index - 1];
+        auto top = top_queue.top();
+        top_queue.pop();
+        int node = top.id;
+        if (local_queues[node].empty()) continue;
+        auto ve = local_queues[node].top();
+        local_queues[node].pop();
+        if (ve.t != top.t) continue;
 
-            for (int i = 0; i < F[previous_node].size(); i++) {
-                if(F[previous_node][i].first == current_node) {
-                    // 更新对应的 edge 上的 traffic flow 的值
-                    F[previous_node][i].second = F[previous_node][i].second - 1;
-                    // 更新对应的 edge 上的 vehicle_ID 的值
-                    auto& vehicle_vector = traveling_vehicles_on_edge[previous_node][i].second;
-                    vehicle_vector.erase(std::remove(vehicle_vector.begin(), vehicle_vector.end(), current_label_index), vehicle_vector.end());
+        // 处理车辆到达节点事件
+        int vid = ve.id;
+        if (vehicles[vid].finished) continue;
+        int idx = vehicles[vid].node_index;
+        int cur = Pi[vid][idx];
 
-                    if (server == true) {
-                        // 占位置的，没有实际作用
-                        // 1）根据 node_1 和 node_2 拿到对应该 edge_ID
-                        int edge_id = 0;
-                        // 2）读取车辆的转向信息
-                        char Turn = 's';
-                        // 3）读取 edge 上其他车辆的转向信息
-                        set<char> Turn_Stat = {'s'};
-                        // 通过封装好的函数发送数据
-                        if(!sendDataToPython(sock, edge_id, Turn, Turn_Stat, F[previous_node][i].second)) {
-                            close(sock); // 发送失败时关闭socket
-                            return {};
-                        }
-                        // Shutdown the connection for sending
-                        shutdown(sock, SHUT_WR);
-                        // cout << "send "  << edge_id << " " << Turn << " " << Turn_Stat.size() << " " << endl;
-                        // 从服务器接收处理后的数据
-                        char buffer[1024] = {0};
-                        if(recv(sock, buffer, sizeof(buffer), 0) < 0) {
-                            std::cerr << "Failed to receive data." << std::endl;
-                            close(sock);
-                            return {};
-                        }
-                        // std::cout << "Received from server: " << buffer << std::endl;
-                        // 关闭socket
-                        close(sock);
-                    }
-
-                    // 由于 flow 改变，记录这个时间下，该 edge 上的，vehicle ID/驶入驶出状态/flow 的值
-                    /*int record_time = label[current_label_index][2];*/
-                    int record_time = get<2>(label[current_label_index]);
-                    if (timeFlowChange[previous_node][i].second.find(record_time) ==
-                        timeFlowChange[previous_node][i].second.end())
-                    {
-                        timeFlowChange[previous_node][i].second.insert(
-                                pair<int, vector<vector<int>>>(
-                                        get<2>(label[current_label_index]),
-                                        {{current_label_index, 0, F[previous_node][i].second}}));
-                    }
-                    else {
-                        timeFlowChange[previous_node][i].second[record_time].push_back(
-                                {current_label_index, 0, F[previous_node][i].second});
-                    }
-                }
-                continue;
-            }
-        }
-            // Step 4: If Current Node is The First One of The Path
-            // -------------------------------------------------------
-        else {
-            int next_node = Pi[current_label_index][current_node_index + 1];
-            if (current_node_index == 0) {
-                // for 循环找到当前的 edge，也就是 node pair，i 是 next node index
-                for (int i = 0; i < F[current_node].size(); i++) {
-                    if(F[current_node][i].first == next_node) {
-                        // 更新 edge 上的 traffic flow
-                        F[current_node][i].second = F[current_node][i].second + 1;
-                        // 更新对应的 edge 上的 vehicle_ID 的值
-                        auto& vehicle_vector = traveling_vehicles_on_edge[current_node][i].second;
-                        vehicle_vector.push_back(current_label_index);
-
-                        // 由于 flow 改变，记录这个时间下，该 edge 上的，vehicle ID/驶入驶出状态/flow 的值
-                        int record_time = get<2>(label[current_label_index]);
-                        if (timeFlowChange[current_node][i].second.find(record_time) ==
-                            timeFlowChange[current_node][i].second.end())
-                        {
-                            timeFlowChange[current_node][i].second.insert(pair<int, vector<vector<int>>>(
-                                    get<2>(label[current_label_index]),
-                                    {{current_label_index, 1, F[current_node][i].second}}));
-                        }
-                        else {
-                            timeFlowChange[current_node][i].second[record_time].push_back(
-                                    {current_label_index, 1, F[current_node][i].second});
-                        }
-
-                        // edit：应该把这部分代码替换掉，换成以下步骤
-                        // 1）根据 node_1 和 node_2 拿到对应该 edge_ID
-                        int node_2 = F[current_node][i].first;
-                        int edge_id = nodeID2RoadID[make_pair(current_node, node_2)];
-                        // 2）读取车辆的转向信息
-                        char Turn = findNextEdgeDirection(edge_id, current_label_index);
-                        if (Turn == 'e') {
-                            Turn = 's';
-                        }
-                        // 3）读取 edge 上其他车辆的转向信息
-                        set<char> Turn_Stat = processVehicleDirections(vehicle_vector, edge_id);
-
-                        float te_latency, te_server, te_catching;
-                        if (server) {
-                            // 通过封装好的函数发送数据
-                            if(!sendDataToPython(sock, edge_id, Turn, Turn_Stat, F[current_node][i].second)) {
-                                close(sock); // 发送失败时关闭socket
-                                return {};
-                            }
-                            // Shutdown the connection for sending
-                            shutdown(sock, SHUT_WR);
-                            int node_first = roadID2NodeID[edge_id].first;
-                            int node_second = roadID2NodeID[edge_id].second;
-                            int edge_len = graphLength[node_first][node_second].second;
-                            // cout << "send "  << edge_id << " " << edge_len << " " << Turn << " " << Turn_Stat.size() << " " << F[current_node][i].second << endl;
-                            // 从服务器接收处理后的数据
-                            char buffer[1024] = {0};
-                            if(recv(sock, buffer, sizeof(buffer), 0) < 0) {
-                                std::cerr << "Failed to receive data." << std::endl;
-                                close(sock);
-                                return {};
-                            }
-                            // cout << "Received from server: " << buffer << endl;
-                            float travel_time_predict = std::stof(buffer);
-                            te_server = travel_time_predict;
-                            // 关闭socket
-                            close(sock);
-                        }
-
-                        if (catching) {
-
-                            int delay_time = route_time_Dict[current_label_index][current_node][0];
-                            int low_time = route_time_Dict[current_label_index][current_node][1];
-                            int wait_time = route_time_Dict[current_label_index][current_node][2];
-                            int driving_num = route_time_Dict[current_label_index][current_node][3];
-
-                            if (driving_num <= 1) {
-                                small += 1;
-                            } else {
-                                big += 1;
-                            }
-
-                            std::random_device rd;       // 用于生成随机数种子
-                            std::mt19937 gen(rd());      // 标准的梅森旋转算法随机数生成器
-                            std::uniform_real_distribution<> dis(0.0, 1.0);  // 生成 [0, 1] 之间的随机数
-
-                            // 生成一个随机数，如果它小于 0.1 (10%)，执行 driving_num 计算
-                            if (dis(gen) < (1 - percent)) {
-                                driving_num = 0;
-                            }
-
-                            /*for (const auto& edge : edge_id_to_features) {
-                                std::cout << "Edge ID: " << edge.first
-                                          << ", Lane Num: " << edge.second.lane_num
-                                          << ", Speed: " << edge.second.speed
-                                          << ", Length: " << edge.second.length
-                                          << ", Edge Str: " << edge.second.edge_str
-                                          << std::endl;
-                            }*/
-
-                            EdgeInfo features = edge_id_to_features[edge_id];
-                            int lane_num = features.lane_num;
-                            float speed = features.speed;
-                            float length = features.length;
-                            int ratio = static_cast<int>(std::round(length / speed));  // 假设 length 和 speed 是浮点数
-                            int log_length = static_cast<int>(std::round(log(length)));  // 先取对数，再四舍五入
-                            int length_square = static_cast<int>(std::round(pow(length, 2)));  // 先平方，再四舍五入
-
-
-                            // string edge_str = features.edge_str;
-                            // edge_str.pop_back();
-
-                            /*cout << "edge_id:" << edge_id << endl;
-                            cout << edge_id_to_features[edge_id].edge_str << endl;
-                            cout << edge_id_to_features[edge_id].edge_str.size() << endl;
-                            cout << edge_str[0] << endl;
-                            cout << edge_str[7] << endl;
-                            cout << edge_str[8] << endl;
-                            cout << edge_str << ":" << endl;
-                            cout << "----------" << endl;*/
-
-                            // exit(0);
-
-                            // RoadKey queryKey = {lane_num, speed, length, F[current_node][i].second, delay_time, low_time, wait_time, ratio, length_square};
-                            RoadKey queryKey = {lane_num, speed, length, driving_num, delay_time, low_time, wait_time, ratio, length_square};
-
-                            /*cout << queryKey.edge_str << endl;*/
-
-                            /*cout << queryKey.edge_str << " " << queryKey.lane_num << " " << queryKey.speed_limit << " " << queryKey.edge_length << " " << queryKey.driving_number << " " << queryKey.delay_time << " ";
-                            cout << queryKey.lowSpee_time << " " << queryKey.wait_time << endl;*/
-
-                            // cout << edge_str << " " << lane_num << " " << speed << " " << length << " ";
-                            // cout << F[current_node][i].second << " " << delay_time << " " << low_time << " " << wait_time << endl;
-
-                            if (dictionary.find({lane_num, speed, length, F[current_node][i].second, delay_time, low_time, wait_time, ratio, length_square}) != dictionary.end()) {
-                                te_catching = dictionary[queryKey];
-                                catching_found += 1;
-                            } else {
-                                te_catching = 0;
-                                catching_no_found += 1;
-                                /*
-                                cout << "No travel time found for query key " << dictionary[queryKey] << endl;
-                                std::cout << "No travel time found for query key" << std::endl;
-                                cout << "lane_num: " << lane_num << endl;
-                                cout << "speed: " << speed << endl;
-                                cout << "length: " << length << endl;
-                                cout << "F[current_node][i].second: " << F[current_node][i].second << endl;
-                                cout << "delay_time: " << delay_time << endl;
-                                cout << "low_time: " << low_time << endl;
-                                cout << "wait_time: " << wait_time << endl;
-                                cout << "ratio: " << ratio << endl;
-                                cout << "log_length: " << log_length << endl;
-                                cout << "length_square: " << length_square << endl;
-                                cout << "------------------------" << endl;
-                                */
-                            }
-                        }
-
-                        // if (round(te_catching * 10000) / 10000 != round(te_server * 10000) / 10000)
-                        //    cout << round(te_catching * 10000) / 10000 << " " << round(te_catching * 10000) / 10000 << endl;
-
-                        if (write) {
-                            outFile << edge_id << " " << Turn << " " << F[current_node][i].second << endl;
-                        }
-
-                        if (latency) {
-                            //Estimate Travel Time Based on Latency Function
-                            int tm = nodeID2minTime[make_pair(current_node, next_node)];
-                            int Cflow = F[current_node][i].second;
-                            if (range == false){
-                                te_latency = tm * (1 + sigma * pow(Cflow/varphi, beta));
-                                minTravel += tm;
-                                realTravel += te_latency;
-                            }
-                            else{
-                                te_latency = flow2time_by_range(current_node, i, Cflow);
-                                minTravel += tm;
-                                realTravel += te_latency;
-                            }
-                        }
-
-                        float te;
-                        // 根据 te_choose 的值决定 te 的值
-                        if (te_choose == "server") {
-                            te = te_server;
-                        } else if (te_choose == "catching") {
-                            te = te_catching;
-                        } else if (te_choose == "latency") {
-                            te = te_latency;
-                        } else {
-                            std::cerr << "Error: Invalid option '" << te_choose << "'." << std::endl;
-                        }
-
-                        //Update Label, Travel Time, Nodes Label, and Priority Queue
-                        get<2>(label[current_label_index]) = get<2>(label[current_label_index]) + te;
-                        get<1>(label[current_label_index]) = get<1>(label[current_label_index]) + 1;
-                        ETA_result[current_label_index][current_node_index+1].second = get<2>(label[current_label_index]);
-                        H.update(get<0>(label[current_label_index]), get<2>(label[current_label_index]));
-                    }
-                }
-            }
-                // Step 5: If Current Node is Not The First One of The Path
-                // -------------------------------------------------------
-            else {
-                int previous_node = Pi[current_label_index][current_node_index-1];
-                for (int i = 0; i < F[previous_node].size(); i++) {
-                    if(F[previous_node][i].first == current_node) {
-                        F[previous_node][i].second = F[previous_node][i].second - 1;
-                        // 更新对应的 edge 上的 vehicle_ID 的值
-                        auto& vehicle_vector = traveling_vehicles_on_edge[previous_node][i].second;
-                        vehicle_vector.erase(std::remove(vehicle_vector.begin(), vehicle_vector.end(), current_label_index), vehicle_vector.end());
-
-                        int record_time = get<2>(label[current_label_index]);
-                        if (timeFlowChange[previous_node][i].second.find(record_time) ==
-                            timeFlowChange[previous_node][i].second.end())
-                        {
-                            timeFlowChange[previous_node][i].second.insert(pair<int, vector<vector<int>>>(
-                                    get<2>(label[current_label_index]),
-                                    {{current_label_index, 0, F[previous_node][i].second}}));
-                        }
-                        else {
-                            timeFlowChange[previous_node][i].second[record_time].push_back(
-                                    {current_label_index, 0, F[previous_node][i].second});
-                        }
-                    }
-                }
-                for (int i = 0; i < F[current_node].size(); i++) {
-                    if(F[current_node][i].first == next_node) {
-                        F[current_node][i].second = F[current_node][i].second + 1;
-                        // 更新对应的 edge 上的 vehicle_ID 的值
-                        auto& vehicle_vector = traveling_vehicles_on_edge[current_node][i].second;
-                        vehicle_vector.push_back(current_label_index);
-
-                        int record_time = get<2>(label[current_label_index]);
-                        if (timeFlowChange[current_node][i].second.find(record_time) ==
-                            timeFlowChange[current_node][i].second.end())
-                        {
-                            timeFlowChange[current_node][i].second.insert(pair<int, vector<vector<int>>>(
-                                    get<2>(label[current_label_index]),
-                                    {{current_label_index, 1, F[current_node][i].second}}));
-                        }
-                        else {
-                            timeFlowChange[current_node][i].second[record_time].push_back({current_label_index, 1, F[current_node][i].second});
-                        }
-
-                        // 应该把这部分代码替换掉，换成以下步骤
-                        // 1）根据 node_1 和 node_2 拿到对应该 edge_ID
-                        int node_2 = F[current_node][i].first;
-                        int edge_id = nodeID2RoadID[make_pair(current_node, node_2)];
-                        // 2）读取车辆的转向信息
-                        char Turn = findNextEdgeDirection(edge_id, current_label_index);
-                        if (Turn == 'e') {
-                            Turn = 's';
-                        }
-                        // 3）读取 edge 上其他车辆的转向信息
-                        set<char> Turn_Stat = processVehicleDirections(vehicle_vector, edge_id);
-
-                        float te_latency, te_server, te_catching;
-
-                        if (server) {
-                            // 通过封装好的函数发送数据
-                            if(!sendDataToPython(sock, edge_id, Turn, Turn_Stat, F[current_node][i].second)) {
-                                close(sock); // 发送失败时关闭socket
-                                return {};
-                            }
-                            // Shutdown the connection for sending
-                            // shutdown(sock, SHUT_WR);
-                            int node_first = roadID2NodeID[edge_id].first;
-                            int node_second = roadID2NodeID[edge_id].second;
-                            int edge_len = graphLength[node_first][node_second].second;
-                            // cout << "send "  << edge_id << " " << edge_len << " " << Turn << " " << Turn_Stat.size() << " " << F[current_node][i].second << endl;
-                            // 从服务器接收处理后的数据
-                            char buffer[1024] = {0};
-                            if(recv(sock, buffer, sizeof(buffer), 0) < 0) {
-                                std::cerr << "Failed to receive data." << std::endl;
-                                close(sock);
-                                return {};
-                            }
-                            // cout << "Received from server: " << buffer << endl;
-                            float travel_time_predict = std::stof(buffer);
-                            te_server = travel_time_predict;
-                            // 关闭socket
-                            close(sock);
-                        }
-
-                        if (catching) {
-
-                            int delay_time = route_time_Dict[current_label_index][current_node][0];
-                            int low_time = route_time_Dict[current_label_index][current_node][1];
-                            int wait_time = route_time_Dict[current_label_index][current_node][2];
-                            int driving_num = route_time_Dict[current_label_index][current_node][3];
-
-                            if (driving_num <= 1) {
-                                small += 1;
-                            } else {
-                                big += 1;
-                            }
-
-                            std::random_device rd;       // 用于生成随机数种子
-                            std::mt19937 gen(rd());      // 标准的梅森旋转算法随机数生成器
-                            std::uniform_real_distribution<> dis(0.0, 1.0);  // 生成 [0, 1] 之间的随机数
-
-                            // 生成一个随机数，如果它小于 0.1 (10%)，执行 driving_num 计算
-                            if (dis(gen) < (1 - percent)) {
-                                driving_num = 0;
-                            }
-
-                            EdgeInfo features = edge_id_to_features[edge_id];
-                            int lane_num = features.lane_num;
-                            float speed = features.speed;
-                            float length = features.length;
-                            int ratio = static_cast<int>(std::round(length / speed));  // 假设 length 和 speed 是浮点数
-                            // int log_length = static_cast<int>(std::round(log(length)));  // 先取对数，再四舍五入
-                            int length_square = static_cast<int>(std::round(pow(length, 2)));  // 先平方，再四舍五入
-                            // string edge_str = features.edge_str;
-                            // edge_str.pop_back();
-
-                            /*cout << "edge_str:" << endl;
-                            cout << lane_num << "," << speed << "," << length<<endl;
-                            cout << edge_str.size() << endl;
-                            cout << features.edge_str << "::" << endl;
-                            cout << "----------" << endl;*/
-
-                            /*cout << "edge_str:" << edge_id
-                            cout << edge_id_to_features[edge_id].edge_str << endl;
-                            cout << edge_str << ":" << endl;
-                            cout << "----------" << endl;*/
-
-                            // RoadKey queryKey = {"162041588#1", 2, 11, 56, 1, 0, 0, 0};  // 这是我们想要查找的键
-
-                            // RoadKey queryKey = {lane_num, speed, length, F[current_node][i].second, delay_time, low_time, wait_time, ratio, length_square};
-                            RoadKey queryKey = {lane_num, speed, length, driving_num, delay_time, low_time, wait_time, ratio, length_square};
-
-                            /*cout << queryKey.edge_str << endl;*/
-
-                            /*cout << queryKey.edge_str << " " << queryKey.lane_num << " " << queryKey.speed_limit << " " << queryKey.edge_length << " " << queryKey.driving_number << " " << queryKey.delay_time << " ";
-                            cout << queryKey.lowSpee_time << " " << queryKey.wait_time << endl;*/
-
-
-                            // cout << edge_str << endl;
-                            // cout << edge_str << " " << lane_num << " " << speed << " " << length << " ";
-                            // cout << F[current_node][i].second << " " << delay_time << " " << low_time << " " << wait_time << endl;
-
-                            if (dictionary.find({lane_num, speed, length, F[current_node][i].second, delay_time, low_time, wait_time, ratio, length_square}) != dictionary.end()) {
-                                te_catching = dictionary[queryKey];
-                                catching_found += 1;
-                            } else {
-                                // cout << "No travel time found for query key " << dictionary[queryKey] << endl;
-                                te_catching = 0;
-                                catching_no_found += 1;
-                                /*
-                                std::cout << "No travel time found for query key" << std::endl;
-                                cout << "lane_num: " << lane_num << endl;
-                                cout << "speed: " << speed << endl;
-                                cout << "length: " << length << endl;
-                                cout << "F[current_node][i].second: " << F[current_node][i].second << endl;
-                                cout << "delay_time: " << delay_time << endl;
-                                cout << "low_time: " << low_time << endl;
-                                cout << "wait_time: " << wait_time << endl;
-                                cout << "ratio: " << ratio << endl;
-                                cout << "length_square: " << length_square << endl;
-                                cout << "------------------------" << endl;
-                                */
-                            }
-                            // cout << "catching travel time is: " << te_catching << endl;
-                        }
-
-                        // if (round(te_catching * 10000) / 10000 != round(te_server * 10000) / 10000)
-                        //    cout << round(te_catching * 10000) / 10000 << " " << round(te_catching * 10000) / 10000 << endl;
-
-                        if (write) {
-                            outFile << edge_id << " " << Turn << " " << F[current_node][i].second << endl;
-                        }
-
-                        if (latency) {
-                            // Estimate Travel Time Based on Latency Function
-                            int tm = nodeID2minTime[make_pair(current_node, next_node)];
-                            int Cflow = F[current_node][i].second;
-                            if (range == false){
-                                te_latency = tm * (1 + sigma * pow(Cflow/varphi, beta));
-                                minTravel += tm;
-                                realTravel += te_latency;
-                            }
-                            else{
-                                te_latency = flow2time_by_range(current_node, i, Cflow);
-                                minTravel += tm;
-                                realTravel += te_latency;
-                            }
-                        }
-
-                        float te;
-                        // 根据 te_choose 的值决定 te 的值
-                        if (te_choose == "server") {
-                            te = te_server;
-                        } else if (te_choose == "catching") {
-                            te = te_catching;
-                        } else if (te_choose == "latency") {
-                            te = te_latency;
-                        } else {
-                            std::cerr << "Error: Invalid option '" << te_choose << "'." << std::endl;
-                        }
-
-                        // Update Label, Travel Time, Nodes Label, and Priority Queue
-                        get<2>(label[current_label_index]) = get<2>(label[current_label_index]) + te;
-                        get<1>(label[current_label_index]) = get<1>(label[current_label_index]) + 1;
-                        ETA_result[current_label_index][current_node_index+1].second = get<2>(label[current_label_index]);
-                        H.update(get<0>(label[current_label_index]), get<2>(label[current_label_index]));
-                    }
-                }
+        // 车辆离开上一条边：更新行驶区流量
+        if (idx > 0) {
+            int prev = Pi[vid][idx - 1];
+            int in_idx = get_edge_index(prev, cur);
+            if (in_idx >= 0) {
+                driving_flow[prev][in_idx].second = max(0, driving_flow[prev][in_idx].second - 1);
             }
         }
-    }
 
-    /*
-    // Step 6: Print nodes_label
-    // -------------------------------------------------------
-    for (int i=0;i<nodes_labsocket doneel.size();i++){
-        cout << "path " << i << ": ";
-        for (int j=0;j<nodes_label[i].size();j++){
-            cout << nodes_label[i][j][1] << " " << nodes_label[i][j][2] << " ";
+        if (idx == (int)Pi[vid].size() - 1) {
+            vehicles[vid].finished = true;
+            unfinished -= 1;
+            continue;
         }
-        cout << endl;
-    }
-    */
 
-    /*
-    // Step 7: Print timeFlowChange
-    // -------------------------------------------------------
-    for (int i=0;i<timeFlowChange.size();i++){
-        cout << "node1: " << i << endl;
-        for (int j=0;j<F[i].size();j++){
-            cout << " node2: " << timeFlowChange[i][j].first;
-            cout << " with size: " << timeFlowChange[i][j].second.size() << " ";
-            map<int, vector<vector<int>>>::iterator itr;
-            for (itr = timeFlowChange[i][j].second.begin(); itr != timeFlowChange[i][j].second.end(); ++itr) {
-                for (int i=0;i<itr->second.size();i++){
-                    cout << " time " << itr->first << " routeID " << itr->second[i][0];
-                    cout << " status " << itr->second[i][1] << " flow " << itr->second[i][2] << "||";
-                }
+        int prev = Pi[vid][idx - 1];
+        int in_idx = get_edge_index(prev, cur);
+        // 信号节点：先进入等待区，按 release_step 重试（体现多周期等待）
+        if (signal_node[cur]) {
+            waiting_queue[prev][in_idx].push_back(vid);
+            vehicles[vid].wait_time += release_step;
+            push_local(cur, vehicles[vid].time + release_step, vid);
+        } else {
+            // 非信号节点：若下游可接纳则直接进入下一段，否则同样进入等待区重试
+            int nxt = Pi[vid][idx + 1];
+            int out_idx = get_edge_index(cur, nxt);
+            if (out_idx >= 0 && edge_storage_ok(cur, out_idx)) {
+                schedule_travel(vid, cur, nxt, vehicles[vid].time);
+            } else {
+                waiting_queue[prev][in_idx].push_back(vid);
+                vehicles[vid].wait_time += release_step;
+                push_local(cur, vehicles[vid].time + release_step, vid);
             }
-            cout << "\n" << endl;
         }
-        cout << "\n" << endl;
-    }
-    */
 
-    /*
-    // Step 8: Print ETA_result
-    // -------------------------------------------------------
-    for (int i=0;i<ETA_result.size();i++){
-        cout << "path " << i << ": ";
-        for (int j=0;j<ETA_result[i].size();j++){
-            cout << "node " << ETA_result[i][j].first << " with ";
-            cout << "time " << ETA_result[i][j].second << " ";
+        if (!local_queues[node].empty()) {
+            top_queue.push({local_queues[node].top().t, node});
         }
-        cout << endl;
     }
-    */
 
-    cout <<  "Algorithm I Simulation Done." << endl;
-
-    t0_2=std::chrono::high_resolution_clock::now();
-    time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t0_2-t0_1);
-
-    // Close opened file
-    if (outFile.is_open())
-        outFile.close();
-    if (range == false)
-        cout << "Algorithm 1 simulation time consumption without range is: " << time_span.count() <<endl;
-    else
-        cout << "Algorithm 1 simulation time consumption is: " << time_span.count() << "s."<< endl;
-
-    // Step 9: return ETA_result
-    // -------------------------------------------------------
-
-    /*
-    int timeAll = 0;
-    int timeTemp = 0;
-    for (int i = 0; i < ETA_result.size(); i++){
-        timeTemp = ETA_result[i][ETA_result[i].size() - 1].second - ETA_result[i][0].second;
-        if (timeTemp < 0){
-            cout << "Error. Simulation Error." << endl;
-        }
-        timeAll += timeTemp;
-    }
-    cout << "timeAll is: " << timeAll << endl;
-    cout << "average timeAll is: " << timeAll / Q.size() << endl;
-    */
-
-    for (int i = 0; i < ETA_result.size(); ++i) {
-        float travelTime = ETA_result[i][ETA_result[i].size()-1].second - ETA_result[i][0].second;
-        // cout << "predicted travel time of route " << i << " is: " << travelTime << endl;
-    }
-    cout << endl;
-
+    cout <<  "Algorithm I Simulation Done (new intersection waiting model)." << endl;
     return ETA_result;
 }
 
@@ -1070,4 +745,3 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
         cout << "Unable to open file for writing!" << endl;
     }
 }
-
