@@ -669,6 +669,64 @@ float Graph::MSE_estimation(vector<vector<int>> time, vector<vector<pair<int, fl
     return MSE;
 }
 
+float Graph::MSE_estimation_cycle_aware_total(
+        vector<vector<int>> &timeData,
+        vector<vector<pair<int, float>>> &ETA)
+{
+    double mse = 0.0;
+    double mae = 0.0;
+    double rmse = 0.0;
+    double mape = 0.0;
+    int validCnt = 0;
+
+    int n = min(static_cast<int>(ETA.size()), static_cast<int>(timeData.size()));
+
+    for (int i = 0; i < n; ++i) {
+        if (i < static_cast<int>(vehicles.size()) && !vehicles[i].valid) {
+            continue;
+        }
+        if (ETA[i].size() < 2) {
+            continue;
+        }
+
+        double gt = 0.0;
+        for (int j = 1; j < static_cast<int>(timeData[i].size()); ++j) {
+            gt += timeData[i][j];
+        }
+
+        double pred = ETA[i].back().second - ETA[i].front().second;
+        double diff = pred - gt;
+
+        mae += abs(diff);
+        mse += diff * diff;
+
+        if (gt > 0) {
+            mape += abs(diff) / gt;
+        }
+
+        validCnt++;
+    }
+
+    if (validCnt == 0) {
+        cout << "[CycleAware Eval] No valid ETA result for evaluation." << endl;
+        return 0.0f;
+    }
+
+    mse /= validCnt;
+    mae /= validCnt;
+    rmse = sqrt(mse);
+    mape = (mape / validCnt) * 100.0;
+
+    cout << "[CycleAware Eval] valid evaluated routes: " << validCnt << endl;
+    cout << "[CycleAware Eval] invalid vehicles skipped: " << invalidVehicleCount << endl;
+    cout << "[CycleAware Eval] MSE: " << mse << endl;
+    cout << "[CycleAware Eval] MAE: " << mae << endl;
+    cout << "[CycleAware Eval] RMSE: " << rmse << endl;
+    cout << "[CycleAware Eval] MAPE: " << mape << "%" << endl;
+
+    return static_cast<float>(mse);
+}
+
 void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
 
     // Initialization
@@ -726,6 +784,14 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
 
 vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
         vector<vector<int>> &Q, vector<vector<int>> &routeRoadIDInput) {
+    vehicles.clear();
+    ETA_result_cycle_aware.clear();
+    finishedVehicleCount = 0;
+    invalidVehicleCount = 0;
+    usedDischargeCapacity.clear();
+    while (!signalEventPQ.empty()) signalEventPQ.pop();
+    while (!dispatchPQ.empty()) dispatchPQ.pop();
+
     this->routeRoadID = routeRoadIDInput;
     route_roadID_2_movementID();
 
@@ -738,8 +804,14 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
     initialize_cycle_aware_vehicles(Q, routeRoadIDInput);
     initialize_signal_event_queue(simStartTime);
 
-    int currentTime = simStartTime;
     while (!allVehiclesFinished()) {
+        if (signalEventPQ.empty()) {
+            cout << "[Error] signalEventPQ is empty before all vehicles finished." << endl;
+            break;
+        }
+
+        int currentTime = signalEventPQ.top().time;
+
         while (!signalEventPQ.empty() && signalEventPQ.top().time == currentTime) {
             SignalEvent e = signalEventPQ.top();
             signalEventPQ.pop();
@@ -750,13 +822,13 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
             }
         }
 
-        int nextTime = signalEventPQ.empty() ? INF : signalEventPQ.top().time;
-        process_discharge_window(currentTime, nextTime);
-
-        if (nextTime == INF) {
+        if (signalEventPQ.empty()) {
+            cout << "[Error] signalEventPQ became empty after signal update." << endl;
             break;
         }
-        currentTime = nextTime;
+
+        int nextTime = signalEventPQ.top().time;
+        process_discharge_window(currentTime, nextTime);
     }
     return ETA_result_cycle_aware;
 }
@@ -766,11 +838,21 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
     vehicles.resize(routeRoadIDInput.size());
     ETA_result_cycle_aware.assign(routeRoadIDInput.size(), {});
     finishedVehicleCount = 0;
+    invalidVehicleCount = 0;
     usedDischargeCapacity.clear();
 
     for (auto &b : waitingBuffers) {
         b.vehicleQueue.clear();
     }
+
+    auto mark_invalid = [&](VehicleLabel &vehicle) {
+        vehicle.valid = false;
+        vehicle.finished = true;
+        vehicle.state = VehicleState::Finished;
+        vehicles[vehicle.vehicleID] = vehicle;
+        finishedVehicleCount++;
+        invalidVehicleCount++;
+    };
 
     for (int i = 0; i < routeRoadIDInput.size(); ++i) {
         VehicleLabel v;
@@ -781,10 +863,7 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
         v.roadIndex = 0;
 
         if (v.routeRoadIDs.empty()) {
-            v.finished = true;
-            v.state = VehicleState::Finished;
-            vehicles[i] = v;
-            finishedVehicleCount++;
+            mark_invalid(v);
             continue;
         }
 
@@ -795,31 +874,39 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
         ETA_result_cycle_aware[i].push_back({v.currentRoadID, static_cast<float>(departTime)});
 
         if (v.routeRoadIDs.size() == 1) {
-            v.finished = true;
-            v.state = VehicleState::Finished;
+            vehicles[i] = v;
             recordFinalETA(i, v.arrivalTime);
+            continue;
         } else if (!v.routeMovementIDs.empty()) {
             int movementID = v.routeMovementIDs[0];
+            if (movementID < 0 || movementID >= static_cast<int>(movements.size())) {
+                mark_invalid(v);
+                continue;
+            }
+            if (v.currentRoadID < 0 || v.currentRoadID >= static_cast<int>(roads.size())) {
+                mark_invalid(v);
+                continue;
+            }
             auto itRoad = roads[v.currentRoadID].movementIDToWaitingBufferID.find(movementID);
             if (itRoad != roads[v.currentRoadID].movementIDToWaitingBufferID.end()) {
                 v.currentMovementID = movementID;
                 v.currentBufferID = itRoad->second;
+                if (v.currentBufferID < 0 || v.currentBufferID >= static_cast<int>(waitingBuffers.size())) {
+                    mark_invalid(v);
+                    continue;
+                }
                 v.state = VehicleState::WaitingAtIntersection;
                 vehicles[i] = v;
                 insertVehicleToBufferOrdered(v.currentBufferID, i);
                 continue;
             } else {
-                v.finished = true;
-                v.state = VehicleState::Finished;
-                recordFinalETA(i, v.arrivalTime);
+                mark_invalid(v);
+                continue;
             }
         } else {
-            v.finished = true;
-            v.state = VehicleState::Finished;
-            recordFinalETA(i, v.arrivalTime);
+            mark_invalid(v);
+            continue;
         }
-
-        vehicles[i] = v;
     }
 }
 
@@ -931,8 +1018,6 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     result.newArrivalTime = v.arrivalTime;
 
     if (v.roadIndex >= static_cast<int>(v.routeRoadIDs.size()) - 1) {
-        v.finished = true;
-        v.state = VehicleState::Finished;
         v.currentMovementID = -1;
         v.currentBufferID = -1;
         result.finished = true;
@@ -952,16 +1037,20 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
             result.nextMovementID = nextMovementID;
             result.nextBufferID = nextBufferID;
         } else {
-            v.finished = true;
+            v.valid = false;
+            invalidVehicleCount++;
             v.state = VehicleState::Finished;
             result.finished = true;
-            recordFinalETA(vehicleID, v.arrivalTime);
+            v.finished = true;
+            finishedVehicleCount++;
         }
     } else {
-        v.finished = true;
+        v.valid = false;
+        invalidVehicleCount++;
         v.state = VehicleState::Finished;
         result.finished = true;
-        recordFinalETA(vehicleID, v.arrivalTime);
+        v.finished = true;
+        finishedVehicleCount++;
     }
     return result;
 }
@@ -1102,11 +1191,15 @@ bool Graph::allVehiclesFinished() const {
 }
 
 void Graph::recordFinalETA(int vehicleID, int finalTime) {
-    if (vehicleID < 0 || vehicleID >= ETA_result_cycle_aware.size()) return;
-    if (vehicleID >= 0 && vehicleID < vehicles.size() && vehicles[vehicleID].finished) return;
+    if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return;
+    if (vehicleID >= static_cast<int>(ETA_result_cycle_aware.size())) return;
+
+    VehicleLabel &v = vehicles[vehicleID];
+    if (v.finished) return;
+
     ETA_result_cycle_aware[vehicleID].push_back({-1, static_cast<float>(finalTime)});
-    if (vehicleID >= 0 && vehicleID < vehicles.size()) {
-        vehicles[vehicleID].finished = true;
-    }
+    v.arrivalTime = finalTime;
+    v.finished = true;
+    v.state = VehicleState::Finished;
     finishedVehicleCount++;
 }

@@ -225,7 +225,7 @@ TurnDir Graph::parseTurnDir(char c)
     }
 }
 
-void Graph::build_new_graph_structures()
+void Graph::build_new_graph_structures(vector<vector<int>>& routeDataForSimulation)
 {
     build_road_segments_from_legacy_roads();
     initialize_nodes_from_roads();
@@ -241,7 +241,7 @@ void Graph::build_new_graph_structures()
     attach_lane_groups_to_movements();
     build_signal_controllers_assume_default();
     build_waiting_buffers();
-    route_nodeID_2_roadID(routeDataRaw);
+    route_nodeID_2_roadID(routeDataForSimulation);
     route_roadID_2_movementID();
     validate_cycle_aware_graph();
 }

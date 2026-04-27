@@ -310,15 +310,24 @@ struct Intersection {
 struct VehicleLabel {
     int vehicleID = -1;
     int routeID = -1;
+
     vector<int> routeRoadIDs;
     vector<int> routeMovementIDs;
+
     int roadIndex = 0;
     int currentRoadID = -1;
     int arrivalTime = 0;
+
     int currentMovementID = -1;
     int currentBufferID = -1;
+
     VehicleState state = VehicleState::NotDeparted;
+
     bool finished = false;
+
+    // invalid=true means route conversion failed or required movement/buffer is missing.
+    // invalid vehicles should be excluded from normal cycle-aware evaluation.
+    bool valid = true;
 };
 
 struct SignalEvent {
@@ -437,7 +446,7 @@ public:
     vector<vector<int>> routeMovementID;
 
     // Cycle-aware graph preparation
-    void build_new_graph_structures();
+    void build_new_graph_structures(vector<vector<int>>& routeDataForSimulation);
     void build_road_segments_from_legacy_roads();
     void initialize_nodes_from_roads();
     void classify_node_types_assume_all_junctions_signalized();
@@ -478,6 +487,7 @@ public:
     priority_queue<DispatchCandidate, vector<DispatchCandidate>, DispatchCandidateCompare> dispatchPQ;
     vector<vector<pair<int, float>>> ETA_result_cycle_aware;
     int finishedVehicleCount = 0;
+    int invalidVehicleCount = 0;
     int defaultDischargeInterval = 1;
     map<tuple<int, int, int>, int> usedDischargeCapacity;
     // Classify Each Road with A Unique Latency Function
@@ -561,6 +571,9 @@ public:
     float AVG_estimation(vector<vector<int>> routeData, vector<vector<int>> timeData);
     // Estimate travel time MSE between simulated results and truth
     float MSE_estimation(vector<vector<int>> time, vector<vector<pair<int, float>>> ETA);
+    float MSE_estimation_cycle_aware_total(
+            vector<vector<int>> &timeData,
+            vector<vector<pair<int, float>>> &ETA);
     // Find previous or next edge of current one.
     int find_direction(vector<vector<int>> &routeData, vector<vector<int>> &routeDataEdge,
                        int routeID, int nodeStart, int nodeEnd);
