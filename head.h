@@ -504,10 +504,6 @@ public:
     void buildDictionary(const std::string& filename);
     unordered_map<RoadKey, double> dictionary;
     string model_catch_dic_path = Base + "model_catching_with_travel_time_1.txt";
-    // Simulation algorithm
-    vector<vector<pair<int, float>>> alg1Records(
-            vector<vector<int>> &Q, vector<vector<int>> &Pi,
-            bool range, bool server, bool catching, bool write, bool latency, string te_choose);
     // 现行新算法主入口：基于 signal event + waiting buffer + discharge capacity 的仿真
     vector<vector<pair<int, float>>> cycle_aware_signal_driven_records(
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
@@ -524,6 +520,7 @@ public:
     bool hasDischargeCapacity(int intersectionID, int toRoadID, int t);
     void consumeDischargeCapacity(int intersectionID, int toRoadID, int t);
     int nextAvailableCapacityTime(int intersectionID, int toRoadID, int t);
+    // Placeholder: currently always returns true (no downstream storage / spillback modeled yet).
     bool hasDownstreamStorage(int roadID);
     int predictRoadTravelTime(int roadID, int vehicleID);
     void insertVehicleToBufferOrdered(int bufferID, int vehicleID);
@@ -532,18 +529,11 @@ public:
     SignalState signalStateAt(int signalID, int t);
     bool allVehiclesFinished() const;
     void recordFinalETA(int vehicleID, int finalTime);
-    string model_catching = Base + "model_catching.txt";
     vector<vector<pair<int, float>>> ETA_result;
-    vector<vector<vector<int>>> nodes_label; //PathID, Node Index, Arrived Time
     vector<vector<pair<int, map<float, vector<vector<int>>>>>> timeFlowChange;
     float sigma = 0.15; float varphi = 20; float beta = 2;
     float percent;
     int small, big;
-    // min travel time x 0.15 * (flow/20)^2
-    int minTravel;
-    int realTravel;
-    int catching_no_found;
-    int catching_found;
 
     // Estimate average travel time of ground truth
     float AVG_estimation(vector<vector<int>> routeData, vector<vector<int>> timeData);

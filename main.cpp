@@ -48,32 +48,7 @@ int main() {
 
     g.min_depar_time(queryData);
 
-    bool runLegacy = false;
-    bool runCycleAware = true;
-
-    if (runLegacy) {
-        cout << "\nStep 3(Legacy): ALGORITHM I SIMULATION" << endl;
-        cout << "-------------------------------------" << endl;
-
-        g.route_nodeID_2_roadID(routeData);
-        g.classify_latency_function();
-        g.minRange = 20;
-        g.flowIni = 0;
-        g.flow_base_ini(g.minRange, g.flowIni);
-
-        bool range = true;
-        bool server = false;
-        bool catching = false;
-        bool write = false;
-        bool latency = true;
-        string te_choose = "catching";
-
-        vector<vector<pair<int, float>>> ETA_old = g.alg1Records(
-                queryData, routeData, range, server, catching, write, latency, te_choose);
-        g.MSE_estimation(timeData, ETA_old);
-    }
-
-    if (runCycleAware) {
+    {
         cout << "\nStep 3: Build Cycle-Aware Graph" << endl;
         cout << "-------------------------------------" << endl;
 
@@ -99,6 +74,7 @@ int main() {
         cout << "Finished vehicles: " << g.finishedVehicleCount
              << " / " << g.vehicles.size() << endl;
         cout << "Invalid vehicles: " << g.invalidVehicleCount << endl;
+        cout << "Valid simulated vehicles: " << (g.vehicles.size() - g.invalidVehicleCount) << endl;
 
         cout << "\nStep 5: Evaluation" << endl;
         cout << "-------------------------------------" << endl;

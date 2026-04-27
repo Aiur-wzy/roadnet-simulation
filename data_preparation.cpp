@@ -21,7 +21,7 @@ void Graph::read_graph()
     vecp_float.clear();
     graphLength.assign(nodenum, vecp_float);         //ID1, ID2, Length
     graphRoadID.assign(nodenum, vecp);         //ID1, ID2, RoadID
-    roadInfor.reserve(edgenum);                //Road Info (ID1, ID2, RoadID, Length, Time)
+    roadInfor.clear();                         //Road Info (ID1, ID2, RoadID, Length, Time)
     set<int> setp; setp.clear();
     adjNodes.assign(nodenum, setp);            //ID1, ID2
     int ID1, ID2, edgeID;
@@ -38,7 +38,10 @@ void Graph::read_graph()
         r.roadID = edgeID;
         r.length = length;
         r.travelTime = -1;
-        roadInfor.push_back(r);
+        if (edgeID >= static_cast<int>(roadInfor.size())) {
+            roadInfor.resize(edgeID + 1);
+        }
+        roadInfor[edgeID] = r;
         //Construct Maps
         nodeID2RoadID.insert(make_pair(make_pair(ID1, ID2), edgeID));    //<ID1, ID2> -> RoadID
         roadID2NodeID.insert(make_pair(edgeID, make_pair(ID1, ID2)));    //RoadID -> <ID1, ID2>
@@ -100,35 +103,44 @@ void Graph::read_road_info()
     int kindNumber;
     string kind;
     int routeIDGen;
-    int i = 0;
-    roadInforMore.resize(387587);
+    roadInforMore.clear();
+    roadInforMore.reserve(400000);
     // Read In Info
     while(IFNodeRoadID >> nodeID1){
         IFNodeRoadID >> nodeID2 >> routeIDLei >> length >> direction;
         IFNodeRoadID >> speedLimit >> laneNum >> width >> kindNumber >> kind;
-        routeIDGen = nodeID2RoadID[make_pair(nodeID1, nodeID2)];
-        roadInforMore[i].nodeID1 = nodeID1;
-        roadInforMore[i].nodeID2 = nodeID2;
-        roadInforMore[i].routeID = routeIDGen;
-        roadInforMore[i].length = length;
-        roadInforMore[i].direction = direction;
-        roadInforMore[i].speedLimit = speedLimit;
-        roadInforMore[i].laneNum = laneNum;
-        roadInforMore[i].width = width;
-        roadInforMore[i].kindNumber = kindNumber;
-        roadInforMore[i].kind = kind;
-        i++;
+        auto it = nodeID2RoadID.find(make_pair(nodeID1, nodeID2));
+        if (it == nodeID2RoadID.end()) {
+            continue;
+        }
+        routeIDGen = it->second;
+
+        roadMore info;
+        info.nodeID1 = nodeID1;
+        info.nodeID2 = nodeID2;
+        info.routeID = routeIDGen;
+        info.length = length;
+        info.direction = direction;
+        info.speedLimit = speedLimit;
+        info.laneNum = laneNum;
+        info.width = width;
+        info.kindNumber = kindNumber;
+        info.kind = kind;
+        roadInforMore.push_back(info);
     }
     // 将补充属性回填到 roadInfor[roadID]，供后续新算法结构化阶段直接读取
-    for (int i=0;i<roadInforMore.size();i++)
+    for (const auto &info : roadInforMore)
     {
-        roadInfor[roadInforMore[i].routeID].length = roadInforMore[i].length;
-        roadInfor[roadInforMore[i].routeID].direction = roadInforMore[i].direction;
-        roadInfor[roadInforMore[i].routeID].speedLimit = roadInforMore[i].speedLimit;
-        roadInfor[roadInforMore[i].routeID].laneNum = roadInforMore[i].laneNum;
-        roadInfor[roadInforMore[i].routeID].width = roadInforMore[i].width;
-        roadInfor[roadInforMore[i].routeID].kindNumber = roadInforMore[i].kindNumber;
-        roadInfor[roadInforMore[i].routeID].kind = roadInforMore[i].kind;
+        if (info.routeID < 0 || info.routeID >= static_cast<int>(roadInfor.size())) {
+            continue;
+        }
+        roadInfor[info.routeID].length = info.length;
+        roadInfor[info.routeID].direction = info.direction;
+        roadInfor[info.routeID].speedLimit = info.speedLimit;
+        roadInfor[info.routeID].laneNum = info.laneNum;
+        roadInfor[info.routeID].width = info.width;
+        roadInfor[info.routeID].kindNumber = info.kindNumber;
+        roadInfor[info.routeID].kind = info.kind;
     }
 }
 

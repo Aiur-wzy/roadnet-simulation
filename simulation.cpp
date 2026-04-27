@@ -288,313 +288,6 @@ void Graph::buildDictionary(const std::string& filename) {
     file.close();
 }
 
-// Simulation
-vector<vector<pair<int,float>>> Graph::alg1Records(
-        vector<vector<int>> &Q, vector<vector<int>> &Pi,
-        bool range, bool server, bool catching, bool write, bool latency, string te_choose) {
-
-    // 本次重构中，server/catching/write 暂不参与主流程，保留入参兼容旧调用
-    (void)server;
-    (void)catching;
-    (void)write;
-    (void)te_choose;
-
-    // 车辆状态：当前所在路径位置、当前事件时间、累计等待时间、是否完成
-    struct VehicleState {
-        int route_id = -1;
-        int node_index = 0;
-        float time = 0;
-        bool finished = false;
-        float wait_time = 0;
-    };
-
-    // 通用最小事件结构（车辆/节点局部队列）
-    struct MinEvent {
-        float t;
-        int id;
-        bool operator>(const MinEvent& other) const {
-            if (t == other.t) return id > other.id;
-            return t > other.t;
-        }
-    };
-
-    // 信号相位变化事件（全局信号事件堆）
-    struct SignalEvent {
-        float t;
-        int node;
-        bool operator>(const SignalEvent& other) const {
-            if (t == other.t) return node > other.node;
-            return t > other.t;
-        }
-    };
-
-    // 在邻接表中找到 from->to 边对应的索引
-    auto get_edge_index = [&](int from, int to) {
-        for (int i = 0; i < graphLength[from].size(); ++i) {
-            if (graphLength[from][i].first == to) return i;
-        }
-        return -1;
-    };
-
-    vector<int> indegree(nodenum, 0);
-    for (int u = 0; u < graphLength.size(); ++u) {
-        for (auto &e : graphLength[u]) indegree[e.first]++;
-    }
-    vector<bool> signal_node(nodenum, false);
-    for (int n = 0; n < nodenum; ++n) {
-        signal_node[n] = indegree[n] > 1;
-    }
-
-    // 基础参数：车辆等效长度、相位数、相位时长、等待重试步长
-    const float vehicle_len = 5.0f;
-    const float vehicle_gap = 1.0f;
-    const int phase_num = 3;
-    const float phase_duration = 20.0f;
-    const float release_step = 1.0f;
-
-    auto turn_to_phase = [&](char d) {
-        if (d == 'l' || d == 'L') return 1;
-        if (d == 'r' || d == 'R') return 2;
-        return 0;
-    };
-
-    // 初始化 ETA 输出结构：每辆车在每个路径节点上的到达时刻
-    ETA_result.assign(Pi.size(), {});
-    vector<VehicleState> vehicles(Pi.size());
-    for (int i = 0; i < Pi.size(); ++i) {
-        ETA_result[i].resize(Pi[i].size());
-        for (int j = 0; j < Pi[i].size(); ++j) {
-            ETA_result[i][j] = {Pi[i][j], INF};
-        }
-        vehicles[i].route_id = i;
-        vehicles[i].time = Q[i][2];
-        ETA_result[i][0].second = Q[i][2];
-    }
-
-    // driving_flow：道路行驶区流量；waiting_queue：路口前等待区队列（FIFO）
-    vector<vector<pair<int, int>>> driving_flow(graphLength.size());
-    vector<vector<deque<int>>> waiting_queue(graphLength.size());
-    for (int i = 0; i < graphLength.size(); ++i) {
-        driving_flow[i].resize(graphLength[i].size());
-        waiting_queue[i].resize(graphLength[i].size());
-        for (int j = 0; j < graphLength[i].size(); ++j) {
-            driving_flow[i][j] = {graphLength[i][j].first, 0};
-        }
-    }
-
-    timeFlowChange.clear();
-    timeFlowChange.resize(graphLength.size());
-    for (int i = 0; i < graphLength.size(); i++) {
-        timeFlowChange[i].resize(graphLength[i].size());
-        for (int j = 0; j < graphLength[i].size(); j++) {
-            timeFlowChange[i][j].first = graphLength[i][j].first;
-        }
-    }
-
-    // 分层调度结构：
-    // local_queues[node] 维护“到达该 node 的局部最小事件”，top_queue 只维护各局部队列最小值
-    vector<priority_queue<MinEvent, vector<MinEvent>, greater<MinEvent>>> local_queues(nodenum);
-    priority_queue<MinEvent, vector<MinEvent>, greater<MinEvent>> top_queue;
-
-    auto push_local = [&](int node, float t, int vid) {
-        local_queues[node].push({t, vid});
-        // 若该事件成为此 node 的当前最小值，则同步推入顶层队列
-        if (!local_queues[node].empty() && local_queues[node].top().id == vid && local_queues[node].top().t == t) {
-            top_queue.push({t, node});
-        }
-    };
-
-    // 全局相位变化事件堆：每个信号节点始终保持“下一个相位变化事件”
-    priority_queue<SignalEvent, vector<SignalEvent>, greater<SignalEvent>> signal_events;
-    for (int n = 0; n < nodenum; ++n) {
-        if (signal_node[n]) {
-            signal_events.push({phase_duration, n});
-        }
-    }
-
-    // 兼容旧路网定义：优先用 edge_id_to_features，其次回退到 roadInfor，最后使用保底值
-    auto get_edge_info = [&](int edge_id, float fallback_len) {
-        EdgeInfo info{1, 10.0f, fallback_len, ""};
-        auto f_it = edge_id_to_features.find(edge_id);
-        if (f_it != edge_id_to_features.end()) {
-            if (f_it->second.lane_num > 0) info.lane_num = f_it->second.lane_num;
-            if (f_it->second.speed > 0) info.speed = f_it->second.speed;
-            if (f_it->second.length > 0) info.length = f_it->second.length;
-            info.edge_str = f_it->second.edge_str;
-            return info;
-        }
-        for (const auto &r : roadInfor) {
-            if (r.roadID == edge_id) {
-                if (r.laneNum > 0) info.lane_num = r.laneNum;
-                if (r.speedLimit > 0) info.speed = (float)r.speedLimit;
-                if (r.length > 0) info.length = (float)r.length;
-                break;
-            }
-        }
-        return info;
-    };
-
-    // 下游道路存储约束：
-    // 等待区长度 = ceil(waiting/lane) * (vehicle_len + gap)
-    // 与行驶区占用长度共同约束，决定是否还能接纳新车
-    auto edge_storage_ok = [&](int from, int idx) {
-        int to = graphLength[from][idx].first;
-        int edge_id = nodeID2RoadID[make_pair(from, to)];
-        EdgeInfo features = get_edge_info(edge_id, graphLength[from][idx].second);
-        int lanes = max(1, features.lane_num);
-        float length = max(features.length, 1.0f);
-        int waiting = (int)waiting_queue[from][idx].size();
-        int waiting_rows = (waiting + lanes - 1) / lanes;
-        float waiting_len = waiting_rows * (vehicle_len + vehicle_gap);
-        float moving_len = ((float)driving_flow[from][idx].second / lanes) * vehicle_len;
-        return moving_len + waiting_len + vehicle_len <= length;
-    };
-
-    // 安排一辆车进入 from->to 行驶区，并基于 latency/range 计算到达下游节点时刻
-    auto schedule_travel = [&](int vid, int from, int to, float start_t) {
-        int idx = get_edge_index(from, to);
-        if (idx < 0) return;
-        driving_flow[from][idx].second += 1;
-        int tm = nodeID2minTime[make_pair(from, to)];
-        float te = tm;
-        if (latency) {
-            int cflow = driving_flow[from][idx].second;
-            te = range ? flow2time_by_range(from, idx, cflow) : tm * (1 + sigma * pow(cflow / varphi, beta));
-        }
-        vehicles[vid].time = start_t + te;
-        vehicles[vid].node_index += 1;
-        int downstream = Pi[vid][vehicles[vid].node_index];
-        ETA_result[vid][vehicles[vid].node_index].second = vehicles[vid].time;
-        push_local(downstream, vehicles[vid].time, vid);
-    };
-
-    // 路口放行判定：相位是否匹配 + 下游是否有可用存储
-    auto can_release = [&](int vid, int node, float now) {
-        int idx = vehicles[vid].node_index;
-        if (idx >= (int)Pi[vid].size() - 1) return true;
-        int prev = Pi[vid][idx - 1];
-        int cur = Pi[vid][idx];
-        int nxt = Pi[vid][idx + 1];
-        int in_edge_id = nodeID2RoadID[make_pair(prev, cur)];
-        char turn = findNextEdgeDirection(in_edge_id, vid);
-        int phase = (int)floor((now / phase_duration)) % phase_num;
-        if (turn_to_phase(turn) != phase) return false;
-        int out_idx = get_edge_index(cur, nxt);
-        if (out_idx < 0) return false;
-        return edge_storage_ok(cur, out_idx);
-    };
-
-    // 在一次信号事件时刻，按上游顺序尝试放行（FIFO），并受“每下游边按车道数限流”约束
-    auto release_at_signal = [&](int node, float now) {
-        map<int, int> lane_release_count;
-        for (int up = 0; up < graphLength.size(); ++up) {
-            int in_idx = get_edge_index(up, node);
-            if (in_idx < 0) continue;
-            if (waiting_queue[up][in_idx].empty()) continue;
-            int vid = waiting_queue[up][in_idx].front();
-            int idx = vehicles[vid].node_index;
-            if (idx >= (int)Pi[vid].size() - 1) continue;
-            int nxt = Pi[vid][idx + 1];
-            int out_idx = get_edge_index(node, nxt);
-            if (out_idx < 0) continue;
-            int out_edge_id = nodeID2RoadID[make_pair(node, nxt)];
-            EdgeInfo out_features = get_edge_info(out_edge_id, graphLength[node][out_idx].second);
-            int lanes = max(1, out_features.lane_num);
-            if (lane_release_count[out_edge_id] >= lanes) continue;
-            if (!can_release(vid, node, now)) continue;
-
-            waiting_queue[up][in_idx].pop_front();
-            lane_release_count[out_edge_id] += 1;
-            schedule_travel(vid, node, nxt, now);
-        }
-    };
-
-    // 初始发车：把每条路径第一段路程入队，形成第一批车辆到达事件
-    for (int i = 0; i < vehicles.size(); ++i) {
-        if (Pi[i].size() > 1) {
-            schedule_travel(i, Pi[i][0], Pi[i][1], vehicles[i].time);
-        } else {
-            vehicles[i].finished = true;
-        }
-    }
-
-    int unfinished = 0;
-    for (const auto &v : vehicles) {
-        if (!v.finished) unfinished += 1;
-    }
-
-    // 主循环：比较“下一车辆事件”和“下一信号事件”，始终处理全局最早事件
-    while (unfinished > 0 && (!top_queue.empty() || !signal_events.empty())) {
-        float next_vehicle_t = top_queue.empty() ? INF : top_queue.top().t;
-        float next_signal_t = signal_events.empty() ? INF : signal_events.top().t;
-
-        // 优先处理更早（或同时间）的信号事件，随后回填该信号下一次相位事件
-        if (next_signal_t <= next_vehicle_t) {
-            auto ev = signal_events.top();
-            signal_events.pop();
-            release_at_signal(ev.node, ev.t);
-            signal_events.push({ev.t + phase_duration, ev.node});
-            continue;
-        }
-
-        auto top = top_queue.top();
-        top_queue.pop();
-        int node = top.id;
-        if (local_queues[node].empty()) continue;
-        auto ve = local_queues[node].top();
-        local_queues[node].pop();
-        if (ve.t != top.t) continue;
-
-        // 处理车辆到达节点事件
-        int vid = ve.id;
-        if (vehicles[vid].finished) continue;
-        int idx = vehicles[vid].node_index;
-        int cur = Pi[vid][idx];
-
-        // 车辆离开上一条边：更新行驶区流量
-        if (idx > 0) {
-            int prev = Pi[vid][idx - 1];
-            int in_idx = get_edge_index(prev, cur);
-            if (in_idx >= 0) {
-                driving_flow[prev][in_idx].second = max(0, driving_flow[prev][in_idx].second - 1);
-            }
-        }
-
-        if (idx == (int)Pi[vid].size() - 1) {
-            vehicles[vid].finished = true;
-            unfinished -= 1;
-            continue;
-        }
-
-        int prev = Pi[vid][idx - 1];
-        int in_idx = get_edge_index(prev, cur);
-        // 信号节点：先进入等待区，按 release_step 重试（体现多周期等待）
-        if (signal_node[cur]) {
-            waiting_queue[prev][in_idx].push_back(vid);
-            vehicles[vid].wait_time += release_step;
-            push_local(cur, vehicles[vid].time + release_step, vid);
-        } else {
-            // 非信号节点：若下游可接纳则直接进入下一段，否则同样进入等待区重试
-            int nxt = Pi[vid][idx + 1];
-            int out_idx = get_edge_index(cur, nxt);
-            if (out_idx >= 0 && edge_storage_ok(cur, out_idx)) {
-                schedule_travel(vid, cur, nxt, vehicles[vid].time);
-            } else {
-                waiting_queue[prev][in_idx].push_back(vid);
-                vehicles[vid].wait_time += release_step;
-                push_local(cur, vehicles[vid].time + release_step, vid);
-            }
-        }
-
-        if (!local_queues[node].empty()) {
-            top_queue.push({local_queues[node].top().t, node});
-        }
-    }
-
-    cout <<  "Algorithm I Simulation Done (new intersection waiting model)." << endl;
-    return ETA_result;
-}
-
 // Estimate average travel time of ground truth
 float Graph::AVG_estimation(vector<vector<int>> routeData, vector<vector<int>> timeData) {
     float totalTime = 0;
@@ -806,13 +499,19 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
     initialize_cycle_aware_vehicles(Q, routeRoadIDInput);
     initialize_signal_event_queue(simStartTime);
 
+    int currentTime = simStartTime;
     while (!allVehiclesFinished()) {
         if (signalEventPQ.empty()) {
             cout << "[Error] signalEventPQ is empty before all vehicles finished." << endl;
             break;
         }
 
-        int currentTime = signalEventPQ.top().time;
+        int nextTime = signalEventPQ.top().time;
+        if (currentTime < nextTime) {
+            process_discharge_window(currentTime, nextTime);
+        }
+
+        currentTime = nextTime;
 
         while (!signalEventPQ.empty() && signalEventPQ.top().time == currentTime) {
             SignalEvent e = signalEventPQ.top();
@@ -824,13 +523,7 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
             }
         }
 
-        if (signalEventPQ.empty()) {
-            cout << "[Error] signalEventPQ became empty after signal update." << endl;
-            break;
-        }
-
-        int nextTime = signalEventPQ.top().time;
-        process_discharge_window(currentTime, nextTime);
+        if (signalEventPQ.empty()) break;
     }
     return ETA_result_cycle_aware;
 }
@@ -1126,6 +819,10 @@ int Graph::nextAvailableCapacityTime(int intersectionID, int toRoadID, int t) {
 }
 
 bool Graph::hasDownstreamStorage(int roadID) {
+    // Placeholder:
+    // 当前版本尚未实现真实 downstream road storage / spillback 约束，
+    // 这里只保留接口并默认返回 true。
+    // 后续若引入道路存储上限，应在此根据 roadID 与占用状态进行判定。
     (void)roadID;
     return true;
 }
