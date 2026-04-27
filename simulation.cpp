@@ -723,3 +723,390 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
         cout << "Unable to open file for writing!" << endl;
     }
 }
+
+vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
+        vector<vector<int>> &Q, vector<vector<int>> &routeRoadIDInput) {
+    this->routeRoadID = routeRoadIDInput;
+    route_roadID_2_movementID();
+
+    int simStartTime = 0;
+    if (!Q.empty()) {
+        simStartTime = Q[0][2];
+        for (const auto &q : Q) simStartTime = min(simStartTime, q[2]);
+    }
+
+    initialize_cycle_aware_vehicles(Q, routeRoadIDInput);
+    initialize_signal_event_queue(simStartTime);
+
+    int currentTime = simStartTime;
+    while (!allVehiclesFinished()) {
+        while (!signalEventPQ.empty() && signalEventPQ.top().time == currentTime) {
+            SignalEvent e = signalEventPQ.top();
+            signalEventPQ.pop();
+            handle_signal_change_event(e);
+            int nextT = nextSignalChangeTime(e.signalID, currentTime + 1);
+            if (nextT < INF) {
+                signalEventPQ.push({nextT, e.signalID});
+            }
+        }
+
+        int nextTime = signalEventPQ.empty() ? INF : signalEventPQ.top().time;
+        process_discharge_window(currentTime, nextTime);
+
+        if (nextTime == INF) {
+            break;
+        }
+        currentTime = nextTime;
+    }
+    return ETA_result_cycle_aware;
+}
+
+void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vector<int>>& routeRoadIDInput) {
+    vehicles.clear();
+    vehicles.resize(routeRoadIDInput.size());
+    ETA_result_cycle_aware.assign(routeRoadIDInput.size(), {});
+    finishedVehicleCount = 0;
+    usedDischargeCapacity.clear();
+
+    for (auto &b : waitingBuffers) {
+        b.vehicleQueue.clear();
+    }
+
+    for (int i = 0; i < routeRoadIDInput.size(); ++i) {
+        VehicleLabel v;
+        v.vehicleID = i;
+        v.routeID = i;
+        v.routeRoadIDs = routeRoadIDInput[i];
+        if (i < routeMovementID.size()) v.routeMovementIDs = routeMovementID[i];
+        v.roadIndex = 0;
+
+        if (v.routeRoadIDs.empty()) {
+            v.finished = true;
+            v.state = VehicleState::Finished;
+            vehicles[i] = v;
+            finishedVehicleCount++;
+            continue;
+        }
+
+        int departTime = (i < Q.size() && Q[i].size() > 2) ? Q[i][2] : 0;
+        v.currentRoadID = v.routeRoadIDs[0];
+        v.arrivalTime = departTime + predictRoadTravelTime(v.currentRoadID, i);
+
+        ETA_result_cycle_aware[i].push_back({v.currentRoadID, static_cast<float>(departTime)});
+
+        if (v.routeRoadIDs.size() == 1) {
+            v.finished = true;
+            v.state = VehicleState::Finished;
+            recordFinalETA(i, v.arrivalTime);
+        } else if (!v.routeMovementIDs.empty()) {
+            int movementID = v.routeMovementIDs[0];
+            auto itRoad = roads[v.currentRoadID].movementIDToWaitingBufferID.find(movementID);
+            if (itRoad != roads[v.currentRoadID].movementIDToWaitingBufferID.end()) {
+                v.currentMovementID = movementID;
+                v.currentBufferID = itRoad->second;
+                v.state = VehicleState::WaitingAtIntersection;
+                vehicles[i] = v;
+                insertVehicleToBufferOrdered(v.currentBufferID, i);
+                continue;
+            } else {
+                v.finished = true;
+                v.state = VehicleState::Finished;
+                recordFinalETA(i, v.arrivalTime);
+            }
+        } else {
+            v.finished = true;
+            v.state = VehicleState::Finished;
+            recordFinalETA(i, v.arrivalTime);
+        }
+
+        vehicles[i] = v;
+    }
+}
+
+void Graph::initialize_signal_event_queue(int simStartTime) {
+    while (!signalEventPQ.empty()) signalEventPQ.pop();
+    for (const auto &signal : signals) {
+        if (signal.alwaysOpen) continue;
+        int nextT = nextSignalChangeTime(signal.signalID, simStartTime);
+        if (nextT < INF) {
+            signalEventPQ.push({nextT, signal.signalID});
+        }
+    }
+}
+
+void Graph::rebuildActiveDispatchPQ(int currentTime, int windowEnd) {
+    while (!dispatchPQ.empty()) dispatchPQ.pop();
+    for (const auto &m : movements) {
+        if (m.movementID < 0) continue;
+        if (!isMovementActive(m.movementID, currentTime)) continue;
+        auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(m.movementID);
+        if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) continue;
+        int bufferID = it->second;
+        if (bufferID < 0 || bufferID >= waitingBuffers.size()) continue;
+        if (waitingBuffers[bufferID].vehicleQueue.empty()) continue;
+        int vehicleID = waitingBuffers[bufferID].vehicleQueue.front();
+        int readyTime = vehicles[vehicleID].arrivalTime;
+        int earliest = computeEarliestDischargeTime(m.movementID, readyTime, currentTime);
+        if (earliest < windowEnd) {
+            dispatchPQ.push({earliest, readyTime, m.movementID, bufferID, vehicleID});
+        }
+    }
+}
+
+void Graph::process_discharge_window(int windowStart, int windowEnd) {
+    rebuildActiveDispatchPQ(windowStart, windowEnd);
+    while (!dispatchPQ.empty()) {
+        DispatchCandidate c = dispatchPQ.top();
+        dispatchPQ.pop();
+        if (!isDispatchCandidateValid(c)) continue;
+        if (c.earliestDischargeTime >= windowEnd) continue;
+        if (!canDischarge(c.movementID, c.earliestDischargeTime, windowEnd)) continue;
+
+        DischargeResult result = dischargeOneVehicle(c.movementID, c.earliestDischargeTime);
+        pushCandidateIfPossible(c.movementID, c.earliestDischargeTime, windowEnd);
+        if (!result.finished) {
+            pushCandidateIfPossible(result.nextMovementID, c.earliestDischargeTime, windowEnd);
+        }
+        for (const auto &m : movements) {
+            if (m.intersectionID == result.intersectionID && m.toRoadID == result.toRoadID) {
+                pushCandidateIfPossible(m.movementID, c.earliestDischargeTime, windowEnd);
+            }
+        }
+    }
+}
+
+bool Graph::isMovementActive(int movementID, int t) {
+    if (movementID < 0 || movementID >= movements.size()) return false;
+    const Movement &m = movements[movementID];
+    if (m.alwaysOpen) return true;
+    if (m.signalID < 0 || m.signalID >= signals.size()) return false;
+    return signalStateAt(m.signalID, t) == SignalState::Green ||
+           signalStateAt(m.signalID, t) == SignalState::AlwaysOpen;
+}
+
+bool Graph::canDischarge(int movementID, int dischargeTime, int windowEnd) {
+    (void)windowEnd;
+    if (!isMovementActive(movementID, dischargeTime)) return false;
+    if (movementID < 0 || movementID >= movements.size()) return false;
+    const Movement &m = movements[movementID];
+    auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(movementID);
+    if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) return false;
+    int bufferID = it->second;
+    if (bufferID < 0 || bufferID >= waitingBuffers.size()) return false;
+    auto &b = waitingBuffers[bufferID];
+    if (b.vehicleQueue.empty()) return false;
+    int vehicleID = b.vehicleQueue.front();
+    if (vehicleID < 0 || vehicleID >= vehicles.size()) return false;
+    if (vehicles[vehicleID].arrivalTime > dischargeTime) return false;
+    if (!hasDownstreamStorage(m.toRoadID)) return false;
+    if (!hasDischargeCapacity(m.intersectionID, m.toRoadID, dischargeTime)) return false;
+    return true;
+}
+
+DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
+    DischargeResult result;
+    if (movementID < 0 || movementID >= movements.size()) return result;
+    const Movement &m = movements[movementID];
+    auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(movementID);
+    if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) return result;
+    int bufferID = it->second;
+    auto &b = waitingBuffers[bufferID];
+    if (b.vehicleQueue.empty()) return result;
+
+    int vehicleID = b.vehicleQueue.front();
+    b.vehicleQueue.pop_front();
+    consumeDischargeCapacity(m.intersectionID, m.toRoadID, dischargeTime);
+
+    VehicleLabel &v = vehicles[vehicleID];
+    v.roadIndex += 1;
+    v.currentRoadID = m.toRoadID;
+    v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID);
+
+    result.vehicleID = vehicleID;
+    result.movementID = movementID;
+    result.intersectionID = m.intersectionID;
+    result.fromRoadID = m.fromRoadID;
+    result.toRoadID = m.toRoadID;
+    result.dischargeTime = dischargeTime;
+    result.newArrivalTime = v.arrivalTime;
+
+    if (v.roadIndex >= static_cast<int>(v.routeRoadIDs.size()) - 1) {
+        v.finished = true;
+        v.state = VehicleState::Finished;
+        v.currentMovementID = -1;
+        v.currentBufferID = -1;
+        result.finished = true;
+        recordFinalETA(vehicleID, v.arrivalTime);
+        return result;
+    }
+
+    if (v.roadIndex < v.routeMovementIDs.size()) {
+        int nextMovementID = v.routeMovementIDs[v.roadIndex];
+        auto itBuffer = roads[m.toRoadID].movementIDToWaitingBufferID.find(nextMovementID);
+        if (itBuffer != roads[m.toRoadID].movementIDToWaitingBufferID.end()) {
+            int nextBufferID = itBuffer->second;
+            v.currentMovementID = nextMovementID;
+            v.currentBufferID = nextBufferID;
+            v.state = VehicleState::WaitingAtIntersection;
+            insertVehicleToBufferOrdered(nextBufferID, vehicleID);
+            result.nextMovementID = nextMovementID;
+            result.nextBufferID = nextBufferID;
+        } else {
+            v.finished = true;
+            v.state = VehicleState::Finished;
+            result.finished = true;
+            recordFinalETA(vehicleID, v.arrivalTime);
+        }
+    } else {
+        v.finished = true;
+        v.state = VehicleState::Finished;
+        result.finished = true;
+        recordFinalETA(vehicleID, v.arrivalTime);
+    }
+    return result;
+}
+
+void Graph::pushCandidateIfPossible(int movementID, int currentTime, int windowEnd) {
+    if (movementID < 0 || movementID >= movements.size()) return;
+    if (!isMovementActive(movementID, currentTime)) return;
+    const Movement &m = movements[movementID];
+    auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(movementID);
+    if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) return;
+    int bufferID = it->second;
+    if (bufferID < 0 || bufferID >= waitingBuffers.size()) return;
+    auto &b = waitingBuffers[bufferID];
+    if (b.vehicleQueue.empty()) return;
+    int vehicleID = b.vehicleQueue.front();
+    int readyTime = vehicles[vehicleID].arrivalTime;
+    int earliest = computeEarliestDischargeTime(movementID, readyTime, currentTime);
+    if (earliest >= windowEnd) return;
+    dispatchPQ.push({earliest, readyTime, movementID, bufferID, vehicleID});
+}
+
+bool Graph::isDispatchCandidateValid(const DispatchCandidate& c) {
+    if (c.bufferID < 0 || c.bufferID >= waitingBuffers.size()) return false;
+    if (c.vehicleID < 0 || c.vehicleID >= vehicles.size()) return false;
+    auto &b = waitingBuffers[c.bufferID];
+    if (b.vehicleQueue.empty()) return false;
+    if (b.vehicleQueue.front() != c.vehicleID) return false;
+    const auto &v = vehicles[c.vehicleID];
+    if (v.currentBufferID != c.bufferID) return false;
+    if (v.currentMovementID != c.movementID) return false;
+    return true;
+}
+
+int Graph::computeEarliestDischargeTime(int movementID, int readyTime, int currentTime) {
+    if (movementID < 0 || movementID >= movements.size()) return INF;
+    const Movement &m = movements[movementID];
+    int t = max(readyTime, currentTime);
+    int capT = nextAvailableCapacityTime(m.intersectionID, m.toRoadID, t);
+    return max(t, capT);
+}
+
+bool Graph::hasDischargeCapacity(int intersectionID, int toRoadID, int t) {
+    int interval = max(1, defaultDischargeInterval);
+    int slot = t / interval;
+    int used = usedDischargeCapacity[make_tuple(intersectionID, toRoadID, slot)];
+    int cap = 1;
+    if (toRoadID >= 0 && toRoadID < roads.size()) {
+        cap = max(1, roads[toRoadID].laneNum);
+    }
+    return used < cap;
+}
+
+void Graph::consumeDischargeCapacity(int intersectionID, int toRoadID, int t) {
+    int interval = max(1, defaultDischargeInterval);
+    int slot = t / interval;
+    usedDischargeCapacity[make_tuple(intersectionID, toRoadID, slot)]++;
+}
+
+int Graph::nextAvailableCapacityTime(int intersectionID, int toRoadID, int t) {
+    int interval = max(1, defaultDischargeInterval);
+    int cur = t;
+    while (!hasDischargeCapacity(intersectionID, toRoadID, cur)) {
+        cur = ((cur / interval) + 1) * interval;
+    }
+    return cur;
+}
+
+bool Graph::hasDownstreamStorage(int roadID) {
+    (void)roadID;
+    return true;
+}
+
+int Graph::predictRoadTravelTime(int roadID, int vehicleID) {
+    (void)vehicleID;
+    if (roadID >= 0 && roadID < roads.size() && roads[roadID].minTravelTime > 0) {
+        return max(1, static_cast<int>(round(roads[roadID].minTravelTime)));
+    }
+    if (roadID >= 0 && roadID < roads.size()) {
+        double speed = max(1.0, roads[roadID].speedLimit);
+        return max(1, static_cast<int>(round(roads[roadID].length / speed)));
+    }
+    return 1;
+}
+
+void Graph::insertVehicleToBufferOrdered(int bufferID, int vehicleID) {
+    if (bufferID < 0 || bufferID >= waitingBuffers.size()) return;
+    if (vehicleID < 0 || vehicleID >= vehicles.size()) return;
+    auto &q = waitingBuffers[bufferID].vehicleQueue;
+    int at = vehicles[vehicleID].arrivalTime;
+    auto pos = q.end();
+    for (auto it = q.begin(); it != q.end(); ++it) {
+        if (vehicles[*it].arrivalTime > at) {
+            pos = it;
+            break;
+        }
+    }
+    q.insert(pos, vehicleID);
+}
+
+void Graph::handle_signal_change_event(const SignalEvent& e) {
+    if (e.signalID < 0 || e.signalID >= signals.size()) return;
+    signals[e.signalID].currentState = signalStateAt(e.signalID, e.time);
+}
+
+int Graph::nextSignalChangeTime(int signalID, int afterTime) {
+    if (signalID < 0 || signalID >= signals.size()) return INF;
+    const SignalController &s = signals[signalID];
+    if (s.alwaysOpen || s.cycleLength <= 0) return INF;
+
+    int cycle = s.cycleLength;
+    int best = INF;
+    int baseK = (afterTime - s.offset) / cycle;
+    for (int k = baseK - 1; k <= baseK + 2; ++k) {
+        int t1 = s.offset + k * cycle + s.greenStart;
+        int t2 = s.offset + k * cycle + s.greenEnd;
+        if (t1 >= afterTime) best = min(best, t1);
+        if (t2 >= afterTime) best = min(best, t2);
+    }
+    return best;
+}
+
+SignalState Graph::signalStateAt(int signalID, int t) {
+    if (signalID < 0 || signalID >= signals.size()) return SignalState::Red;
+    const SignalController &s = signals[signalID];
+    if (s.alwaysOpen) return SignalState::AlwaysOpen;
+    if (s.cycleLength <= 0) return SignalState::Red;
+
+    int local = (t - s.offset) % s.cycleLength;
+    if (local < 0) local += s.cycleLength;
+    if (s.greenStart <= s.greenEnd) {
+        return (local >= s.greenStart && local < s.greenEnd) ? SignalState::Green : SignalState::Red;
+    }
+    return (local >= s.greenStart || local < s.greenEnd) ? SignalState::Green : SignalState::Red;
+}
+
+bool Graph::allVehiclesFinished() const {
+    return finishedVehicleCount >= static_cast<int>(vehicles.size());
+}
+
+void Graph::recordFinalETA(int vehicleID, int finalTime) {
+    if (vehicleID < 0 || vehicleID >= ETA_result_cycle_aware.size()) return;
+    if (vehicleID >= 0 && vehicleID < vehicles.size() && vehicles[vehicleID].finished) return;
+    ETA_result_cycle_aware[vehicleID].push_back({-1, static_cast<float>(finalTime)});
+    if (vehicleID >= 0 && vehicleID < vehicles.size()) {
+        vehicles[vehicleID].finished = true;
+    }
+    finishedVehicleCount++;
+}
