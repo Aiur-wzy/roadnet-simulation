@@ -20,6 +20,7 @@
 #include <string>
 #include <algorithm>
 #include <map>
+#include <deque>
 #include <thread>
 #include <future>
 #include <boost/thread/thread.hpp>
@@ -181,6 +182,144 @@ struct EdgeInfo {
     string edge_str;
 };
 
+enum class NodeType {
+    NormalSplit,
+    UnsignalizedJunction,
+    SignalizedJunction
+};
+
+enum class TurnDir {
+    Left,
+    Straight,
+    Right,
+    UTurn,
+    Unknown
+};
+
+enum class SignalState {
+    Red,
+    Green,
+    Yellow,
+    AlwaysOpen
+};
+
+enum class VehicleState {
+    NotDeparted,
+    RunningOnRoad,
+    WaitingAtIntersection,
+    Finished
+};
+
+struct NodeInfo {
+    int nodeID = -1;
+    NodeType type = NodeType::NormalSplit;
+    vector<int> incomingRoads;
+    vector<int> outgoingRoads;
+    int intersectionID = -1;
+};
+
+struct RoadSegment {
+    int roadID = -1;
+    int fromNode = -1;
+    int toNode = -1;
+    double length = 0.0;
+    double speedLimit = 0.0;
+    int laneNum = 1;
+    int width = 0;
+    int direction = 0;
+    int kindNumber = 0;
+    string kind;
+    double minTravelTime = -1.0;
+    bool hasSignalizedDownstream = false;
+    int downstreamIntersectionID = -1;
+    int storageCapacityVehicles = 0;
+    int runningCount = 0;
+    vector<int> runningVehicles;
+    unordered_map<int, int> movementIDToWaitingBufferID;
+};
+
+struct LaneGroup {
+    int laneGroupID = -1;
+    int roadID = -1;
+    TurnDir turn = TurnDir::Unknown;
+    vector<int> laneIndices;
+    vector<int> allowedToRoads;
+
+    int laneCount() const {
+        return static_cast<int>(laneIndices.size());
+    }
+};
+
+struct Movement {
+    int movementID = -1;
+    int fromRoadID = -1;
+    int toRoadID = -1;
+    int intersectionID = -1;
+    TurnDir turn = TurnDir::Unknown;
+    int laneGroupID = -1;
+    int signalID = -1;
+    bool alwaysOpen = false;
+    int priorityOrder = 0;
+};
+
+struct WaitingBuffer {
+    int bufferID = -1;
+    int roadID = -1;
+    int movementID = -1;
+    int laneGroupID = -1;
+    int laneCount = 1;
+    double vehicleLength = 5.0;
+    double gap = 1.0;
+    deque<int> vehicleQueue;
+
+    int vehicleCount() const {
+        return static_cast<int>(vehicleQueue.size());
+    }
+
+    double occupiedLength() const {
+        if (laneCount <= 0) return 0.0;
+        return ceil(static_cast<double>(vehicleQueue.size()) / laneCount) * (vehicleLength + gap);
+    }
+};
+
+struct SignalController {
+    int signalID = -1;
+    int intersectionID = -1;
+    int movementID = -1;
+    bool alwaysOpen = false;
+    int cycleLength = 0;
+    int greenStart = 0;
+    int greenEnd = 0;
+    int offset = 0;
+    SignalState currentState = SignalState::Red;
+};
+
+struct Intersection {
+    int intersectionID = -1;
+    int nodeID = -1;
+    vector<int> incomingRoads;
+    vector<int> outgoingRoads;
+    vector<int> movementIDs;
+    vector<int> signalIDs;
+    int dischargeInterval = 1;
+    unordered_map<int, int> roundRobinPointerByToRoad;
+};
+
+struct VehicleLabel {
+    int vehicleID = -1;
+    int routeID = -1;
+    vector<int> routeRoadIDs;
+    vector<int> routeMovementIDs;
+    int roadIndex = 0;
+    int currentRoadID = -1;
+    int nextRoadID = -1;
+    int currentMovementID = -1;
+    VehicleState state = VehicleState::NotDeparted;
+    int currentTime = 0;
+    int enterRoadTime = 0;
+    int arriveBufferTime = 0;
+};
+
 class Graph {
 public:
 
@@ -250,6 +389,44 @@ public:
     // Convert Single Route from "Node ID Pair" to "Road ID"
     void route_nodeID_2_roadID_single(vector<int> &routeData);
     vector<vector<int>> routeRoadID;
+    vector<vector<int>> routeMovementID;
+
+    // Cycle-aware graph preparation
+    void build_new_graph_structures();
+    void build_road_segments_from_legacy_roads();
+    void initialize_nodes_from_roads();
+    void classify_node_types_assume_all_junctions_signalized();
+    void build_intersections_from_signalized_nodes();
+    void attach_min_travel_time_to_roads();
+    void build_movements_from_connections();
+    void build_default_lane_groups();
+    void attach_lane_groups_to_movements();
+    void build_signal_controllers_assume_default();
+    void build_waiting_buffers();
+    void route_roadID_2_movementID();
+    void validate_cycle_aware_graph();
+    TurnDir parseTurnDir(char c);
+
+    vector<NodeInfo> nodes;
+    vector<RoadSegment> roads;
+    vector<LaneGroup> laneGroups;
+    vector<Movement> movements;
+    vector<WaitingBuffer> waitingBuffers;
+    vector<SignalController> signals;
+    vector<Intersection> intersections;
+
+    unordered_map<int, int> roadIDToRoadIndex;
+    unordered_map<int, int> nodeIDToNodeIndex;
+    map<int, vector<int>> incomingRoadsByNode;
+    map<int, vector<int>> outgoingRoadsByNode;
+    map<pair<int, int>, int> roadPairToMovementID;
+    map<int, vector<int>> outgoingMovementsByRoad;
+    map<int, vector<int>> incomingMovementsByRoad;
+    map<int, vector<int>> laneGroupsByRoad;
+    map<pair<int, TurnDir>, int> roadTurnToLaneGroupID;
+    map<int, int> nodeToIntersectionID;
+    map<int, vector<int>> movementIDsByIntersection;
+    map<int, vector<int>> signalIDsByIntersection;
     // Classify Each Road with A Unique Latency Function
     vector<vector<pair<int,vector<pair<int,int>>>>> timeRange;
     // int realPercent;
