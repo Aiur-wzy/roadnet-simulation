@@ -29,6 +29,8 @@
 #include <time.h>
 #include <cstdlib>
 #include <random>
+#include <queue>
+#include <tuple>
 
 #include <iostream>
 #include <sys/types.h>
@@ -312,12 +314,55 @@ struct VehicleLabel {
     vector<int> routeMovementIDs;
     int roadIndex = 0;
     int currentRoadID = -1;
-    int nextRoadID = -1;
+    int arrivalTime = 0;
     int currentMovementID = -1;
+    int currentBufferID = -1;
     VehicleState state = VehicleState::NotDeparted;
-    int currentTime = 0;
-    int enterRoadTime = 0;
-    int arriveBufferTime = 0;
+    bool finished = false;
+};
+
+struct SignalEvent {
+    int time = 0;
+    int signalID = -1;
+};
+
+struct DispatchCandidate {
+    int earliestDischargeTime = 0;
+    int readyTime = 0;
+    int movementID = -1;
+    int bufferID = -1;
+    int vehicleID = -1;
+};
+
+struct DischargeResult {
+    int vehicleID = -1;
+    int movementID = -1;
+    int intersectionID = -1;
+    int fromRoadID = -1;
+    int toRoadID = -1;
+    int dischargeTime = 0;
+    int newArrivalTime = 0;
+    bool finished = false;
+    int nextMovementID = -1;
+    int nextBufferID = -1;
+};
+
+struct SignalEventCompare {
+    bool operator()(const SignalEvent& a, const SignalEvent& b) const {
+        if (a.time != b.time) return a.time > b.time;
+        return a.signalID > b.signalID;
+    }
+};
+
+struct DispatchCandidateCompare {
+    bool operator()(const DispatchCandidate& a, const DispatchCandidate& b) const {
+        if (a.earliestDischargeTime != b.earliestDischargeTime) {
+            return a.earliestDischargeTime > b.earliestDischargeTime;
+        }
+        if (a.readyTime != b.readyTime) return a.readyTime > b.readyTime;
+        if (a.movementID != b.movementID) return a.movementID > b.movementID;
+        return a.vehicleID > b.vehicleID;
+    }
 };
 
 class Graph {
@@ -427,6 +472,14 @@ public:
     map<int, int> nodeToIntersectionID;
     map<int, vector<int>> movementIDsByIntersection;
     map<int, vector<int>> signalIDsByIntersection;
+
+    vector<VehicleLabel> vehicles;
+    priority_queue<SignalEvent, vector<SignalEvent>, SignalEventCompare> signalEventPQ;
+    priority_queue<DispatchCandidate, vector<DispatchCandidate>, DispatchCandidateCompare> dispatchPQ;
+    vector<vector<pair<int, float>>> ETA_result_cycle_aware;
+    int finishedVehicleCount = 0;
+    int defaultDischargeInterval = 1;
+    map<tuple<int, int, int>, int> usedDischargeCapacity;
     // Classify Each Road with A Unique Latency Function
     vector<vector<pair<int,vector<pair<int,int>>>>> timeRange;
     // int realPercent;
@@ -468,6 +521,29 @@ public:
     vector<vector<pair<int, float>>> alg1Records(
             vector<vector<int>> &Q, vector<vector<int>> &Pi,
             bool range, bool server, bool catching, bool write, bool latency, string te_choose);
+    vector<vector<pair<int, float>>> cycle_aware_signal_driven_records(
+            vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
+    void initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vector<int>>& routeRoadID);
+    void initialize_signal_event_queue(int simStartTime);
+    void process_discharge_window(int windowStart, int windowEnd);
+    void rebuildActiveDispatchPQ(int currentTime, int windowEnd);
+    bool isMovementActive(int movementID, int t);
+    bool canDischarge(int movementID, int dischargeTime, int windowEnd);
+    DischargeResult dischargeOneVehicle(int movementID, int dischargeTime);
+    void pushCandidateIfPossible(int movementID, int currentTime, int windowEnd);
+    bool isDispatchCandidateValid(const DispatchCandidate& c);
+    int computeEarliestDischargeTime(int movementID, int readyTime, int currentTime);
+    bool hasDischargeCapacity(int intersectionID, int toRoadID, int t);
+    void consumeDischargeCapacity(int intersectionID, int toRoadID, int t);
+    int nextAvailableCapacityTime(int intersectionID, int toRoadID, int t);
+    bool hasDownstreamStorage(int roadID);
+    int predictRoadTravelTime(int roadID, int vehicleID);
+    void insertVehicleToBufferOrdered(int bufferID, int vehicleID);
+    void handle_signal_change_event(const SignalEvent& e);
+    int nextSignalChangeTime(int signalID, int afterTime);
+    SignalState signalStateAt(int signalID, int t);
+    bool allVehiclesFinished() const;
+    void recordFinalETA(int vehicleID, int finalTime);
     string model_catching = Base + "model_catching.txt";
     vector<vector<pair<int, float>>> ETA_result;
     vector<vector<vector<int>>> nodes_label; //PathID, Node Index, Arrived Time
