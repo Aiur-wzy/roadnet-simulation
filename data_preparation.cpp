@@ -205,6 +205,440 @@ void Graph::read_road_info()
     */
 }
 
+TurnDir Graph::parseTurnDir(char c)
+{
+    switch (c) {
+        case 'l':
+        case 'L':
+            return TurnDir::Left;
+        case 's':
+        case 'S':
+            return TurnDir::Straight;
+        case 'r':
+        case 'R':
+            return TurnDir::Right;
+        case 'u':
+        case 'U':
+            return TurnDir::UTurn;
+        default:
+            return TurnDir::Unknown;
+    }
+}
+
+void Graph::build_new_graph_structures()
+{
+    build_road_segments_from_legacy_roads();
+    initialize_nodes_from_roads();
+    classify_node_types_assume_all_junctions_signalized();
+    build_intersections_from_signalized_nodes();
+    attach_min_travel_time_to_roads();
+
+    if (connections_to_direction.empty()) {
+        readConnectionsToDirections(connections_to_direction_path);
+    }
+    build_movements_from_connections();
+    build_default_lane_groups();
+    attach_lane_groups_to_movements();
+    build_signal_controllers_assume_default();
+    build_waiting_buffers();
+    route_nodeID_2_roadID(routeDataRaw);
+    route_roadID_2_movementID();
+    validate_cycle_aware_graph();
+}
+
+void Graph::build_road_segments_from_legacy_roads()
+{
+    roads.clear();
+    roadIDToRoadIndex.clear();
+    if (roadID2NodeID.empty()) {
+        return;
+    }
+
+    int maxRoadID = -1;
+    for (const auto &kv : roadID2NodeID) {
+        maxRoadID = max(maxRoadID, kv.first);
+    }
+    roads.resize(maxRoadID + 1);
+
+    for (const auto &kv : roadID2NodeID) {
+        int roadID = kv.first;
+        int fromNode = kv.second.first;
+        int toNode = kv.second.second;
+
+        RoadSegment segment;
+        segment.roadID = roadID;
+        segment.fromNode = fromNode;
+        segment.toNode = toNode;
+        if (roadID >= 0 && roadID < roadInfor.size()) {
+            const Road &legacyRoad = roadInfor[roadID];
+            segment.length = legacyRoad.length;
+            segment.speedLimit = legacyRoad.speedLimit;
+            segment.laneNum = max(1, legacyRoad.laneNum);
+            segment.width = legacyRoad.width;
+            segment.direction = legacyRoad.direction;
+            segment.kindNumber = legacyRoad.kindNumber;
+            segment.kind = legacyRoad.kind;
+        }
+        roads[roadID] = segment;
+        roadIDToRoadIndex[roadID] = roadID;
+    }
+}
+
+void Graph::initialize_nodes_from_roads()
+{
+    nodes.clear();
+    nodeIDToNodeIndex.clear();
+    incomingRoadsByNode.clear();
+    outgoingRoadsByNode.clear();
+
+    if (nodenum <= 0) {
+        return;
+    }
+    nodes.resize(nodenum);
+    for (int nodeID = 0; nodeID < nodenum; ++nodeID) {
+        nodes[nodeID].nodeID = nodeID;
+        nodes[nodeID].type = NodeType::NormalSplit;
+        nodeIDToNodeIndex[nodeID] = nodeID;
+    }
+
+    for (const auto &road : roads) {
+        if (road.roadID < 0 || road.fromNode < 0 || road.toNode < 0) {
+            continue;
+        }
+        if (road.fromNode >= nodenum || road.toNode >= nodenum) {
+            continue;
+        }
+        nodes[road.fromNode].outgoingRoads.push_back(road.roadID);
+        nodes[road.toNode].incomingRoads.push_back(road.roadID);
+        outgoingRoadsByNode[road.fromNode].push_back(road.roadID);
+        incomingRoadsByNode[road.toNode].push_back(road.roadID);
+    }
+}
+
+void Graph::classify_node_types_assume_all_junctions_signalized()
+{
+    for (auto &node : nodes) {
+        // Temporary assumption. Replace with real signalized node input later.
+        if (node.incomingRoads.size() >= 2 && node.outgoingRoads.size() >= 2) {
+            node.type = NodeType::SignalizedJunction;
+        } else if (!node.incomingRoads.empty() || !node.outgoingRoads.empty()) {
+            node.type = NodeType::NormalSplit;
+        } else {
+            node.type = NodeType::NormalSplit;
+        }
+    }
+}
+
+void Graph::build_intersections_from_signalized_nodes()
+{
+    intersections.clear();
+    nodeToIntersectionID.clear();
+
+    int intersectionID = 0;
+    for (auto &road : roads) {
+        road.hasSignalizedDownstream = false;
+        road.downstreamIntersectionID = -1;
+    }
+
+    for (auto &node : nodes) {
+        if (node.type != NodeType::SignalizedJunction) {
+            node.intersectionID = -1;
+            continue;
+        }
+        node.intersectionID = intersectionID;
+        Intersection inter;
+        inter.intersectionID = intersectionID;
+        inter.nodeID = node.nodeID;
+        inter.incomingRoads = node.incomingRoads;
+        inter.outgoingRoads = node.outgoingRoads;
+        intersections.push_back(inter);
+        nodeToIntersectionID[node.nodeID] = intersectionID;
+
+        for (int incomingRoadID : node.incomingRoads) {
+            if (incomingRoadID >= 0 && incomingRoadID < roads.size()) {
+                roads[incomingRoadID].hasSignalizedDownstream = true;
+                roads[incomingRoadID].downstreamIntersectionID = intersectionID;
+            }
+        }
+        ++intersectionID;
+    }
+}
+
+void Graph::attach_min_travel_time_to_roads()
+{
+    for (auto &road : roads) {
+        if (road.roadID < 0) continue;
+        auto it = nodeID2minTime.find(make_pair(road.fromNode, road.toNode));
+        if (it != nodeID2minTime.end()) {
+            road.minTravelTime = it->second;
+        }
+    }
+}
+
+void Graph::build_movements_from_connections()
+{
+    movements.clear();
+    roadPairToMovementID.clear();
+    outgoingMovementsByRoad.clear();
+    incomingMovementsByRoad.clear();
+    movementIDsByIntersection.clear();
+
+    int movementID = 0;
+    for (const auto &kv : connections_to_direction) {
+        int fromRoad = kv.first.first;
+        int toRoad = kv.first.second;
+        if (fromRoad < 0 || toRoad < 0 || fromRoad >= roads.size() || toRoad >= roads.size()) {
+            continue;
+        }
+        if (roads[fromRoad].roadID < 0 || roads[toRoad].roadID < 0) {
+            continue;
+        }
+
+        Movement movement;
+        movement.movementID = movementID;
+        movement.fromRoadID = fromRoad;
+        movement.toRoadID = toRoad;
+        movement.turn = parseTurnDir(kv.second);
+        movement.alwaysOpen = (movement.turn == TurnDir::Right);
+
+        int downstreamNode = roads[fromRoad].toNode;
+        if (downstreamNode >= 0 && downstreamNode < nodes.size() &&
+            nodes[downstreamNode].type == NodeType::SignalizedJunction) {
+            movement.intersectionID = nodes[downstreamNode].intersectionID;
+        }
+
+        movements.push_back(movement);
+        roadPairToMovementID[make_pair(fromRoad, toRoad)] = movementID;
+        outgoingMovementsByRoad[fromRoad].push_back(movementID);
+        incomingMovementsByRoad[toRoad].push_back(movementID);
+
+        if (movement.intersectionID >= 0 && movement.intersectionID < intersections.size()) {
+            intersections[movement.intersectionID].movementIDs.push_back(movementID);
+            movementIDsByIntersection[movement.intersectionID].push_back(movementID);
+        }
+        ++movementID;
+    }
+}
+
+void Graph::build_default_lane_groups()
+{
+    laneGroups.clear();
+    laneGroupsByRoad.clear();
+    roadTurnToLaneGroupID.clear();
+
+    auto build_lane_indices = [](int laneNum, TurnDir turn) -> vector<int> {
+        int normalizedLaneNum = max(1, laneNum);
+        if (normalizedLaneNum <= 1) {
+            return {0};
+        }
+        if (normalizedLaneNum == 2) {
+            if (turn == TurnDir::Left) return {0};
+            return {1};
+        }
+        if (turn == TurnDir::Left) return {0};
+        if (turn == TurnDir::Right) return {normalizedLaneNum - 1};
+        vector<int> middle;
+        for (int i = 1; i < normalizedLaneNum - 1; ++i) {
+            middle.push_back(i);
+        }
+        if (middle.empty()) middle.push_back(1);
+        return middle;
+    };
+
+    int laneGroupID = 0;
+    for (const auto &road : roads) {
+        if (road.roadID < 0) continue;
+        const vector<TurnDir> turns = {TurnDir::Left, TurnDir::Straight, TurnDir::Right};
+        for (TurnDir turn : turns) {
+            LaneGroup group;
+            group.laneGroupID = laneGroupID;
+            group.roadID = road.roadID;
+            group.turn = turn;
+            group.laneIndices = build_lane_indices(road.laneNum, turn);
+            laneGroups.push_back(group);
+
+            laneGroupsByRoad[road.roadID].push_back(laneGroupID);
+            roadTurnToLaneGroupID[make_pair(road.roadID, turn)] = laneGroupID;
+            ++laneGroupID;
+        }
+    }
+}
+
+void Graph::attach_lane_groups_to_movements()
+{
+    for (auto &movement : movements) {
+        auto it = roadTurnToLaneGroupID.find(make_pair(movement.fromRoadID, movement.turn));
+        if (it != roadTurnToLaneGroupID.end()) {
+            movement.laneGroupID = it->second;
+            continue;
+        }
+        auto fallback = roadTurnToLaneGroupID.find(make_pair(movement.fromRoadID, TurnDir::Straight));
+        movement.laneGroupID = (fallback != roadTurnToLaneGroupID.end()) ? fallback->second : -1;
+    }
+}
+
+void Graph::build_signal_controllers_assume_default()
+{
+    signals.clear();
+    signalIDsByIntersection.clear();
+    int signalID = 0;
+    constexpr int kDefaultCycleLength = 60;
+    constexpr int kDefaultGreenStart = 0;
+    constexpr int kDefaultGreenEnd = 30;
+
+    for (auto &movement : movements) {
+        if (movement.intersectionID < 0 || movement.intersectionID >= intersections.size()) {
+            continue;
+        }
+        SignalController signal;
+        signal.signalID = signalID;
+        signal.intersectionID = movement.intersectionID;
+        signal.movementID = movement.movementID;
+        if (movement.turn == TurnDir::Right) {
+            signal.alwaysOpen = true;
+            signal.currentState = SignalState::AlwaysOpen;
+        } else {
+            signal.alwaysOpen = false;
+            signal.cycleLength = kDefaultCycleLength;
+            signal.greenStart = kDefaultGreenStart;
+            signal.greenEnd = kDefaultGreenEnd;
+            signal.offset = 0;
+            signal.currentState = SignalState::Red;
+        }
+        signals.push_back(signal);
+        movement.signalID = signalID;
+        intersections[signal.intersectionID].signalIDs.push_back(signalID);
+        signalIDsByIntersection[signal.intersectionID].push_back(signalID);
+        ++signalID;
+    }
+}
+
+void Graph::build_waiting_buffers()
+{
+    waitingBuffers.clear();
+    int bufferID = 0;
+    for (auto &road : roads) {
+        road.movementIDToWaitingBufferID.clear();
+    }
+
+    for (const auto &movement : movements) {
+        if (movement.intersectionID < 0) {
+            continue;
+        }
+        WaitingBuffer buffer;
+        buffer.bufferID = bufferID;
+        buffer.roadID = movement.fromRoadID;
+        buffer.movementID = movement.movementID;
+        buffer.laneGroupID = movement.laneGroupID;
+
+        if (movement.laneGroupID >= 0 && movement.laneGroupID < laneGroups.size()) {
+            buffer.laneCount = max(1, laneGroups[movement.laneGroupID].laneCount());
+        } else {
+            buffer.laneCount = 1;
+        }
+
+        waitingBuffers.push_back(buffer);
+        if (movement.fromRoadID >= 0 && movement.fromRoadID < roads.size()) {
+            roads[movement.fromRoadID].movementIDToWaitingBufferID[movement.movementID] = bufferID;
+        }
+        ++bufferID;
+    }
+}
+
+void Graph::route_roadID_2_movementID()
+{
+    routeMovementID.clear();
+    routeMovementID.resize(routeRoadID.size());
+
+    int missingMovements = 0;
+    for (int i = 0; i < routeRoadID.size(); ++i) {
+        if (routeRoadID[i].size() <= 1) {
+            continue;
+        }
+        for (int j = 0; j + 1 < routeRoadID[i].size(); ++j) {
+            int fromRoad = routeRoadID[i][j];
+            int toRoad = routeRoadID[i][j + 1];
+            auto it = roadPairToMovementID.find(make_pair(fromRoad, toRoad));
+            if (it != roadPairToMovementID.end()) {
+                routeMovementID[i].push_back(it->second);
+            } else {
+                ++missingMovements;
+            }
+        }
+    }
+    if (missingMovements > 0) {
+        cout << "[Validation] missing movements from route conversion: " << missingMovements << endl;
+    }
+}
+
+void Graph::validate_cycle_aware_graph()
+{
+    int invalidRoadEndpoints = 0;
+    int missingIntersectionID = 0;
+    int missingSignalizedRoadFlag = 0;
+    int invalidMovements = 0;
+    int missingSignal = 0;
+    int missingBuffer = 0;
+    int missingLaneGroup = 0;
+    int missingRouteMovement = 0;
+
+    for (const auto &road : roads) {
+        if (road.roadID < 0) continue;
+        if (road.fromNode < 0 || road.toNode < 0 || road.fromNode >= nodenum || road.toNode >= nodenum) {
+            ++invalidRoadEndpoints;
+        }
+    }
+    for (const auto &node : nodes) {
+        if (node.type == NodeType::SignalizedJunction && node.intersectionID < 0) {
+            ++missingIntersectionID;
+        }
+        if (node.type == NodeType::SignalizedJunction) {
+            for (int incomingRoadID : node.incomingRoads) {
+                if (incomingRoadID < 0 || incomingRoadID >= roads.size() ||
+                    !roads[incomingRoadID].hasSignalizedDownstream) {
+                    ++missingSignalizedRoadFlag;
+                }
+            }
+        }
+    }
+    for (const auto &movement : movements) {
+        if (movement.fromRoadID < 0 || movement.toRoadID < 0 ||
+            movement.fromRoadID >= roads.size() || movement.toRoadID >= roads.size()) {
+            ++invalidMovements;
+        }
+        if (movement.laneGroupID < 0) {
+            ++missingLaneGroup;
+        }
+        if (movement.intersectionID >= 0) {
+            if (movement.signalID < 0) {
+                ++missingSignal;
+            }
+            if (movement.fromRoadID >= 0 && movement.fromRoadID < roads.size()) {
+                auto bufferIt = roads[movement.fromRoadID].movementIDToWaitingBufferID.find(movement.movementID);
+                if (bufferIt == roads[movement.fromRoadID].movementIDToWaitingBufferID.end()) {
+                    ++missingBuffer;
+                }
+            }
+        }
+    }
+    for (const auto &route : routeRoadID) {
+        for (int j = 0; j + 1 < route.size(); ++j) {
+            if (roadPairToMovementID.find(make_pair(route[j], route[j + 1])) == roadPairToMovementID.end()) {
+                ++missingRouteMovement;
+            }
+        }
+    }
+
+    cout << "[Validation] invalid road endpoints: " << invalidRoadEndpoints << endl;
+    cout << "[Validation] missing intersection ids: " << missingIntersectionID << endl;
+    cout << "[Validation] missing signalized road flags: " << missingSignalizedRoadFlag << endl;
+    cout << "[Validation] invalid movements: " << invalidMovements << endl;
+    cout << "[Validation] missing lane groups: " << missingLaneGroup << endl;
+    cout << "[Validation] missing signals: " << missingSignal << endl;
+    cout << "[Validation] missing buffers: " << missingBuffer << endl;
+    cout << "[Validation] missing movements in routes: " << missingRouteMovement << endl;
+}
+
 // Read Query with Defined Number
 vector<vector<int>> Graph::read_query(string filename, int num)
 {
@@ -877,4 +1311,3 @@ vector<vector<int>> Graph::cut_time_data(vector<vector<int>> &timeDataRaw, int a
     */
     return timeData;
 }
-
