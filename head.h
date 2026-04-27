@@ -78,29 +78,6 @@ public:
     int count;
 };
 
-/*class Semaphore {
-public:
-    explicit Semaphore(int count = 0) : count_(count) {
-    }
-
-    void Signal() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        ++count_;
-        cv_.notify_one();
-    }
-
-    void Wait() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [=] { return count_ > 0; });
-        --count_;
-    }
-
-private:
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    int count_;
-};*/
-
 // 定义一个用作词典键的结构体
 struct RoadKey {
     int lane_num;
@@ -445,7 +422,7 @@ public:
     vector<vector<int>> routeRoadID;
     vector<vector<int>> routeMovementID;
 
-    // Cycle-aware graph preparation
+    // Cycle-aware graph preparation（现行新算法依赖的核心结构构建）
     void build_new_graph_structures(vector<vector<int>>& routeDataForSimulation);
     void build_road_segments_from_legacy_roads();
     void initialize_nodes_from_roads();
@@ -531,6 +508,7 @@ public:
     vector<vector<pair<int, float>>> alg1Records(
             vector<vector<int>> &Q, vector<vector<int>> &Pi,
             bool range, bool server, bool catching, bool write, bool latency, string te_choose);
+    // 现行新算法主入口：基于 signal event + waiting buffer + discharge capacity 的仿真
     vector<vector<pair<int, float>>> cycle_aware_signal_driven_records(
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
     void initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vector<int>>& routeRoadID);

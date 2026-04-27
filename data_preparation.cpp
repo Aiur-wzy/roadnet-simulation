@@ -5,27 +5,12 @@
 void Graph::read_graph()
 {
 
-    // Both "BJ" and "BJ_NodeWeight" Contains Length Information on Node Pairs
-    // "BJ" Consider All Roads as Two-way & "BJ_NodeWeight" Contain some One-way
-    // A Few Node Pairs Are not Contained in "BJ_NodeWeight"
-    // Consider for The Suitable One
-
-    // Choice 1: Open File "BJ"
+    // 使用当前主数据源 "BJ" 构建基础路网（节点、边、RoadID 映射）
     ifstream IF(BJ);    //ID1, ID2, Weight (Length in Meters)
     if(!IF)
         cout<<"Cannot open Graph BJ"<<endl;
     //Read Node Number and Edge Number
     IF>>nodenum>>edgenum; // 296710 774660
-
-    /*
-    // Choice 2: Open File "BJ_NodeWeight"
-    ifstream IF(BJ_NodeWeight);    //ID1, ID2, Weight (Length in Meters)
-    if(!IF)
-        cout<<"Cannot open Graph BJ"<<endl;
-    // Read Node Number and Edge Number
-    IF>>nodenum; // 296710
-    edgenum = CountLines(BJ_NodeWeight); // 651748
-    */
 
     // Variable Initialization
     nodeID2RoadID.clear();
@@ -66,19 +51,6 @@ void Graph::read_graph()
         }
         edgeRedun.insert(make_pair(ID1,ID2));
     }
-    /*
-    // Print Graph Length as Weight
-    for (int i=0;i<graphLength.size();i++)
-    {
-        cout << i << ": ";
-        for (int j=0;j<graphLength[i].size();j++)
-        {
-            cout << graphLength[i][j].first << " " << graphLength[i][j].second << " ";
-        }
-        cout << endl;
-    }
-    */
-
     // Open File "BJ_minTravleTime"
     ifstream IFTime(BJ_minTravleTime);
     if(!IFTime){
@@ -106,18 +78,6 @@ void Graph::read_graph()
         }
         edgeRedunTime.insert(make_pair(ID1,ID2));
     }
-    /*
-    // Print Graph Min Travel Time as Weight
-    for (int i=0;i<graphTime.size();i++)
-    {
-        cout << i << ": ";
-        for (int j=0;j<graphTime[i].size();j++)
-        {
-            cout << graphTime[i][j].first << " " << graphTime[i][j].second << " ";
-        }
-        cout << endl;
-    }
-    */
 }
 
 // Read Road Information from Path "beijingMoreRoadInfo"
@@ -140,15 +100,12 @@ void Graph::read_road_info()
     int kindNumber;
     string kind;
     int routeIDGen;
-    // Count Number of Lines in This File
     int i = 0;
-    roadInforMore.resize(387587);       // 387587 comes from
+    roadInforMore.resize(387587);
     // Read In Info
     while(IFNodeRoadID >> nodeID1){
         IFNodeRoadID >> nodeID2 >> routeIDLei >> length >> direction;
         IFNodeRoadID >> speedLimit >> laneNum >> width >> kindNumber >> kind;
-        // Assign Read Info to Variables
-        // However, "i" Do Not Contain Any Info
         routeIDGen = nodeID2RoadID[make_pair(nodeID1, nodeID2)];
         roadInforMore[i].nodeID1 = nodeID1;
         roadInforMore[i].nodeID2 = nodeID2;
@@ -162,11 +119,7 @@ void Graph::read_road_info()
         roadInforMore[i].kind = kind;
         i++;
     }
-    // Add Road Info into "roadInfor"
-    // Index "i" of "roadInforMore" Do Not Contain Any Info
-    // Index "i" of "roadInfor" Inidicate Road ID
-    // Have to Move Info in "roadInforMore" to "roadInfor" for Further Application
-    // Otherwise, Road Info Cannot Be Index
+    // 将补充属性回填到 roadInfor[roadID]，供后续新算法结构化阶段直接读取
     for (int i=0;i<roadInforMore.size();i++)
     {
         roadInfor[roadInforMore[i].routeID].length = roadInforMore[i].length;
@@ -177,32 +130,6 @@ void Graph::read_road_info()
         roadInfor[roadInforMore[i].routeID].kindNumber = roadInforMore[i].kindNumber;
         roadInfor[roadInforMore[i].routeID].kind = roadInforMore[i].kind;
     }
-
-    /*
-    // Correctness Check
-    // "ID1 == 0" Should Appear Twice
-    // "ID2 == 0" Should Appear Twice
-    // "roadID == 0" Should Appear Once
-    for (int i=0;i<roadInfor.size();i++)
-    {
-        if (roadInfor[i].ID1 == 0)
-            cout << "ID1 is equal to 0" << endl;
-        if (roadInfor[i].ID2 == 0)
-            cout << "ID2 is equal to 0" << endl;
-        if (roadInfor[i].roadID == 0)
-            cout << "roadID is equal to 0" << endl;
-    }
-    */
-
-    /*
-    // Print
-    for (int i=0;i<roadInfor.size();i++)
-    {
-        if (roadInfor[i].ID1 == )
-        cout << "node pair: " << roadInfor[i].ID1 << " " << roadInfor[i].ID2;
-        cout << " with road ID: " << roadInfor[i].roadID << endl;
-    }
-    */
 }
 
 TurnDir Graph::parseTurnDir(char c)
@@ -217,7 +144,6 @@ TurnDir Graph::parseTurnDir(char c)
         case 'r':
         case 'R':
             return TurnDir::Right;
-        case 'u':
         case 'U':
             return TurnDir::UTurn;
         default:
@@ -227,6 +153,10 @@ TurnDir Graph::parseTurnDir(char c)
 
 void Graph::build_new_graph_structures(vector<vector<int>>& routeDataForSimulation)
 {
+    // 现行新算法预处理流水线：
+    // 1) 由传统数据映射生成结构化 road/node/intersection
+    // 2) 构建 movement/lane-group/signal/waiting-buffer
+    // 3) 将 route 转为 roadID + movementID，供 cycle-aware 调度直接使用
     build_road_segments_from_legacy_roads();
     initialize_nodes_from_roads();
     classify_node_types_assume_all_junctions_signalized();

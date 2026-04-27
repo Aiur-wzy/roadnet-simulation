@@ -784,6 +784,8 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
 
 vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
         vector<vector<int>> &Q, vector<vector<int>> &routeRoadIDInput) {
+    // 新算法核心：事件驱动（signal change）+ 候选放行队列（dispatchPQ）+ 缓冲区排队
+    // 每个信号事件触发一个 [currentTime, nextTime) 放行窗口，窗口内反复选择可放行候选车辆。
     vehicles.clear();
     ETA_result_cycle_aware.clear();
     finishedVehicleCount = 0;
@@ -845,6 +847,7 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
         b.vehicleQueue.clear();
     }
 
+    // 路径无法映射到 movement/buffer 的车辆标记为 invalid，并从评估集中排除。
     auto mark_invalid = [&](VehicleLabel &vehicle) {
         vehicle.valid = false;
         vehicle.finished = true;
@@ -911,6 +914,7 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
 }
 
 void Graph::initialize_signal_event_queue(int simStartTime) {
+    // 为每个受控信号注册“下一次状态切换”事件。
     while (!signalEventPQ.empty()) signalEventPQ.pop();
     for (const auto &signal : signals) {
         if (signal.alwaysOpen) continue;
@@ -922,6 +926,7 @@ void Graph::initialize_signal_event_queue(int simStartTime) {
 }
 
 void Graph::rebuildActiveDispatchPQ(int currentTime, int windowEnd) {
+    // 在当前放行窗口内，收集所有 active movement 的队首车辆作为候选。
     while (!dispatchPQ.empty()) dispatchPQ.pop();
     for (const auto &m : movements) {
         if (m.movementID < 0) continue;
@@ -941,6 +946,7 @@ void Graph::rebuildActiveDispatchPQ(int currentTime, int windowEnd) {
 }
 
 void Graph::process_discharge_window(int windowStart, int windowEnd) {
+    // 窗口内持续弹出“最早可放行”候选，直到无合法候选或越过窗口右边界。
     rebuildActiveDispatchPQ(windowStart, windowEnd);
     while (!dispatchPQ.empty()) {
         DispatchCandidate c = dispatchPQ.top();
@@ -973,6 +979,7 @@ bool Graph::isMovementActive(int movementID, int t) {
 
 bool Graph::canDischarge(int movementID, int dischargeTime, int windowEnd) {
     (void)windowEnd;
+    // 放行条件：相位有效 + 队首车辆已到达 + 下游存储可用 + 断面放行能力可用。
     if (!isMovementActive(movementID, dischargeTime)) return false;
     if (movementID < 0 || movementID >= movements.size()) return false;
     const Movement &m = movements[movementID];
