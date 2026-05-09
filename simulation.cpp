@@ -437,7 +437,12 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
             int node_2 = ETA_result[route_ID][j].first;
             float time_2 = ETA_result[route_ID][j].second;
 
-            int edge_ID = nodeID2RoadID[make_pair(node_1, node_2)];
+            auto roadIt = nodeID2RoadID.find(make_pair(node_1, node_2));
+            if (roadIt == nodeID2RoadID.end()) {
+                cout << "Warning. Missing road mapping for node pair: " << node_1 << " " << node_2 << endl;
+                continue;
+            }
+            int edge_ID = roadIt->second;
             float travel_time = time_2 - time_1;
 
             traffic_prediction_structure[route_ID].push_back(make_pair(edge_ID, travel_time));
@@ -662,12 +667,9 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
 }
 
 bool Graph::isMovementActive(int movementID, int t) {
-    if (movementID < 0 || movementID >= movements.size()) return false;
-    const Movement &m = movements[movementID];
-    if (m.alwaysOpen) return true;
-    if (m.signalID < 0 || m.signalID >= signals.size()) return false;
-    return signalStateAt(m.signalID, t) == SignalState::Green ||
-           signalStateAt(m.signalID, t) == SignalState::AlwaysOpen;
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return false;
+    SignalState state = signalStateAtMovement(movementID, t);
+    return state == SignalState::Green || state == SignalState::AlwaysOpen;
 }
 
 bool Graph::canDischarge(int movementID, int dischargeTime, int windowEnd) {
@@ -819,12 +821,25 @@ int Graph::nextAvailableCapacityTime(int intersectionID, int toRoadID, int t) {
 }
 
 bool Graph::hasDownstreamStorage(int roadID) {
-    // Placeholder:
-    // 当前版本尚未实现真实 downstream road storage / spillback 约束，
-    // 这里只保留接口并默认返回 true。
-    // 后续若引入道路存储上限，应在此根据 roadID 与占用状态进行判定。
-    (void)roadID;
-    return true;
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return false;
+    const RoadSegment &road = roads[roadID];
+    double vehicleLength = 5.0;
+    double gap = 1.0;
+    int capacity = road.storageCapacityVehicles;
+    if (capacity <= 0) {
+        capacity = static_cast<int>(floor(max(0.0, road.length) * max(1, road.laneNum) / (vehicleLength + gap)));
+    }
+    if (capacity <= 0) capacity = 1;
+
+    int waitingOnRoad = 0;
+    for (const auto &kv : road.movementIDToWaitingBufferID) {
+        int bufferID = kv.second;
+        if (bufferID >= 0 && bufferID < static_cast<int>(waitingBuffers.size())) {
+            waitingOnRoad += waitingBuffers[bufferID].vehicleCount();
+        }
+    }
+    int currentOccupancy = road.runningCount + waitingOnRoad;
+    return currentOccupancy < capacity;
 }
 
 int Graph::predictRoadTravelTime(int roadID, int vehicleID) {
@@ -855,33 +870,48 @@ void Graph::insertVehicleToBufferOrdered(int bufferID, int vehicleID) {
 }
 
 void Graph::handle_signal_change_event(const SignalEvent& e) {
-    if (e.signalID < 0 || e.signalID >= signals.size()) return;
-    signals[e.signalID].currentState = signalStateAt(e.signalID, e.time);
+    if (e.signalID < 0 || e.signalID >= static_cast<int>(signals.size())) return;
+    int movementID = signals[e.signalID].movementID;
+    signals[e.signalID].currentState = signalStateAtMovement(movementID, e.time);
 }
 
 int Graph::nextSignalChangeTime(int signalID, int afterTime) {
-    if (signalID < 0 || signalID >= signals.size()) return INF;
+    if (signalID < 0 || signalID >= static_cast<int>(signals.size())) return INF;
     const SignalController &s = signals[signalID];
-    if (s.alwaysOpen || s.cycleLength <= 0) return INF;
+    int movementID = s.movementID;
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return INF;
+    const Movement &m = movements[movementID];
+    if (m.alwaysOpen || m.tlID.empty()) return INF;
 
-    int cycle = s.cycleLength;
+    auto programIt = tlIDToSignalProgramID.find(m.tlID);
+    if (programIt == tlIDToSignalProgramID.end()) return INF;
+    const SignalProgram &p = signalPrograms[programIt->second];
+    if (p.cycleLength <= 0 || p.phases.empty()) return INF;
+
     int best = INF;
-    int baseK = (afterTime - s.offset) / cycle;
+    int baseK = (afterTime - p.offset) / p.cycleLength;
     for (int k = baseK - 1; k <= baseK + 2; ++k) {
-        int t1 = s.offset + k * cycle + s.greenStart;
-        int t2 = s.offset + k * cycle + s.greenEnd;
-        if (t1 >= afterTime) best = min(best, t1);
-        if (t2 >= afterTime) best = min(best, t2);
+        for (const auto &phase : p.phases) {
+            int start = p.offset + k * p.cycleLength + phase.startTime;
+            int end = p.offset + k * p.cycleLength + phase.endTime;
+            if (start >= afterTime) best = min(best, start);
+            if (end >= afterTime) best = min(best, end);
+        }
     }
     return best;
 }
 
 SignalState Graph::signalStateAt(int signalID, int t) {
-    if (signalID < 0 || signalID >= signals.size()) return SignalState::Red;
+    if (signalID < 0 || signalID >= static_cast<int>(signals.size())) return SignalState::Red;
+    int movementID = signals[signalID].movementID;
+    if (movementID >= 0 && movementID < static_cast<int>(movements.size())) {
+        return signalStateAtMovement(movementID, t);
+    }
+
+    // Legacy fallback for old BJ workflow controllers.
     const SignalController &s = signals[signalID];
     if (s.alwaysOpen) return SignalState::AlwaysOpen;
     if (s.cycleLength <= 0) return SignalState::Red;
-
     int local = (t - s.offset) % s.cycleLength;
     if (local < 0) local += s.cycleLength;
     if (s.greenStart <= s.greenEnd) {

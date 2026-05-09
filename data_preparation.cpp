@@ -144,6 +144,540 @@ void Graph::read_road_info()
     }
 }
 
+namespace {
+struct XmlTagLite {
+    string name;
+    map<string, string> attrs;
+    bool closing = false;
+    bool selfClosing = false;
+};
+
+string trim_copy(const string &s) {
+    size_t b = 0;
+    while (b < s.size() && isspace(static_cast<unsigned char>(s[b]))) ++b;
+    size_t e = s.size();
+    while (e > b && isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+    return s.substr(b, e - b);
+}
+
+vector<string> split_ws(const string &s) {
+    vector<string> out;
+    string token;
+    istringstream iss(s);
+    while (iss >> token) out.push_back(token);
+    return out;
+}
+
+int to_int_attr(const map<string, string> &attrs, const string &key, int def = 0) {
+    auto it = attrs.find(key);
+    if (it == attrs.end() || it->second.empty()) return def;
+    try { return stoi(it->second); } catch (...) { return def; }
+}
+
+double to_double_attr(const map<string, string> &attrs, const string &key, double def = 0.0) {
+    auto it = attrs.find(key);
+    if (it == attrs.end() || it->second.empty()) return def;
+    try { return stod(it->second); } catch (...) { return def; }
+}
+
+string to_string_attr(const map<string, string> &attrs, const string &key, const string &def = "") {
+    auto it = attrs.find(key);
+    return (it == attrs.end()) ? def : it->second;
+}
+
+bool parse_xml_tag_lite(const string &raw, XmlTagLite &tag) {
+    string s = trim_copy(raw);
+    if (s.empty() || s[0] == '?' || s.rfind("!--", 0) == 0 || s.rfind("!", 0) == 0) return false;
+    if (!s.empty() && s.back() == '/') {
+        tag.selfClosing = true;
+        s.pop_back();
+        s = trim_copy(s);
+    }
+    if (!s.empty() && s[0] == '/') {
+        tag.closing = true;
+        s = trim_copy(s.substr(1));
+    }
+    size_t pos = 0;
+    while (pos < s.size() && !isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+    tag.name = s.substr(0, pos);
+    while (pos < s.size()) {
+        while (pos < s.size() && isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+        if (pos >= s.size()) break;
+        size_t keyStart = pos;
+        while (pos < s.size() && s[pos] != '=' && !isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+        string key = s.substr(keyStart, pos - keyStart);
+        while (pos < s.size() && isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+        if (pos >= s.size() || s[pos] != '=') break;
+        ++pos;
+        while (pos < s.size() && isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+        if (pos >= s.size()) break;
+        char quote = s[pos];
+        string value;
+        if (quote == '\'' || quote == '"') {
+            ++pos;
+            size_t valueStart = pos;
+            while (pos < s.size() && s[pos] != quote) ++pos;
+            value = s.substr(valueStart, pos - valueStart);
+            if (pos < s.size()) ++pos;
+        } else {
+            size_t valueStart = pos;
+            while (pos < s.size() && !isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+            value = s.substr(valueStart, pos - valueStart);
+        }
+        tag.attrs[key] = value;
+    }
+    return !tag.name.empty();
+}
+
+vector<XmlTagLite> parse_xml_tags_lite(const string &xml) {
+    vector<XmlTagLite> tags;
+    size_t pos = 0;
+    while (true) {
+        size_t open = xml.find('<', pos);
+        if (open == string::npos) break;
+        size_t close = xml.find('>', open + 1);
+        if (close == string::npos) break;
+        XmlTagLite tag;
+        if (parse_xml_tag_lite(xml.substr(open + 1, close - open - 1), tag)) {
+            tags.push_back(tag);
+        }
+        pos = close + 1;
+    }
+    return tags;
+}
+
+bool is_sumo_internal_edge(const string &edgeID, const string &function) {
+    return (!edgeID.empty() && edgeID[0] == ':') || function == "internal";
+}
+
+char turn_dir_to_sumo_char(TurnDir d) {
+    if (d == TurnDir::Left) return 'l';
+    if (d == TurnDir::Straight) return 's';
+    if (d == TurnDir::Right) return 'r';
+    if (d == TurnDir::UTurn) return 't';
+    return '?';
+}
+
+string signal_state_to_string(SignalState s) {
+    if (s == SignalState::Green) return "Green";
+    if (s == SignalState::Yellow) return "Yellow";
+    if (s == SignalState::AlwaysOpen) return "AlwaysOpen";
+    return "Red";
+}
+}
+
+void Graph::read_sumo_net_xml(const string& netXmlPath)
+{
+    ifstream in(netXmlPath.c_str());
+    if (!in) {
+        cout << "Cannot open SUMO net XML: " << netXmlPath << endl;
+        return;
+    }
+    stringstream buffer;
+    buffer << in.rdbuf();
+    vector<XmlTagLite> tags = parse_xml_tags_lite(buffer.str());
+
+    sumoNodeStrToID.clear();
+    nodeIDToSumoNodeStr.clear();
+    sumoEdgeStrToRoadID.clear();
+    roadIDToSumoEdgeStr.clear();
+    tlIDToSignalProgramID.clear();
+    sumoEdgesRaw.clear();
+    sumoJunctionsRaw.clear();
+    sumoConnectionsRaw.clear();
+    sumoSignalPrograms.clear();
+    signalPrograms.clear();
+    nodeID2RoadID.clear();
+    roadID2NodeID.clear();
+    nodeID2minTime.clear();
+    roadInfor.clear();
+    roads.clear();
+    nodes.clear();
+    graphLength.clear();
+    graphRoadID.clear();
+    adjNodes.clear();
+
+    SumoEdgeRaw *currentEdge = nullptr;
+    SumoSignalProgram *currentTL = nullptr;
+    int totalEdges = 0;
+    int skippedInternalEdges = 0;
+
+    for (const auto &tag : tags) {
+        if (tag.name == "edge" && !tag.closing) {
+            ++totalEdges;
+            SumoEdgeRaw edge;
+            edge.id = to_string_attr(tag.attrs, "id");
+            edge.from = to_string_attr(tag.attrs, "from");
+            edge.to = to_string_attr(tag.attrs, "to");
+            edge.function = to_string_attr(tag.attrs, "function");
+            edge.priority = to_int_attr(tag.attrs, "priority", 0);
+            edge.isInternal = is_sumo_internal_edge(edge.id, edge.function);
+            sumoEdgesRaw.push_back(edge);
+            currentEdge = &sumoEdgesRaw.back();
+            if (edge.isInternal) ++skippedInternalEdges;
+            if (tag.selfClosing) currentEdge = nullptr;
+        } else if (tag.name == "edge" && tag.closing) {
+            currentEdge = nullptr;
+        } else if (tag.name == "lane" && !tag.closing && currentEdge != nullptr) {
+            SumoLaneRaw lane;
+            lane.id = to_string_attr(tag.attrs, "id");
+            lane.index = to_int_attr(tag.attrs, "index", static_cast<int>(currentEdge->lanes.size()));
+            lane.speed = to_double_attr(tag.attrs, "speed", 0.0);
+            lane.length = to_double_attr(tag.attrs, "length", 0.0);
+            lane.shape = to_string_attr(tag.attrs, "shape");
+            currentEdge->lanes.push_back(lane);
+        } else if (tag.name == "junction" && !tag.closing) {
+            SumoJunctionRaw j;
+            j.id = to_string_attr(tag.attrs, "id");
+            j.type = to_string_attr(tag.attrs, "type");
+            j.x = to_double_attr(tag.attrs, "x", 0.0);
+            j.y = to_double_attr(tag.attrs, "y", 0.0);
+            j.incLanes = split_ws(to_string_attr(tag.attrs, "incLanes"));
+            j.intLanes = split_ws(to_string_attr(tag.attrs, "intLanes"));
+            sumoJunctionsRaw.push_back(j);
+        } else if (tag.name == "connection" && !tag.closing) {
+            SumoConnectionRaw c;
+            c.fromEdge = to_string_attr(tag.attrs, "from");
+            c.toEdge = to_string_attr(tag.attrs, "to");
+            c.fromLane = to_int_attr(tag.attrs, "fromLane", -1);
+            c.toLane = to_int_attr(tag.attrs, "toLane", -1);
+            c.via = to_string_attr(tag.attrs, "via");
+            c.tl = to_string_attr(tag.attrs, "tl");
+            c.linkIndex = to_int_attr(tag.attrs, "linkIndex", -1);
+            string dir = to_string_attr(tag.attrs, "dir");
+            c.dir = dir.empty() ? TurnDir::Unknown : parseTurnDir(dir[0]);
+            string state = to_string_attr(tag.attrs, "state", "O");
+            c.state = state.empty() ? 'O' : state[0];
+            sumoConnectionsRaw.push_back(c);
+        } else if (tag.name == "tlLogic" && !tag.closing) {
+            SumoSignalProgram p;
+            p.tlID = to_string_attr(tag.attrs, "id");
+            p.type = to_string_attr(tag.attrs, "type");
+            p.programID = to_string_attr(tag.attrs, "programID");
+            p.offset = to_int_attr(tag.attrs, "offset", 0);
+            sumoSignalPrograms.push_back(p);
+            currentTL = &sumoSignalPrograms.back();
+            if (tag.selfClosing) currentTL = nullptr;
+        } else if (tag.name == "tlLogic" && tag.closing) {
+            currentTL = nullptr;
+        } else if (tag.name == "phase" && !tag.closing && currentTL != nullptr) {
+            SumoSignalPhase phase;
+            phase.duration = to_int_attr(tag.attrs, "duration", 0);
+            phase.startTime = currentTL->cycleLength;
+            phase.endTime = phase.startTime + phase.duration;
+            phase.state = to_string_attr(tag.attrs, "state");
+            currentTL->cycleLength = phase.endTime;
+            currentTL->phases.push_back(phase);
+        }
+    }
+
+    int nodeID = 0;
+    for (const auto &j : sumoJunctionsRaw) {
+        if (j.id.empty()) continue;
+        sumoNodeStrToID[j.id] = nodeID;
+        nodeIDToSumoNodeStr[nodeID] = j.id;
+        ++nodeID;
+    }
+    nodenum = nodeID;
+    graphLength.assign(nodenum, vector<pair<int, float>>());
+    graphRoadID.assign(nodenum, vector<pair<int, int>>());
+    adjNodes.assign(nodenum, set<int>());
+    nodes.resize(nodenum);
+    for (int i = 0; i < nodenum; ++i) nodes[i].nodeID = i;
+
+    int roadID = 0;
+    for (const auto &edge : sumoEdgesRaw) {
+        if (edge.isInternal) continue;
+        if (edge.id.empty()) continue;
+        auto fromIt = sumoNodeStrToID.find(edge.from);
+        auto toIt = sumoNodeStrToID.find(edge.to);
+        if (fromIt == sumoNodeStrToID.end() || toIt == sumoNodeStrToID.end()) {
+            cout << "[SUMO Warning] edge has missing junction endpoint and is skipped as normal road: "
+                 << edge.id << " from=" << edge.from << " to=" << edge.to << endl;
+            continue;
+        }
+        sumoEdgeStrToRoadID[edge.id] = roadID;
+        roadIDToSumoEdgeStr[roadID] = edge.id;
+
+        double lengthSum = 0.0, speedSum = 0.0;
+        int validLen = 0, validSpeed = 0;
+        for (const auto &lane : edge.lanes) {
+            if (lane.length > 0) { lengthSum += lane.length; ++validLen; }
+            if (lane.speed > 0) { speedSum += lane.speed; ++validSpeed; }
+        }
+        double length = validLen > 0 ? lengthSum / validLen : 0.0;
+        double speed = validSpeed > 0 ? speedSum / validSpeed : 1.0;
+        int fromNode = fromIt->second;
+        int toNode = toIt->second;
+
+        Road legacy;
+        legacy.roadID = roadID;
+        legacy.ID1 = fromNode;
+        legacy.ID2 = toNode;
+        legacy.length = static_cast<int>(round(length));
+        legacy.travelTime = max(1, static_cast<int>(round(length / max(0.1, speed))));
+        legacy.direction = 0;
+        legacy.speedLimit = static_cast<int>(round(speed));
+        legacy.laneNum = max(1, static_cast<int>(edge.lanes.size()));
+        legacy.width = 0;
+        legacy.kindNumber = edge.priority;
+        legacy.kind = edge.function.empty() ? "sumo" : edge.function;
+        roadInfor.push_back(legacy);
+
+        RoadSegment segment;
+        segment.roadID = roadID;
+        segment.fromNode = fromNode;
+        segment.toNode = toNode;
+        segment.length = length;
+        segment.speedLimit = speed;
+        segment.laneNum = legacy.laneNum;
+        segment.kindNumber = edge.priority;
+        segment.kind = legacy.kind;
+        segment.minTravelTime = max(1.0, length / max(0.1, speed));
+        roads.push_back(segment);
+        roadIDToRoadIndex[roadID] = roadID;
+
+        nodeID2RoadID[make_pair(fromNode, toNode)] = roadID;
+        roadID2NodeID[roadID] = make_pair(fromNode, toNode);
+        nodeID2minTime[make_pair(fromNode, toNode)] = legacy.travelTime;
+        graphLength[fromNode].push_back(make_pair(toNode, static_cast<float>(length)));
+        graphRoadID[fromNode].push_back(make_pair(toNode, roadID));
+        adjNodes[fromNode].insert(toNode);
+        nodes[fromNode].outgoingRoads.push_back(roadID);
+        nodes[toNode].incomingRoads.push_back(roadID);
+        outgoingRoadsByNode[fromNode].push_back(roadID);
+        incomingRoadsByNode[toNode].push_back(roadID);
+        ++roadID;
+    }
+    edgenum = roadID;
+
+    cout << "[SUMO] parsed edge tags: " << totalEdges << endl;
+    cout << "[SUMO] parsed normal roads: " << edgenum << endl;
+    cout << "[SUMO] skipped internal edges: " << skippedInternalEdges << endl;
+    cout << "[SUMO] junctions: " << sumoJunctionsRaw.size() << endl;
+    cout << "[SUMO] connections: " << sumoConnectionsRaw.size() << endl;
+    cout << "[SUMO] tlLogics: " << sumoSignalPrograms.size() << endl;
+    size_t phaseCount = 0;
+    for (const auto &p : sumoSignalPrograms) phaseCount += p.phases.size();
+    cout << "[SUMO] phases: " << phaseCount << endl;
+}
+
+void Graph::classify_node_types_from_sumo_junctions()
+{
+    for (auto &node : nodes) node.type = NodeType::NormalSplit;
+    for (const auto &j : sumoJunctionsRaw) {
+        auto it = sumoNodeStrToID.find(j.id);
+        if (it == sumoNodeStrToID.end()) continue;
+        int nodeID = it->second;
+        if (nodeID < 0 || nodeID >= static_cast<int>(nodes.size())) continue;
+        if (j.type == "traffic_light") {
+            nodes[nodeID].type = NodeType::SignalizedJunction;
+        } else if (j.type == "priority" || j.type == "right_before_left") {
+            nodes[nodeID].type = NodeType::UnsignalizedJunction;
+        } else {
+            nodes[nodeID].type = NodeType::NormalSplit;
+        }
+    }
+}
+
+void Graph::build_movements_from_sumo_connections()
+{
+    movements.clear();
+    roadPairToMovementID.clear();
+    fromToRoadToMovementIDs.clear();
+    movementKeyToID.clear();
+    outgoingMovementsByRoad.clear();
+    incomingMovementsByRoad.clear();
+    movementIDsByIntersection.clear();
+    for (auto &inter : intersections) inter.movementIDs.clear();
+
+    for (const auto &c : sumoConnectionsRaw) {
+        auto fromIt = sumoEdgeStrToRoadID.find(c.fromEdge);
+        auto toIt = sumoEdgeStrToRoadID.find(c.toEdge);
+        if (fromIt == sumoEdgeStrToRoadID.end() || toIt == sumoEdgeStrToRoadID.end()) {
+            continue;
+        }
+        int fromRoadID = fromIt->second;
+        int toRoadID = toIt->second;
+        string key = to_string(fromRoadID) + "|" + to_string(toRoadID) + "|" + c.tl + "|" + to_string(c.linkIndex);
+        int movementID;
+        auto existing = movementKeyToID.find(key);
+        if (existing != movementKeyToID.end()) {
+            movementID = existing->second;
+        } else {
+            movementID = static_cast<int>(movements.size());
+            Movement m;
+            m.movementID = movementID;
+            m.fromRoadID = fromRoadID;
+            m.toRoadID = toRoadID;
+            m.turn = c.dir;
+            m.tlID = c.tl;
+            m.linkIndex = c.linkIndex;
+            m.defaultConnectionState = c.state;
+            m.alwaysOpen = c.tl.empty();
+            int downstreamNode = roads[fromRoadID].toNode;
+            if (downstreamNode >= 0 && downstreamNode < static_cast<int>(nodes.size()) &&
+                nodes[downstreamNode].type == NodeType::SignalizedJunction) {
+                m.intersectionID = nodes[downstreamNode].intersectionID;
+            }
+            movements.push_back(m);
+            movementKeyToID[key] = movementID;
+            fromToRoadToMovementIDs[make_pair(fromRoadID, toRoadID)].push_back(movementID);
+            if (roadPairToMovementID.find(make_pair(fromRoadID, toRoadID)) == roadPairToMovementID.end()) {
+                roadPairToMovementID[make_pair(fromRoadID, toRoadID)] = movementID;
+            }
+            outgoingMovementsByRoad[fromRoadID].push_back(movementID);
+            incomingMovementsByRoad[toRoadID].push_back(movementID);
+            if (m.intersectionID >= 0 && m.intersectionID < static_cast<int>(intersections.size())) {
+                intersections[m.intersectionID].movementIDs.push_back(movementID);
+                movementIDsByIntersection[m.intersectionID].push_back(movementID);
+            }
+        }
+        auto add_unique_int = [](vector<int> &v, int x) {
+            if (x < 0) return;
+            if (find(v.begin(), v.end(), x) == v.end()) v.push_back(x);
+        };
+        add_unique_int(movements[movementID].fromLanes, c.fromLane);
+        add_unique_int(movements[movementID].toLanes, c.toLane);
+    }
+    cout << "[SUMO] movements: " << movements.size() << endl;
+}
+
+void Graph::build_lane_groups_from_sumo_connections()
+{
+    laneGroups.clear();
+    laneGroupsByRoad.clear();
+    roadTurnToLaneGroupID.clear();
+    for (auto &m : movements) m.laneGroupID = -1;
+
+    map<int, int> movementToLaneGroup;
+    for (auto &m : movements) {
+        LaneGroup group;
+        group.laneGroupID = static_cast<int>(laneGroups.size());
+        group.roadID = m.fromRoadID;
+        group.turn = m.turn;
+        group.laneIndices = m.fromLanes;
+        sort(group.laneIndices.begin(), group.laneIndices.end());
+        group.laneIndices.erase(unique(group.laneIndices.begin(), group.laneIndices.end()), group.laneIndices.end());
+        if (group.laneIndices.empty()) group.laneIndices.push_back(0);
+        group.allowedToRoads.push_back(m.toRoadID);
+        laneGroups.push_back(group);
+        m.laneGroupID = group.laneGroupID;
+        laneGroupsByRoad[m.fromRoadID].push_back(group.laneGroupID);
+        if (roadTurnToLaneGroupID.find(make_pair(m.fromRoadID, m.turn)) == roadTurnToLaneGroupID.end()) {
+            roadTurnToLaneGroupID[make_pair(m.fromRoadID, m.turn)] = group.laneGroupID;
+        }
+    }
+    cout << "[SUMO] lane groups: " << laneGroups.size() << endl;
+}
+
+void Graph::build_signal_programs_from_sumo_tllogic()
+{
+    signalPrograms.clear();
+    tlIDToSignalProgramID.clear();
+    for (const auto &raw : sumoSignalPrograms) {
+        SignalProgram p;
+        p.tlID = raw.tlID;
+        p.offset = raw.offset;
+        p.cycleLength = 0;
+        for (const auto &rawPhase : raw.phases) {
+            SignalPhase phase;
+            phase.startTime = p.cycleLength;
+            phase.endTime = p.cycleLength + rawPhase.duration;
+            phase.state = rawPhase.state;
+            p.cycleLength = phase.endTime;
+            p.phases.push_back(phase);
+        }
+        int id = static_cast<int>(signalPrograms.size());
+        signalPrograms.push_back(p);
+        tlIDToSignalProgramID[p.tlID] = id;
+    }
+
+    signals.clear();
+    signalIDsByIntersection.clear();
+    for (auto &inter : intersections) inter.signalIDs.clear();
+    for (auto &m : movements) {
+        SignalController s;
+        s.signalID = static_cast<int>(signals.size());
+        s.intersectionID = m.intersectionID;
+        s.movementID = m.movementID;
+        s.alwaysOpen = m.alwaysOpen || m.tlID.empty();
+        auto programIt = tlIDToSignalProgramID.find(m.tlID);
+        if (programIt != tlIDToSignalProgramID.end()) {
+            const SignalProgram &p = signalPrograms[programIt->second];
+            s.cycleLength = p.cycleLength;
+            s.offset = p.offset;
+        }
+        s.currentState = s.alwaysOpen ? SignalState::AlwaysOpen : SignalState::Red;
+        signals.push_back(s);
+        m.signalID = s.signalID;
+        if (s.intersectionID >= 0 && s.intersectionID < static_cast<int>(intersections.size())) {
+            intersections[s.intersectionID].signalIDs.push_back(s.signalID);
+            signalIDsByIntersection[s.intersectionID].push_back(s.signalID);
+        }
+    }
+    cout << "[SUMO] signal programs: " << signalPrograms.size() << endl;
+    cout << "[SUMO] movement signal controllers: " << signals.size() << endl;
+}
+
+void Graph::build_new_graph_structures_from_sumo()
+{
+    classify_node_types_from_sumo_junctions();
+    build_intersections_from_signalized_nodes();
+    build_movements_from_sumo_connections();
+    build_lane_groups_from_sumo_connections();
+    build_signal_programs_from_sumo_tllogic();
+    build_waiting_buffers();
+    cout << "[SUMO] waiting buffers: " << waitingBuffers.size() << endl;
+    validate_cycle_aware_graph();
+}
+
+SignalState Graph::signalStateAtMovement(int movementID, int t)
+{
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return SignalState::Red;
+    const Movement &m = movements[movementID];
+    if (m.alwaysOpen) return SignalState::AlwaysOpen;
+    if (m.tlID.empty()) {
+        if (m.signalID >= 0 && m.signalID < static_cast<int>(signals.size())) {
+            const SignalController &s = signals[m.signalID];
+            if (s.alwaysOpen) return SignalState::AlwaysOpen;
+            if (s.cycleLength <= 0) return SignalState::Red;
+            int local = (t - s.offset) % s.cycleLength;
+            if (local < 0) local += s.cycleLength;
+            if (s.greenStart <= s.greenEnd) {
+                return (local >= s.greenStart && local < s.greenEnd) ? SignalState::Green : SignalState::Red;
+            }
+            return (local >= s.greenStart || local < s.greenEnd) ? SignalState::Green : SignalState::Red;
+        }
+        return SignalState::AlwaysOpen;
+    }
+    auto programIt = tlIDToSignalProgramID.find(m.tlID);
+    if (programIt == tlIDToSignalProgramID.end()) {
+        cout << "[SUMO Warning] missing tlLogic for movement " << movementID << " tl=" << m.tlID << endl;
+        return SignalState::Red;
+    }
+    const SignalProgram &p = signalPrograms[programIt->second];
+    if (p.cycleLength <= 0 || p.phases.empty()) return SignalState::Red;
+    int local = (t - p.offset) % p.cycleLength;
+    if (local < 0) local += p.cycleLength;
+    for (const auto &phase : p.phases) {
+        if (local >= phase.startTime && local < phase.endTime) {
+            if (m.linkIndex < 0 || m.linkIndex >= static_cast<int>(phase.state.size())) {
+                cout << "[SUMO Warning] movement " << movementID << " linkIndex " << m.linkIndex
+                     << " outside state size " << phase.state.size() << " for tl=" << m.tlID << endl;
+                return SignalState::Red;
+            }
+            char s = phase.state[m.linkIndex];
+            if (s == 'G' || s == 'g' || s == 'O') return SignalState::Green;
+            if (s == 'y' || s == 'Y') return SignalState::Yellow;
+            if (s == 'r' || s == 'R') return SignalState::Red;
+            cout << "[SUMO Warning] unknown signal char '" << s << "' for movement " << movementID << endl;
+            return SignalState::Red;
+        }
+    }
+    return SignalState::Red;
+}
+
 TurnDir Graph::parseTurnDir(char c)
 {
     switch (c) {
@@ -493,6 +1027,7 @@ void Graph::route_roadID_2_movementID()
     routeMovementID.resize(routeRoadID.size());
 
     int missingMovements = 0;
+    int ambiguousMovements = 0;
     for (int i = 0; i < routeRoadID.size(); ++i) {
         if (routeRoadID[i].size() <= 1) {
             continue;
@@ -500,13 +1035,35 @@ void Graph::route_roadID_2_movementID()
         for (int j = 0; j + 1 < routeRoadID[i].size(); ++j) {
             int fromRoad = routeRoadID[i][j];
             int toRoad = routeRoadID[i][j + 1];
-            auto it = roadPairToMovementID.find(make_pair(fromRoad, toRoad));
-            if (it != roadPairToMovementID.end()) {
-                routeMovementID[i].push_back(it->second);
+            int selectedMovementID = -1;
+            auto multiIt = fromToRoadToMovementIDs.find(make_pair(fromRoad, toRoad));
+            if (multiIt != fromToRoadToMovementIDs.end() && !multiIt->second.empty()) {
+                selectedMovementID = multiIt->second.front();
+                for (int candidate : multiIt->second) {
+                    if (candidate >= 0 && candidate < static_cast<int>(movements.size()) &&
+                        movements[candidate].linkIndex >= 0) {
+                        selectedMovementID = candidate;
+                        break;
+                    }
+                }
+                if (multiIt->second.size() > 1) {
+                    ++ambiguousMovements;
+                }
+            } else {
+                auto it = roadPairToMovementID.find(make_pair(fromRoad, toRoad));
+                if (it != roadPairToMovementID.end()) selectedMovementID = it->second;
+            }
+
+            if (selectedMovementID >= 0) {
+                routeMovementID[i].push_back(selectedMovementID);
             } else {
                 ++missingMovements;
             }
         }
+    }
+    if (ambiguousMovements > 0) {
+        cout << "[Validation] ambiguous fromRoad->toRoad movement choices (preferred valid linkIndex): "
+             << ambiguousMovements << endl;
     }
     if (missingMovements > 0) {
         cout << "[Validation] missing movements from route conversion: " << missingMovements << endl;
@@ -552,7 +1109,7 @@ void Graph::validate_cycle_aware_graph()
             ++missingLaneGroup;
         }
         if (movement.intersectionID >= 0) {
-            if (movement.signalID < 0) {
+            if (!movement.alwaysOpen && movement.signalID < 0) {
                 ++missingSignal;
             }
             if (movement.fromRoadID >= 0 && movement.fromRoadID < roads.size()) {
@@ -775,14 +1332,10 @@ tuple<vector<int>, int> Graph::read_time_no_wait(string filename, int num) {
 // Remove data with duplicate values
 void Graph::removeDuplicates()
 {
-
-    vector<int> indicesToRemove;
-
-    for (int i=0;i<routeDataRaw.size(); ++i) {
+    vector<int> validIndices;
+    for (int i = 0; i < static_cast<int>(routeDataRaw.size()); ++i) {
         unordered_set<int> seenElements;
         bool isDuplicateFound = false;
-
-        // 检查 queryDataRaw 中的每个 vector 是否有重复元素
         for (int elem : routeDataRaw[i]) {
             if (seenElements.find(elem) != seenElements.end()) {
                 isDuplicateFound = true;
@@ -790,31 +1343,30 @@ void Graph::removeDuplicates()
             }
             seenElements.insert(elem);
         }
-
-        if (isDuplicateFound) {
-            // 如果找到重复，记录要删除的索引
-            indicesToRemove.push_back(i);
-        }
+        if (!isDuplicateFound) validIndices.push_back(i);
     }
 
-    // 逆序删除元素，以免改变未处理的元素的索引
-    for (auto it = indicesToRemove.rbegin(); it != indicesToRemove.rend(); ++it) {
-        // cout << "Removing duplicate at index: " << *it << endl;
-
-        // 从所有三个 vector 中删除对应的元素
-        queryDataRaw.erase(queryDataRaw.begin() + *it);
-        routeDataRaw.erase(routeDataRaw.begin() + *it);
-        // timeDataRaw.erase(timeDataRaw.begin() + *it);
+    vector<vector<int>> newQueryDataRaw;
+    vector<vector<int>> newRouteDataRaw;
+    vector<vector<int>> newTimeDataRaw;
+    for (int idx : validIndices) {
+        if (idx < static_cast<int>(queryDataRaw.size())) newQueryDataRaw.push_back(queryDataRaw[idx]);
+        if (idx < static_cast<int>(routeDataRaw.size())) newRouteDataRaw.push_back(routeDataRaw[idx]);
+        if (idx < static_cast<int>(timeDataRaw.size())) newTimeDataRaw.push_back(timeDataRaw[idx]);
     }
-    // Check if route data, query data, and time data size are same
+    queryDataRaw.swap(newQueryDataRaw);
+    routeDataRaw.swap(newRouteDataRaw);
+    timeDataRaw.swap(newTimeDataRaw);
     check_size();
 }
 
 // Check if route data, query data, and time data size are same
 void Graph::check_size(){
-    // if (!(queryDataRaw.size() == routeDataRaw.size() && routeDataRaw.size() == timeDataRaw.size())) {
-    if (!(queryDataRaw.size() == routeDataRaw.size()) and queryDataRaw.size() == timeDataRaw.size() ) {
+    if (queryDataRaw.size() != routeDataRaw.size() || routeDataRaw.size() != timeDataRaw.size()) {
         cout << "Error. Data sizes are different." << endl;
+        cout << "query=" << queryDataRaw.size()
+             << " route=" << routeDataRaw.size()
+             << " time=" << timeDataRaw.size() << endl;
     }
     else{
         cout << "Size of route, query, and time data currently is : " << routeDataRaw.size() << endl;
@@ -898,8 +1450,9 @@ void Graph::route_nodeID_2_roadID(vector<vector<int>> &routeData)
             node01 = routeData[i][j];
             node02 = routeData[i][j+1];
             // If Node Pairs Contained, Convert
-            if (nodeID2RoadID.find(make_pair(node01,node02)) != nodeID2RoadID.end()){
-                roadID = nodeID2RoadID[make_pair(node01,node02)];
+            auto roadIt = nodeID2RoadID.find(make_pair(node01,node02));
+            if (roadIt != nodeID2RoadID.end()){
+                roadID = roadIt->second;
                 routeRoadID[i][j] = roadID;
             }
             else{
@@ -933,8 +1486,9 @@ void Graph::route_nodeID_2_roadID_single(vector<int> &routeData)
     for (int i = 0; i < route_roadID_single.size(); ++i) {
         node01 = routeData[i];
         node02 = routeData[i + 1];
-        if (nodeID2RoadID.find(make_pair(node01, node02)) != nodeID2RoadID.end()){
-            roadID = nodeID2RoadID[make_pair(node01, node02)];
+        auto roadIt = nodeID2RoadID.find(make_pair(node01, node02));
+        if (roadIt != nodeID2RoadID.end()){
+            roadID = roadIt->second;
             route_roadID_single[i] = roadID;
         }
         else{
@@ -1030,8 +1584,14 @@ void Graph::classify_latency_function()
             // roadRange.clear();
             // roadRange.resize(1);
             int flow = 0;
-            int minTravelTime = nodeID2minTime[make_pair(ID1, ID2)];
-            int roadID = nodeID2RoadID[make_pair(ID1,ID2)];
+            auto minTimeIt = nodeID2minTime.find(make_pair(ID1, ID2));
+            auto roadIt = nodeID2RoadID.find(make_pair(ID1, ID2));
+            if (minTimeIt == nodeID2minTime.end() || roadIt == nodeID2RoadID.end()) {
+                cout << "Warning. Missing road/min-time mapping for node pair: " << ID1 << " " << ID2 << endl;
+                continue;
+            }
+            int minTravelTime = minTimeIt->second;
+            int roadID = roadIt->second;
             // area = length * laneNum
             // cap = area / 2
             int length = roadInfor[roadID].length;

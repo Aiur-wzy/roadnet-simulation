@@ -23,14 +23,41 @@
 #include <deque>
 #include <thread>
 #include <future>
-#include <boost/thread/thread.hpp>
+#include <memory>
+#if defined(__has_include)
+#  if __has_include(<boost/thread/thread.hpp>) && __has_include(<boost/thread.hpp>)
+#    include <boost/thread/thread.hpp>
+#    include <boost/thread.hpp>
+#    define ROADNET_HAS_BOOST_THREAD 1
+#  endif
+#endif
+#ifndef ROADNET_HAS_BOOST_THREAD
+namespace boost {
+    using std::ref;
+    using thread = std::thread;
+    class thread_group {
+    public:
+        ~thread_group() { join_all(); }
+        void add_thread(std::thread *t) { threads.emplace_back(t); }
+        void join_all() {
+            for (auto &t : threads) {
+                if (t && t->joinable()) t->join();
+            }
+            threads.clear();
+        }
+    private:
+        std::vector<std::unique_ptr<std::thread>> threads;
+    };
+}
+#endif
 #include <semaphore.h>
-#include "boost/thread.hpp"
 #include <time.h>
 #include <cstdlib>
 #include <random>
 #include <queue>
 #include <tuple>
+#include <cctype>
+#include <cassert>
 
 #include <iostream>
 #include <sys/types.h>
@@ -189,6 +216,75 @@ enum class VehicleState {
     Finished
 };
 
+
+struct SumoLaneRaw {
+    string id;
+    int index = -1;
+    double speed = 0.0;
+    double length = 0.0;
+    string shape;
+};
+
+struct SumoEdgeRaw {
+    string id;
+    string from;
+    string to;
+    string function;
+    int priority = 0;
+    vector<SumoLaneRaw> lanes;
+    bool isInternal = false;
+};
+
+struct SumoJunctionRaw {
+    string id;
+    string type;
+    double x = 0.0;
+    double y = 0.0;
+    vector<string> incLanes;
+    vector<string> intLanes;
+};
+
+struct SumoConnectionRaw {
+    string fromEdge;
+    string toEdge;
+    int fromLane = -1;
+    int toLane = -1;
+    string via;
+    string tl;
+    int linkIndex = -1;
+    TurnDir dir = TurnDir::Unknown;
+    char state = 'O';
+};
+
+struct SumoSignalPhase {
+    int duration = 0;
+    int startTime = 0;
+    int endTime = 0;
+    string state;
+};
+
+struct SumoSignalProgram {
+    string tlID;
+    string type;
+    string programID;
+    int offset = 0;
+    int cycleLength = 0;
+    vector<SumoSignalPhase> phases;
+};
+
+struct SignalPhase {
+    int startTime = 0;
+    int endTime = 0;
+    string state;
+};
+
+struct SignalProgram {
+    string tlID;
+    int offset = 0;
+    int cycleLength = 0;
+    vector<SignalPhase> phases;
+};
+
 struct NodeInfo {
     int nodeID = -1;
     NodeType type = NodeType::NormalSplit;
@@ -239,6 +335,11 @@ struct Movement {
     int signalID = -1;
     bool alwaysOpen = false;
     int priorityOrder = 0;
+    string tlID;
+    int linkIndex = -1;
+    vector<int> fromLanes;
+    vector<int> toLanes;
+    char defaultConnectionState = 'O';
 };
 
 struct WaitingBuffer {
@@ -401,6 +502,32 @@ public:
     tuple<vector<int>, int> read_time_no_wait(string filename, int num);
     string time_path_no_wait = Base + "time_no_wait.txt";
     vector<int> time_no_wait;
+
+    // SUMO .net.xml input and adaptation
+    string sumoNetPath = Base + "test.net.xml";
+    void read_sumo_net_xml(const string& netXmlPath);
+    void classify_node_types_from_sumo_junctions();
+    void build_movements_from_sumo_connections();
+    void build_lane_groups_from_sumo_connections();
+    void build_signal_programs_from_sumo_tllogic();
+    void build_new_graph_structures_from_sumo();
+    SignalState signalStateAtMovement(int movementID, int t);
+    void validate_sumo_network();
+    void validate_sumo_connections();
+    void validate_sumo_signal_programs();
+    void validate_sumo_routes();
+
+    unordered_map<string, int> sumoNodeStrToID;
+    unordered_map<int, string> nodeIDToSumoNodeStr;
+    unordered_map<string, int> sumoEdgeStrToRoadID;
+    unordered_map<int, string> roadIDToSumoEdgeStr;
+    unordered_map<string, int> tlIDToSignalProgramID;
+    vector<SumoEdgeRaw> sumoEdgesRaw;
+    vector<SumoJunctionRaw> sumoJunctionsRaw;
+    vector<SumoConnectionRaw> sumoConnectionsRaw;
+    vector<SumoSignalProgram> sumoSignalPrograms;
+    vector<SignalProgram> signalPrograms;
+    unordered_map<string, int> movementKeyToID;
     // Remove data with duplicate values
     void removeDuplicates();
     // Check if route data, query data, and time data size are same
@@ -451,6 +578,7 @@ public:
     map<int, vector<int>> incomingRoadsByNode;
     map<int, vector<int>> outgoingRoadsByNode;
     map<pair<int, int>, int> roadPairToMovementID;
+    map<pair<int, int>, vector<int>> fromToRoadToMovementIDs;
     map<int, vector<int>> outgoingMovementsByRoad;
     map<int, vector<int>> incomingMovementsByRoad;
     map<int, vector<int>> laneGroupsByRoad;
@@ -520,7 +648,6 @@ public:
     bool hasDischargeCapacity(int intersectionID, int toRoadID, int t);
     void consumeDischargeCapacity(int intersectionID, int toRoadID, int t);
     int nextAvailableCapacityTime(int intersectionID, int toRoadID, int t);
-    // Placeholder: currently always returns true (no downstream storage / spillback modeled yet).
     bool hasDownstreamStorage(int roadID);
     int predictRoadTravelTime(int roadID, int vehicleID);
     void insertVehicleToBufferOrdered(int bufferID, int vehicleID);
@@ -680,9 +807,9 @@ public:
             {
                 n++;
             }
+            ReadFile.close();
             return n;
         }
-        ReadFile.close();
     }
     // Randomly Generate Unordered Integer
     vector<int> randperm(int Num)
