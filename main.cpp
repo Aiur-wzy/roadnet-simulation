@@ -13,6 +13,8 @@ struct RunConfig {
     string baseDir;
     string sumoNetPath;
     string sumoRoutePath;
+    string sumoTripinfoPath;
+    string evalOutputPath;
     string bjPath;
     string bjMinTravelTimePath;
     string roadInfoPath;
@@ -99,11 +101,13 @@ void print_usage(const char* programName) {
          << "  --help                 Show this help message and exit.\n"
          << "  --use-sumo             Use the SUMO .net.xml workflow instead of legacy BJ.\n"
          << "  --smoke-test           In SUMO mode, prepare/validate/print sample signals and exit.\n"
-         << "  --no-eval              Skip final MSE/evaluation in legacy workflow.\n\n"
+         << "  --no-eval              Skip final MSE/evaluation, including SUMO tripinfo evaluation.\n\n"
          << "Path options:\n"
          << "  --base <dir>           Derive standard input paths from this directory.\n"
          << "  --sumo-net <path>      SUMO .net.xml path.\n"
          << "  --sumo-route <path>    SUMO .rou.xml route file used for full SUMO simulation.\n"
+         << "  --sumo-tripinfo <path>    SUMO tripinfo.xml ground-truth output used for evaluation.\n"
+         << "  --eval-output <path>   CSV path for per-vehicle SUMO evaluation comparison.\n"
          << "  --bj <path>            Legacy BJ graph path.\n"
          << "  --bj-min-time <path>   Legacy BJ min travel-time path.\n"
          << "  --road-info <path>     Legacy road-info path.\n"
@@ -146,6 +150,8 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--base") cfg.baseDir = require_value(argc, argv, i, arg);
         else if (arg == "--sumo-net") { cfg.sumoNetPath = require_value(argc, argv, i, arg); cfg.sumoNetSetByCli = true; }
         else if (arg == "--sumo-route") cfg.sumoRoutePath = require_value(argc, argv, i, arg);
+        else if (arg == "--sumo-tripinfo") cfg.sumoTripinfoPath = require_value(argc, argv, i, arg);
+        else if (arg == "--eval-output") cfg.evalOutputPath = require_value(argc, argv, i, arg);
         else if (arg == "--bj") cfg.bjPath = require_value(argc, argv, i, arg);
         else if (arg == "--bj-min-time") cfg.bjMinTravelTimePath = require_value(argc, argv, i, arg);
         else if (arg == "--road-info") cfg.roadInfoPath = require_value(argc, argv, i, arg);
@@ -184,6 +190,8 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     if (cfg.sumoNetSetByCli) g.sumoNetPath = cfg.sumoNetPath;
     else if (cfg.baseDir.empty() && !cfg.envSumoNetPath.empty()) g.sumoNetPath = cfg.envSumoNetPath;
     if (!cfg.sumoRoutePath.empty()) g.sumoRoutePath = cfg.sumoRoutePath;
+    if (!cfg.sumoTripinfoPath.empty()) g.sumoTripinfoPath = cfg.sumoTripinfoPath;
+    if (!cfg.evalOutputPath.empty()) g.evalOutputPath = cfg.evalOutputPath;
 
     g.travelTimeMode = cfg.travelTimeMode;
     if (!cfg.travelTimeTablePath.empty()) g.travelTimeTablePath = cfg.travelTimeTablePath;
@@ -212,6 +220,8 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
     if (cfg.useSumoNet) {
         cout << "[Config] SUMO net: " << g.sumoNetPath << endl;
         if (!g.sumoRoutePath.empty()) cout << "[Config] SUMO route: " << g.sumoRoutePath << endl;
+        if (!g.sumoTripinfoPath.empty()) cout << "[Config] SUMO tripinfo: " << g.sumoTripinfoPath << endl;
+        if (!g.evalOutputPath.empty()) cout << "[Config] Eval output: " << g.evalOutputPath << endl;
     }
     else {
         cout << "[Config] BJ graph: " << g.BJ << endl;
@@ -292,10 +302,15 @@ int main(int argc, char** argv) {
                 cout << "[TravelTime] fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
             }
 
-            if (cfg.runEvaluation && !g.time_path.empty()) {
-                cout << "[SUMO Eval] Skipped because no compatible SUMO time ground truth was loaded." << endl;
+            if (cfg.runEvaluation) {
+                if (!cfg.sumoTripinfoPath.empty()) {
+                    g.read_sumo_tripinfo_xml(cfg.sumoTripinfoPath);
+                    g.evaluate_sumo_tripinfo_truth(ETA);
+                } else {
+                    cout << "[SUMO Eval] No --sumo-tripinfo provided; skipping SUMO truth evaluation." << endl;
+                }
             } else {
-                cout << "[SUMO Eval] Skipped because --no-eval was set or no compatible SUMO time file was loaded." << endl;
+                cout << "[SUMO Eval] Skipped because --no-eval was set." << endl;
             }
 
             (void)ETA;
