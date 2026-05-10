@@ -284,6 +284,17 @@ struct SumoSignalProgram {
     vector<SumoSignalPhase> phases;
 };
 
+struct SumoTripInfoTruth {
+    string vehicleID;
+    double depart = 0.0;
+    double arrival = 0.0;
+    double duration = 0.0;
+    double routeLength = 0.0;
+    double waitingTime = 0.0;
+    double timeLoss = 0.0;
+    double departDelay = 0.0;
+};
+
 struct SignalPhase {
     int startTime = 0;
     int endTime = 0;
@@ -550,8 +561,12 @@ public:
     // SUMO .net.xml input and adaptation
     string sumoNetPath = roadnet_defaults::DEFAULT_SUMO_NET_PATH;
     string sumoRoutePath;
+    string sumoTripinfoPath;
+    string evalOutputPath;
     void read_sumo_net_xml(const string& netXmlPath);
     void read_sumo_route_xml(const string& routeXmlPath, int maxVehicles);
+    void read_sumo_tripinfo_xml(const string& tripinfoPath);
+    float evaluate_sumo_tripinfo_truth(const vector<vector<pair<int, float>>>& ETA);
     void classify_node_types_from_sumo_junctions();
     void build_movements_from_sumo_connections();
     void build_lane_groups_from_sumo_connections();
@@ -572,6 +587,9 @@ public:
     vector<SumoJunctionRaw> sumoJunctionsRaw;
     vector<SumoConnectionRaw> sumoConnectionsRaw;
     vector<SumoSignalProgram> sumoSignalPrograms;
+    vector<SumoTripInfoTruth> sumoTruthAligned;
+    unordered_map<string, SumoTripInfoTruth> sumoTruthByVehicleID;
+    vector<string> sumoVehicleIDs;
     vector<SignalProgram> signalPrograms;
     unordered_map<string, int> movementKeyToID;
     // Remove data with duplicate values

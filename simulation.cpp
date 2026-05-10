@@ -499,6 +499,141 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
     }
 }
 
+
+float Graph::evaluate_sumo_tripinfo_truth(
+        const vector<vector<pair<int, float>>>& ETA)
+{
+    if (sumoTruthByVehicleID.empty()) {
+        cout << "[SUMO Eval] No SUMO tripinfo truth loaded; skipping evaluation." << endl;
+        return 0.0f;
+    }
+
+    ofstream csv;
+    if (!evalOutputPath.empty()) {
+        csv.open(evalOutputPath.c_str());
+        if (!csv) {
+            throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open CSV output '" + evalOutputPath + "'");
+        }
+        csv << "vehicleID,predDepart,truthDepart,predArrival,truthArrival,"
+            << "predDuration,truthDuration,durationError,absDurationError,"
+            << "arrivalError,truthWaitingTime,truthTimeLoss,truthRouteLength\n";
+    }
+
+    int comparedCount = 0;
+    int missingTruthCount = 0;
+    int invalidVehicleSkipped = 0;
+    int etaMissingSkipped = 0;
+    double squaredDurationError = 0.0;
+    double absoluteDurationError = 0.0;
+    double percentageDurationError = 0.0;
+    int percentageCount = 0;
+    double squaredArrivalError = 0.0;
+    double absoluteArrivalError = 0.0;
+
+    int n = static_cast<int>(ETA.size());
+    n = max(n, static_cast<int>(vehicles.size()));
+    n = max(n, static_cast<int>(queryDataRaw.size()));
+    n = max(n, static_cast<int>(routeRoadID.size()));
+
+    unordered_set<string> simulatedVehicleIDs;
+
+    for (int i = 0; i < n; ++i) {
+        string vehicleID = (i < static_cast<int>(sumoVehicleIDs.size()))
+                         ? sumoVehicleIDs[i]
+                         : ("veh_" + to_string(i));
+        simulatedVehicleIDs.insert(vehicleID);
+
+        auto truthIt = sumoTruthByVehicleID.find(vehicleID);
+        if (truthIt == sumoTruthByVehicleID.end()) {
+            ++missingTruthCount;
+            continue;
+        }
+
+        if (i < static_cast<int>(vehicles.size()) && !vehicles[i].valid) {
+            ++invalidVehicleSkipped;
+            continue;
+        }
+
+        if (i >= static_cast<int>(ETA.size()) || ETA[i].size() < 2) {
+            ++etaMissingSkipped;
+            continue;
+        }
+
+        const SumoTripInfoTruth &truth = truthIt->second;
+        double predDepart = ETA[i].front().second;
+        double predArrival = ETA[i].back().second;
+        double predDuration = predArrival - predDepart;
+        double truthDuration = truth.duration;
+        double durationError = predDuration - truthDuration;
+        double absDurationError = abs(durationError);
+        double arrivalError = predArrival - truth.arrival;
+
+        squaredDurationError += durationError * durationError;
+        absoluteDurationError += absDurationError;
+        if (truthDuration > 0.0) {
+            percentageDurationError += absDurationError / truthDuration;
+            ++percentageCount;
+        }
+        squaredArrivalError += arrivalError * arrivalError;
+        absoluteArrivalError += abs(arrivalError);
+        ++comparedCount;
+
+        if (csv) {
+            csv << vehicleID << ','
+                << predDepart << ','
+                << truth.depart << ','
+                << predArrival << ','
+                << truth.arrival << ','
+                << predDuration << ','
+                << truthDuration << ','
+                << durationError << ','
+                << absDurationError << ','
+                << arrivalError << ','
+                << truth.waitingTime << ','
+                << truth.timeLoss << ','
+                << truth.routeLength << '\n';
+        }
+    }
+
+    int truthNotSimulated = 0;
+    for (const auto &kv : sumoTruthByVehicleID) {
+        if (simulatedVehicleIDs.find(kv.first) == simulatedVehicleIDs.end()) {
+            ++truthNotSimulated;
+        }
+    }
+
+    cout << "[SUMO Eval] compared vehicles: " << comparedCount << endl;
+    cout << "[SUMO Eval] missing truth: " << missingTruthCount << endl;
+    cout << "[SUMO Eval] invalid skipped: " << invalidVehicleSkipped << endl;
+    cout << "[SUMO Eval] ETA missing skipped: " << etaMissingSkipped << endl;
+    cout << "[SUMO Eval] truth not simulated: " << truthNotSimulated << endl;
+
+    if (comparedCount == 0) {
+        cout << "[SUMO Eval] No valid vehicles compared." << endl;
+        if (csv) cout << "[SUMO Eval] CSV written to " << evalOutputPath << endl;
+        return 0.0f;
+    }
+
+    double mse = squaredDurationError / comparedCount;
+    double mae = absoluteDurationError / comparedCount;
+    double rmse = sqrt(mse);
+    double mape = (percentageCount > 0)
+                ? (percentageDurationError / percentageCount) * 100.0
+                : 0.0;
+    double maeArrival = absoluteArrivalError / comparedCount;
+    double rmseArrival = sqrt(squaredArrivalError / comparedCount);
+
+    cout << "[SUMO Eval] MSE duration: " << mse << endl;
+    cout << "[SUMO Eval] MAE duration: " << mae << endl;
+    cout << "[SUMO Eval] RMSE duration: " << rmse << endl;
+    cout << "[SUMO Eval] MAPE duration: " << mape << "%" << endl;
+    cout << "[SUMO Eval] MAE arrival: " << maeArrival << endl;
+    cout << "[SUMO Eval] RMSE arrival: " << rmseArrival << endl;
+    if (csv) cout << "[SUMO Eval] CSV written to " << evalOutputPath << endl;
+
+    return static_cast<float>(mse);
+}
+
 vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
         vector<vector<int>> &Q, vector<vector<int>> &routeRoadIDInput) {
     // 新算法核心：事件驱动（signal change）+ 候选放行队列（dispatchPQ）+ 缓冲区排队

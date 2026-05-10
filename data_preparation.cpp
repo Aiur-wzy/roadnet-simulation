@@ -282,6 +282,7 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
     queryDataRaw.clear();
     routeRoadID.clear();
     routeMovementID.clear();
+    sumoVehicleIDs.clear();
 
     unordered_map<string, vector<string>> sumoRouteIDToEdges;
     bool insideVehicle = false;
@@ -391,6 +392,7 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
         int endNode = roads[lastRoad].toNode;
         queryDataRaw.push_back({startNode, endNode, departTime});
         routeRoadID.push_back(roadIDSequence);
+        sumoVehicleIDs.push_back(vehicleID);
         ++validVehicles;
         if (!haveDepart) {
             firstDepart = departTime;
@@ -456,6 +458,103 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
         cout << "[SUMO Route] first depart: n/a" << endl;
         cout << "[SUMO Route] last depart: n/a" << endl;
     }
+}
+
+
+void Graph::read_sumo_tripinfo_xml(const string& tripinfoPath)
+{
+    ifstream in(tripinfoPath.c_str());
+    require_open(in, tripinfoPath, "read_sumo_tripinfo_xml SUMO tripinfo XML");
+    stringstream buffer;
+    buffer << in.rdbuf();
+    vector<XmlTagLite> tags = parse_xml_tags_lite(buffer.str());
+
+    sumoTruthByVehicleID.clear();
+    sumoTruthAligned.clear();
+
+    int duplicateCount = 0;
+    int missingIDCount = 0;
+    int missingDurationCount = 0;
+    string firstVehicleID;
+    string lastVehicleID;
+
+    for (const auto &tag : tags) {
+        if (tag.name != "tripinfo" || tag.closing) continue;
+
+        string id = to_string_attr(tag.attrs, "id");
+        if (id.empty()) {
+            ++missingIDCount;
+            cout << "[SUMO Truth Warning] tripinfo record missing required id; skipping." << endl;
+            continue;
+        }
+        if (tag.attrs.find("duration") == tag.attrs.end()) {
+            ++missingDurationCount;
+            cout << "[SUMO Truth Warning] vehicle=" << id
+                 << " missing required duration; skipping." << endl;
+            continue;
+        }
+
+        SumoTripInfoTruth truth;
+        truth.vehicleID = id;
+        truth.depart = to_double_attr(tag.attrs, "depart", 0.0);
+        truth.arrival = to_double_attr(tag.attrs, "arrival", 0.0);
+        truth.duration = to_double_attr(tag.attrs, "duration", 0.0);
+        truth.routeLength = to_double_attr(tag.attrs, "routeLength", 0.0);
+        truth.waitingTime = to_double_attr(tag.attrs, "waitingTime", 0.0);
+        truth.timeLoss = to_double_attr(tag.attrs, "timeLoss", 0.0);
+        truth.departDelay = to_double_attr(tag.attrs, "departDelay", 0.0);
+
+        if (sumoTruthByVehicleID.find(id) != sumoTruthByVehicleID.end()) {
+            ++duplicateCount;
+            cout << "[SUMO Truth Warning] duplicate tripinfo id=" << id
+                 << "; keeping latest record." << endl;
+        }
+        if (firstVehicleID.empty()) firstVehicleID = id;
+        lastVehicleID = id;
+        sumoTruthByVehicleID[id] = truth;
+
+    }
+
+    sumoTruthAligned.reserve(sumoVehicleIDs.size());
+    for (const string &vehicleID : sumoVehicleIDs) {
+        auto it = sumoTruthByVehicleID.find(vehicleID);
+        if (it != sumoTruthByVehicleID.end()) {
+            sumoTruthAligned.push_back(it->second);
+        }
+    }
+
+    cout << "[SUMO Truth] tripinfo records: " << sumoTruthByVehicleID.size() << endl;
+    if (!sumoTruthByVehicleID.empty()) {
+        double minDuration = 0.0;
+        double maxDuration = 0.0;
+        double totalDuration = 0.0;
+        bool haveDuration = false;
+        for (const auto &kv : sumoTruthByVehicleID) {
+            const double duration = kv.second.duration;
+            if (!haveDuration) {
+                minDuration = duration;
+                maxDuration = duration;
+                haveDuration = true;
+            } else {
+                minDuration = min(minDuration, duration);
+                maxDuration = max(maxDuration, duration);
+            }
+            totalDuration += duration;
+        }
+        cout << "[SUMO Truth] first vehicle: " << firstVehicleID << endl;
+        cout << "[SUMO Truth] last vehicle: " << lastVehicleID << endl;
+        double avgDuration = totalDuration / static_cast<double>(sumoTruthByVehicleID.size());
+        cout << "[SUMO Truth] duration min/avg/max: "
+             << minDuration << " / " << avgDuration << " / " << maxDuration << endl;
+    } else {
+        cout << "[SUMO Truth] first vehicle: n/a" << endl;
+        cout << "[SUMO Truth] last vehicle: n/a" << endl;
+        cout << "[SUMO Truth] duration min/avg/max: n/a" << endl;
+    }
+    if (duplicateCount > 0) cout << "[SUMO Truth] duplicate ids: " << duplicateCount << endl;
+    if (missingIDCount > 0) cout << "[SUMO Truth] missing id records skipped: " << missingIDCount << endl;
+    if (missingDurationCount > 0) cout << "[SUMO Truth] missing duration records skipped: " << missingDurationCount << endl;
+    cout << "[SUMO Truth] aligned simulated vehicles with truth: " << sumoTruthAligned.size() << endl;
 }
 
 void Graph::read_sumo_net_xml(const string& netXmlPath)
