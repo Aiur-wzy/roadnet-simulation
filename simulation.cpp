@@ -1,6 +1,24 @@
 
 #include "head.h"
 
+TravelTimeMode parseTravelTimeMode(const string& s) {
+    if (s == "speed-net") return TravelTimeMode::SPEED_NET;
+    if (s == "min-time") return TravelTimeMode::MIN_TIME;
+    if (s == "table") return TravelTimeMode::TABLE;
+    if (s == "model") return TravelTimeMode::MODEL;
+    throw runtime_error("Invalid travel time mode: " + s + " (expected speed-net, min-time, table, or model)");
+}
+
+string travelTimeModeToString(TravelTimeMode mode) {
+    switch (mode) {
+        case TravelTimeMode::SPEED_NET: return "speed-net";
+        case TravelTimeMode::MIN_TIME: return "min-time";
+        case TravelTimeMode::TABLE: return "table";
+        case TravelTimeMode::MODEL: return "model";
+    }
+    return "speed-net";
+}
+
 vector<int> Graph::Dij_vetex(int ID1, int ID2){
 
     /*
@@ -256,6 +274,7 @@ bool sendDataToPython(int sock, int edge_id, const char& Turn, const set<char>& 
 // 读取文件并构建词典的函数
 void Graph::buildDictionary(const std::string& filename) {
 
+    dictionary.clear();
     std::ifstream file(filename);
     if (!file.is_open()) {
         std::cerr << "Failed to open file: " << filename << std::endl;
@@ -843,15 +862,109 @@ bool Graph::hasDownstreamStorage(int roadID) {
 }
 
 int Graph::predictRoadTravelTime(int roadID, int vehicleID) {
+    switch (travelTimeMode) {
+        case TravelTimeMode::SPEED_NET:
+            return predictRoadTravelTimeSpeedNet(roadID);
+        case TravelTimeMode::MIN_TIME:
+            return predictRoadTravelTimeMinTime(roadID);
+        case TravelTimeMode::TABLE:
+            return predictRoadTravelTimeTable(roadID, vehicleID);
+        case TravelTimeMode::MODEL:
+            return predictRoadTravelTimeModel(roadID, vehicleID);
+    }
+    return predictRoadTravelTimeSpeedNet(roadID);
+}
+
+int Graph::predictRoadTravelTimeSpeedNet(int roadID) const {
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return 1;
+    const RoadSegment& r = roads[roadID];
+    double speed = std::max(0.1, r.speedLimit);
+    double length = std::max(0.0, r.length);
+    return std::max(1, static_cast<int>(std::round(length / speed)));
+}
+
+int Graph::predictRoadTravelTimeMinTime(int roadID) const {
+    if (roadID >= 0 &&
+        roadID < static_cast<int>(roads.size()) &&
+        roads[roadID].minTravelTime > 0) {
+        return std::max(1, static_cast<int>(std::round(roads[roadID].minTravelTime)));
+    }
+    return predictRoadTravelTimeSpeedNet(roadID);
+}
+
+RoadKey Graph::buildRoadKeyForPrediction(int roadID, int vehicleID) const {
     (void)vehicleID;
-    if (roadID >= 0 && roadID < roads.size() && roads[roadID].minTravelTime > 0) {
-        return max(1, static_cast<int>(round(roads[roadID].minTravelTime)));
+    RoadKey key{};
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) {
+        return key;
     }
-    if (roadID >= 0 && roadID < roads.size()) {
-        double speed = max(1.0, roads[roadID].speedLimit);
-        return max(1, static_cast<int>(round(roads[roadID].length / speed)));
+
+    const RoadSegment& r = roads[roadID];
+    const double speed = std::max(0.1, r.speedLimit);
+    const double length = std::max(0.0, r.length);
+
+    int waitingOnRoad = 0;
+    for (const auto& kv : r.movementIDToWaitingBufferID) {
+        int bufferID = kv.second;
+        if (bufferID >= 0 && bufferID < static_cast<int>(waitingBuffers.size())) {
+            waitingOnRoad += waitingBuffers[bufferID].vehicleCount();
+        }
     }
-    return 1;
+
+    key.lane_num = r.laneNum;
+    key.speed_limit = static_cast<float>(std::round(speed));
+    key.edge_length = static_cast<float>(std::round(length));
+    key.driving_number = r.runningCount;
+    key.delay_time = 0;
+    key.lowSpee_time = 0;
+    key.wait_time = waitingOnRoad;
+    key.ratio = static_cast<int>(std::round(length / speed));
+    key.length_square = static_cast<int>(std::round(length * length));
+    return key;
+}
+
+int Graph::predictRoadTravelTimeTable(int roadID, int vehicleID) {
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return 1;
+
+    RoadKey key = buildRoadKeyForPrediction(roadID, vehicleID);
+    auto it = dictionary.find(key);
+    if (it != dictionary.end()) {
+        ++travelTimeTableHit;
+        return std::max(1, static_cast<int>(std::round(it->second)));
+    }
+
+    ++travelTimeTableMiss;
+    if (verboseTravelTimePrediction) {
+        cout << "[TravelTime] TABLE miss roadID=" << roadID << endl;
+    }
+
+    return fallbackToSpeedNet
+        ? predictRoadTravelTimeSpeedNet(roadID)
+        : predictRoadTravelTimeMinTime(roadID);
+}
+
+bool Graph::queryExternalTravelTimeModel(int roadID, int vehicleID, double& predictedTime) {
+    (void)roadID;
+    (void)vehicleID;
+    predictedTime = -1.0;
+    // TODO: future implementation. This can later use socket / Python service / embedded model.
+    return false;
+}
+
+int Graph::predictRoadTravelTimeModel(int roadID, int vehicleID) {
+    double pred = -1.0;
+    if (queryExternalTravelTimeModel(roadID, vehicleID, pred) && pred > 0) {
+        return std::max(1, static_cast<int>(std::round(pred)));
+    }
+
+    if (!modelWarningPrinted) {
+        cout << "[TravelTime] MODEL mode is selected but no external model is implemented; using fallback." << endl;
+        modelWarningPrinted = true;
+    }
+
+    return fallbackToSpeedNet
+        ? predictRoadTravelTimeSpeedNet(roadID)
+        : predictRoadTravelTimeMinTime(roadID);
 }
 
 void Graph::insertVehicleToBufferOrdered(int bufferID, int vehicleID) {

@@ -135,6 +135,12 @@ Required legacy files:
 | `--cut` | Cut route/query/time data before simulation. | `false` | Legacy |
 | `--avg-length <n>` | Average length used by the cut helpers. | `30` | Legacy |
 | `--no-eval` | Skip the final MSE/evaluation step. | Evaluation enabled | Legacy |
+| `--travel-time-mode <speed-net|min-time|table|model>` | Select the single-road travel-time predictor used by cycle-aware simulation. | `min-time` | Both |
+| `--travel-time-table <path>` | Dictionary path for table-mode lookups. | `<base>/model_catching_with_travel_time_1.txt` | Both |
+| `--tt-fallback <speed-net|min-time>` | Fallback predictor for table misses or unimplemented model mode. | `speed-net` | Both |
+| `--model-host <host>` | Host reserved for a future external model service. | `127.0.0.1` | Both |
+| `--model-port <port>` | Port reserved for a future external model service. | `9000` | Both |
+| `--verbose-travel-time` | Print per-miss travel-time diagnostics. | Off | Both |
 
 Environment variables are supported as fallback only and have lower priority than command-line arguments:
 
@@ -142,7 +148,50 @@ Environment variables are supported as fallback only and have lower priority tha
 USE_SUMO_NET=1 SUMO_NET_PATH=test.net.xml ./roadnet_sim
 ```
 
-## 7. Default Paths: Where to Change If Not Using Args
+
+## 7. Travel-Time Prediction Modes
+
+`Graph::predictRoadTravelTime(roadID, vehicleID)` is configurable with `--travel-time-mode`:
+
+- `--travel-time-mode speed-net`: uses `road.length / road.speedLimit` for each road segment.
+- `--travel-time-mode min-time`: uses precomputed `minTravelTime` when available, otherwise falls back to speed-net. This is the default and preserves the previous behavior.
+- `--travel-time-mode table`: builds a `RoadKey` from the current cycle-aware road state and looks up the dictionary from `--travel-time-table`. If no key is found, it falls back according to `--tt-fallback speed-net|min-time`.
+- `--travel-time-mode model`: reserved for an external model service. The current implementation calls the `queryExternalTravelTimeModel(...)` stub, prints a warning once when no model is implemented, and falls back according to `--tt-fallback`.
+
+Example speed-net run:
+
+```bash
+./roadnet_sim --travel-time-mode speed-net
+```
+
+Example min-time run:
+
+```bash
+./roadnet_sim --travel-time-mode min-time
+```
+
+Example table run:
+
+```bash
+./roadnet_sim \
+  --travel-time-mode table \
+  --travel-time-table data/model_catching_with_travel_time_1.txt \
+  --tt-fallback speed-net
+```
+
+Example model-stub run:
+
+```bash
+./roadnet_sim \
+  --travel-time-mode model \
+  --model-host 127.0.0.1 \
+  --model-port 9000 \
+  --tt-fallback min-time
+```
+
+Table-mode `RoadKey` values are constructed from available static and dynamic cycle-aware fields. Static road fields use lane count, rounded speed limit, and rounded length; dynamic fields use current running vehicle count plus waiting-buffer occupancy. Delay and low-speed features are currently set to `0`, so table-mode matching is approximate until those features are represented directly in the cycle-aware simulator.
+
+## 8. Default Paths: Where to Change If Not Using Args
 
 The recommended way to run experiments is to pass command-line arguments, because commands are reproducible and explicit.
 
@@ -177,7 +226,7 @@ Explicit path arguments override base-derived paths. For example, the following 
 ./roadnet_sim --base data/Manhattan_Data --query other/query.txt
 ```
 
-## 8. Data Format Notes
+## 9. Data Format Notes
 
 ### Legacy BJ data
 
@@ -194,7 +243,7 @@ Explicit path arguments override base-derived paths. For example, the following 
 - `tlLogic` and `phase` elements define traffic-light timing.
 - `phase.state[linkIndex]` determines the signal state for the movement associated with that SUMO connection.
 
-## 9. Validation and Debugging
+## 10. Validation and Debugging
 
 SUMO validation helpers include:
 
@@ -211,7 +260,7 @@ Common errors to check:
 - Route road pair missing a movement.
 - Query/route/time size mismatch.
 
-## 10. Suggested Development Workflow
+## 11. Suggested Development Workflow
 
 1. First run the SUMO smoke test.
 2. Check the parsed network summary.
