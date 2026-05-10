@@ -20,6 +20,13 @@ struct RunConfig {
     string timePath;
     string timeNoWaitPath;
 
+    TravelTimeMode travelTimeMode = TravelTimeMode::MIN_TIME;
+    string travelTimeTablePath;
+    string modelHost = "127.0.0.1";
+    int modelPort = 9000;
+    bool fallbackToSpeedNet = true;
+    bool verboseTravelTimePrediction = false;
+
     bool useSumoSetByCli = false;
     bool sumoNetSetByCli = false;
     string envSumoNetPath;
@@ -46,6 +53,16 @@ int parse_int_value(const string &value, const string &option) {
     } catch (const exception&) {
         throw runtime_error("Invalid integer for " + option + ": " + value);
     }
+}
+
+bool parse_tt_fallback(const string& value) {
+    if (value == "speed-net") return true;
+    if (value == "min-time") return false;
+    throw runtime_error("Invalid travel time fallback: " + value + " (expected speed-net or min-time)");
+}
+
+string tt_fallback_to_string(bool fallbackToSpeedNet) {
+    return fallbackToSpeedNet ? "speed-net" : "min-time";
 }
 
 void print_sumo_sample_signal_states(Graph &g) {
@@ -92,6 +109,16 @@ void print_usage(const char* programName) {
          << "  --route <path>         Route data path.\n"
          << "  --time <path>          Time data path.\n"
          << "  --time-no-wait <path>  Time-no-wait data path.\n\n"
+         << "Travel-time prediction options:\n"
+         << "  --travel-time-mode <speed-net|min-time|table|model>\n"
+         << "                         Single-road travel-time predictor (default: min-time).\n"
+         << "  --travel-time-table <path>\n"
+         << "                         Table dictionary path for --travel-time-mode table.\n"
+         << "  --model-host <host>    External model host for future model mode (default: 127.0.0.1).\n"
+         << "  --model-port <port>    External model port for future model mode (default: 9000).\n"
+         << "  --tt-fallback <speed-net|min-time>\n"
+         << "                         Fallback for table/model misses (default: speed-net).\n"
+         << "  --verbose-travel-time  Print verbose travel-time prediction messages.\n\n"
          << "Data options:\n"
          << "  --read-num <n>         Number of query/route/time records to read (default: 192484).\n"
          << "  --cut                  Cut route/query/time data before simulation (default: false).\n"
@@ -123,6 +150,12 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--route") cfg.routePath = require_value(argc, argv, i, arg);
         else if (arg == "--time") cfg.timePath = require_value(argc, argv, i, arg);
         else if (arg == "--time-no-wait") cfg.timeNoWaitPath = require_value(argc, argv, i, arg);
+        else if (arg == "--travel-time-mode") cfg.travelTimeMode = parseTravelTimeMode(require_value(argc, argv, i, arg));
+        else if (arg == "--travel-time-table") cfg.travelTimeTablePath = require_value(argc, argv, i, arg);
+        else if (arg == "--model-host") cfg.modelHost = require_value(argc, argv, i, arg);
+        else if (arg == "--model-port") cfg.modelPort = parse_int_value(require_value(argc, argv, i, arg), arg);
+        else if (arg == "--tt-fallback") cfg.fallbackToSpeedNet = parse_tt_fallback(require_value(argc, argv, i, arg));
+        else if (arg == "--verbose-travel-time") cfg.verboseTravelTimePrediction = true;
         else if (arg == "--read-num") cfg.readNum = parse_int_value(require_value(argc, argv, i, arg), arg);
         else if (arg == "--cut") cfg.cut = true;
         else if (arg == "--avg-length") cfg.avgLength = parse_int_value(require_value(argc, argv, i, arg), arg);
@@ -147,6 +180,24 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
 
     if (cfg.sumoNetSetByCli) g.sumoNetPath = cfg.sumoNetPath;
     else if (cfg.baseDir.empty() && !cfg.envSumoNetPath.empty()) g.sumoNetPath = cfg.envSumoNetPath;
+
+    g.travelTimeMode = cfg.travelTimeMode;
+    if (!cfg.travelTimeTablePath.empty()) g.travelTimeTablePath = cfg.travelTimeTablePath;
+    g.modelHost = cfg.modelHost;
+    g.modelPort = cfg.modelPort;
+    g.fallbackToSpeedNet = cfg.fallbackToSpeedNet;
+    g.verboseTravelTimePrediction = cfg.verboseTravelTimePrediction;
+    g.modelWarningPrinted = false;
+    g.travelTimeTableHit = 0;
+    g.travelTimeTableMiss = 0;
+
+    if (g.travelTimeMode == TravelTimeMode::TABLE) {
+        if (g.travelTimeTablePath.empty()) {
+            throw runtime_error("--travel-time-mode table requires --travel-time-table or a non-empty default table path");
+        }
+        g.buildDictionary(g.travelTimeTablePath);
+        cout << "[TravelTime] Loaded table dictionary entries: " << g.dictionary.size() << endl;
+    }
 }
 
 void print_resolved_config(const Graph& g, const RunConfig& cfg) {
@@ -168,6 +219,11 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
     cout << "[Config] Cut: " << cfg.cut << endl;
     cout << "[Config] Avg length: " << cfg.avgLength << endl;
     cout << "[Config] Evaluation: " << cfg.runEvaluation << endl;
+    cout << "[Config] Travel time mode: " << travelTimeModeToString(g.travelTimeMode) << endl;
+    cout << "[Config] Travel time table: " << g.travelTimeTablePath << endl;
+    cout << "[Config] TT fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
+    cout << "[Config] Model host/port: " << g.modelHost << ":" << g.modelPort << endl;
+    cout << "[Config] Verbose travel time: " << g.verboseTravelTimePrediction << endl;
     cout << noboolalpha;
 }
 
@@ -268,6 +324,15 @@ int main(int argc, char** argv) {
              << " / " << g.vehicles.size() << endl;
         cout << "Invalid vehicles: " << g.invalidVehicleCount << endl;
         cout << "Valid simulated vehicles: " << (g.vehicles.size() - g.invalidVehicleCount) << endl;
+
+        cout << "[TravelTime] mode: " << travelTimeModeToString(g.travelTimeMode) << endl;
+        if (g.travelTimeMode == TravelTimeMode::TABLE) {
+            cout << "[TravelTime] table hits: " << g.travelTimeTableHit << endl;
+            cout << "[TravelTime] table misses: " << g.travelTimeTableMiss << endl;
+        }
+        if (g.travelTimeMode == TravelTimeMode::TABLE || g.travelTimeMode == TravelTimeMode::MODEL) {
+            cout << "[TravelTime] fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
+        }
 
         if (cfg.runEvaluation) {
             cout << "\nStep 5: Evaluation" << endl;

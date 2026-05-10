@@ -218,6 +218,16 @@ enum class VehicleState {
     Finished
 };
 
+enum class TravelTimeMode {
+    SPEED_NET,
+    MIN_TIME,
+    TABLE,
+    MODEL
+};
+
+TravelTimeMode parseTravelTimeMode(const string& s);
+string travelTimeModeToString(TravelTimeMode mode);
+
 
 struct SumoLaneRaw {
     string id;
@@ -497,6 +507,8 @@ public:
         route_path = join_path(b, "route.txt");
         time_path = join_path(b, "time.txt");
         time_path_no_wait = join_path(b, "time_no_wait.txt");
+        travelTimeTablePath = join_path(b, "model_catching_with_travel_time_1.txt");
+        model_catch_dic_path = travelTimeTablePath;
         sumoNetPath = join_path(b, "test.net.xml");
     }
     // Read Road Network
@@ -664,6 +676,16 @@ public:
     void buildDictionary(const std::string& filename);
     unordered_map<RoadKey, double> dictionary;
     string model_catch_dic_path = join_path(Base, "model_catching_with_travel_time_1.txt");
+
+    TravelTimeMode travelTimeMode = TravelTimeMode::MIN_TIME;
+    string travelTimeTablePath = join_path(Base, "model_catching_with_travel_time_1.txt");
+    bool fallbackToSpeedNet = true;
+    bool verboseTravelTimePrediction = false;
+    string modelHost = "127.0.0.1";
+    int modelPort = 9000;
+    bool modelWarningPrinted = false;
+    int travelTimeTableHit = 0;
+    int travelTimeTableMiss = 0;
     // 现行新算法主入口：基于 signal event + waiting buffer + discharge capacity 的仿真
     vector<vector<pair<int, float>>> cycle_aware_signal_driven_records(
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
@@ -682,6 +704,12 @@ public:
     int nextAvailableCapacityTime(int intersectionID, int toRoadID, int t);
     bool hasDownstreamStorage(int roadID);
     int predictRoadTravelTime(int roadID, int vehicleID);
+    int predictRoadTravelTimeSpeedNet(int roadID) const;
+    int predictRoadTravelTimeMinTime(int roadID) const;
+    int predictRoadTravelTimeTable(int roadID, int vehicleID);
+    int predictRoadTravelTimeModel(int roadID, int vehicleID);
+    RoadKey buildRoadKeyForPrediction(int roadID, int vehicleID) const;
+    bool queryExternalTravelTimeModel(int roadID, int vehicleID, double& predictedTime);
     void insertVehicleToBufferOrdered(int bufferID, int vehicleID);
     void handle_signal_change_event(const SignalEvent& e);
     int nextSignalChangeTime(int signalID, int afterTime);
