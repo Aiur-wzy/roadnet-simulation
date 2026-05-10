@@ -1,0 +1,27 @@
+<net>
+    <edge id="E0" from="J0" to="J1" priority="1">
+        <lane id="E0_0" index="0" speed="13.90" length="100.00" shape="0,0 100,0"/>
+        <lane id="E0_1" index="1" speed="13.90" length="100.00" shape="0,1 100,1"/>
+    </edge>
+    <edge id="E1" from="J1" to="J2" priority="1">
+        <lane id="E1_0" index="0" speed="13.90" length="120.00" shape="100,0 220,0"/>
+        <lane id="E1_1" index="1" speed="13.90" length="120.00" shape="100,1 220,1"/>
+    </edge>
+    <edge id="E2" from="J1" to="J3" priority="1">
+        <lane id="E2_0" index="0" speed="10.00" length="80.00" shape="100,0 100,80"/>
+    </edge>
+    <edge id=":J1_0" function="internal">
+        <lane id=":J1_0_0" index="0" speed="13.90" length="10.00" shape="95,0 105,0"/>
+    </edge>
+    <junction id="J0" type="dead_end" x="0.00" y="0.00" incLanes="" intLanes=""/>
+    <junction id="J1" type="traffic_light" x="100.00" y="0.00" incLanes="E0_0 E0_1" intLanes=":J1_0_0"/>
+    <junction id="J2" type="dead_end" x="220.00" y="0.00" incLanes="E1_0 E1_1" intLanes=""/>
+    <junction id="J3" type="dead_end" x="100.00" y="80.00" incLanes="E2_0" intLanes=""/>
+    <connection from="E0" to="E1" fromLane="0" toLane="0" via=":J1_0_0" tl="J1" linkIndex="0" dir="s" state="O"/>
+    <connection from="E0" to="E2" fromLane="1" toLane="0" tl="J1" linkIndex="1" dir="r" state="O"/>
+    <tlLogic id="J1" type="static" programID="0" offset="0">
+        <phase duration="42" state="Gr"/>
+        <phase duration="3" state="yr"/>
+        <phase duration="45" state="rG"/>
+    </tlLogic>
+</net>

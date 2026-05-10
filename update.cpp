@@ -45,7 +45,12 @@ void Graph::nodeID_2_roadID_in_records(vector<vector<pair<int, map<float, vector
 		node_1 = i;
 		for (int j=0;j<timeFlowChange[i].size();j++) {
 			node_2 = timeFlowChange[i][j].first;
-			routeID = nodeID2RoadID[make_pair(node_1, node_2)];
+			auto roadIt = nodeID2RoadID.find(make_pair(node_1, node_2));
+            if (roadIt == nodeID2RoadID.end()) {
+                cout << "Warning. Missing road mapping for node pair: " << node_1 << " " << node_2 << endl;
+                continue;
+            }
+			routeID = roadIt->second;
             route_timeFlowChange[routeID] = timeFlowChange[i][j].second;
 		}
 	}
@@ -289,7 +294,12 @@ vector<int> Graph::route_node_2_route_road(vector<int> &routeNode)
 	for (int i=0;i<routeNode.size()-1;i++){
 		node01 = routeNode[i];
         node02 = routeNode[i+1];
-		roadID = nodeID2RoadID[make_pair(node01,node02)];
+		auto roadIt = nodeID2RoadID.find(make_pair(node01,node02));
+        if (roadIt == nodeID2RoadID.end()) {
+            cout << "Warning. Missing road mapping for node pair: " << node01 << " " << node02 << endl;
+            continue;
+        }
+		roadID = roadIt->second;
 		routeRoad.push_back(roadID);
 	}
 	/*

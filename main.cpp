@@ -3,6 +3,49 @@
 int main() {
     Graph g;
 
+    bool useSumoNet = false;
+    const char *useSumoEnv = getenv("USE_SUMO_NET");
+    if (useSumoEnv != nullptr && string(useSumoEnv) == "1") {
+        useSumoNet = true;
+    }
+    const char *sumoNetEnv = getenv("SUMO_NET_PATH");
+    if (sumoNetEnv != nullptr && string(sumoNetEnv).size() > 0) {
+        g.sumoNetPath = sumoNetEnv;
+    }
+
+    if (useSumoNet) {
+        cout << "\nSUMO Network Preparation Mode" << endl;
+        cout << "-------------------------------------" << endl;
+        g.read_sumo_net_xml(g.sumoNetPath);
+        g.build_new_graph_structures_from_sumo();
+        g.validate_sumo_network();
+        g.validate_sumo_routes();
+
+        if (!g.movements.empty()) {
+            int sampleMovementID = -1;
+            for (const auto &m : g.movements) {
+                if (!m.tlID.empty() && m.linkIndex >= 0) {
+                    sampleMovementID = m.movementID;
+                    break;
+                }
+            }
+            if (sampleMovementID < 0) sampleMovementID = g.movements.front().movementID;
+            const vector<int> sampleTimes = {0, 10, 42, 45, 90};
+            cout << "[SUMO] sample movement signal states movementID=" << sampleMovementID
+                 << " tlID=" << g.movements[sampleMovementID].tlID
+                 << " linkIndex=" << g.movements[sampleMovementID].linkIndex << endl;
+            for (int t : sampleTimes) {
+                SignalState state = g.signalStateAtMovement(sampleMovementID, t);
+                string stateText = "Red";
+                if (state == SignalState::Green) stateText = "Green";
+                else if (state == SignalState::Yellow) stateText = "Yellow";
+                else if (state == SignalState::AlwaysOpen) stateText = "AlwaysOpen";
+                cout << "[SUMO] t=" << t << " state=" << stateText << endl;
+            }
+        }
+        return 0;
+    }
+
     cout << "\nStep 1: Data Cleaning" << endl;
     cout << "-------------------------------------" << endl;
     cout << "Data Cleaning Done." << endl;
@@ -12,7 +55,6 @@ int main() {
 
     g.read_graph();
     g.read_road_info();
-
     int readNum = 192484;
     g.percent = 1;
     g.small = 0;
