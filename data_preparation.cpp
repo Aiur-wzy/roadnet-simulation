@@ -270,6 +270,194 @@ string signal_state_to_string(SignalState s) {
 }
 }
 
+
+void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
+{
+    ifstream in(routeXmlPath.c_str());
+    require_open(in, routeXmlPath, "read_sumo_route_xml SUMO route XML");
+    stringstream buffer;
+    buffer << in.rdbuf();
+    vector<XmlTagLite> tags = parse_xml_tags_lite(buffer.str());
+
+    queryDataRaw.clear();
+    routeRoadID.clear();
+    routeMovementID.clear();
+
+    unordered_map<string, vector<string>> sumoRouteIDToEdges;
+    bool insideVehicle = false;
+    for (const auto &tag : tags) {
+        if (tag.name == "vehicle" && !tag.closing) {
+            insideVehicle = true;
+            if (tag.selfClosing) insideVehicle = false;
+        } else if (tag.name == "vehicle" && tag.closing) {
+            insideVehicle = false;
+        } else if (tag.name == "route" && !tag.closing && !insideVehicle) {
+            string routeID = to_string_attr(tag.attrs, "id");
+            string edges = to_string_attr(tag.attrs, "edges");
+            if (!routeID.empty() && !edges.empty()) {
+                sumoRouteIDToEdges[routeID] = split_ws(edges);
+            }
+        }
+    }
+
+    auto edge_list_text = [](const vector<string> &edges) {
+        ostringstream oss;
+        for (size_t i = 0; i < edges.size(); ++i) {
+            if (i) oss << ' ';
+            oss << edges[i];
+        }
+        return oss.str();
+    };
+    auto road_list_text = [](const vector<int> &roadsInRoute) {
+        ostringstream oss;
+        for (size_t i = 0; i < roadsInRoute.size(); ++i) {
+            if (i) oss << ' ';
+            oss << roadsInRoute[i];
+        }
+        return oss.str();
+    };
+
+    int vehiclesScanned = 0;
+    int validVehicles = 0;
+    int skippedVehicles = 0;
+    int previewPrinted = 0;
+    bool haveDepart = false;
+    int firstDepart = 0;
+    int lastDepart = 0;
+
+    auto process_vehicle = [&](const string &vehicleID,
+                               const string &routeRef,
+                               const vector<string> &inlineEdges,
+                               double depart) -> bool {
+        if (maxVehicles > 0 && validVehicles >= maxVehicles) return false;
+
+        vector<string> edgeIDs;
+        if (!inlineEdges.empty()) {
+            edgeIDs = inlineEdges;
+        } else if (!routeRef.empty()) {
+            auto routeIt = sumoRouteIDToEdges.find(routeRef);
+            if (routeIt == sumoRouteIDToEdges.end()) {
+                cout << "[SUMO Route Warning] vehicle=" << vehicleID
+                     << " missing route=" << routeRef << endl;
+                ++skippedVehicles;
+                return true;
+            }
+            edgeIDs = routeIt->second;
+        } else {
+            cout << "[SUMO Route Warning] vehicle=" << vehicleID
+                 << " has no route reference or inline route" << endl;
+            ++skippedVehicles;
+            return true;
+        }
+
+        vector<int> roadIDSequence;
+        bool missingEdge = false;
+        for (const string &edgeID : edgeIDs) {
+            if (!edgeID.empty() && edgeID[0] == ':') {
+                continue;
+            }
+            auto roadIt = sumoEdgeStrToRoadID.find(edgeID);
+            if (roadIt == sumoEdgeStrToRoadID.end()) {
+                cout << "[SUMO Route Warning] vehicle=" << vehicleID
+                     << " missing edge=" << edgeID << endl;
+                missingEdge = true;
+                break;
+            }
+            roadIDSequence.push_back(roadIt->second);
+        }
+        if (missingEdge) {
+            ++skippedVehicles;
+            return true;
+        }
+        if (roadIDSequence.empty()) {
+            cout << "[SUMO Route Warning] vehicle=" << vehicleID
+                 << " has fewer than 1 road after filtering" << endl;
+            ++skippedVehicles;
+            return true;
+        }
+
+        int firstRoad = roadIDSequence.front();
+        int lastRoad = roadIDSequence.back();
+        if (firstRoad < 0 || firstRoad >= static_cast<int>(roads.size()) ||
+            lastRoad < 0 || lastRoad >= static_cast<int>(roads.size())) {
+            cout << "[SUMO Route Warning] vehicle=" << vehicleID
+                 << " has roadID outside roads vector" << endl;
+            ++skippedVehicles;
+            return true;
+        }
+
+        int departTime = static_cast<int>(round(depart));
+        int startNode = roads[firstRoad].fromNode;
+        int endNode = roads[lastRoad].toNode;
+        queryDataRaw.push_back({startNode, endNode, departTime});
+        routeRoadID.push_back(roadIDSequence);
+        ++validVehicles;
+        if (!haveDepart) {
+            firstDepart = departTime;
+            haveDepart = true;
+        }
+        lastDepart = departTime;
+
+        if (previewPrinted < 5) {
+            cout << "[SUMO Route Preview] vehicle=" << vehicleID
+                 << " depart=" << departTime;
+            if (!routeRef.empty()) cout << " route=" << routeRef;
+            else cout << " route=<inline>";
+            cout << endl;
+            cout << "  edges: " << edge_list_text(edgeIDs) << endl;
+            cout << "  roadIDs: " << road_list_text(roadIDSequence) << endl;
+            ++previewPrinted;
+        }
+        return true;
+    };
+
+    bool inVehicle = false;
+    string currentVehicleID;
+    string currentRouteRef;
+    double currentDepart = 0.0;
+    vector<string> currentInlineEdges;
+
+    for (const auto &tag : tags) {
+        if (maxVehicles > 0 && validVehicles >= maxVehicles) break;
+
+        if (tag.name == "vehicle" && !tag.closing) {
+            ++vehiclesScanned;
+            currentVehicleID = to_string_attr(tag.attrs, "id", "vehicle_" + to_string(vehiclesScanned - 1));
+            currentRouteRef = to_string_attr(tag.attrs, "route");
+            currentDepart = to_double_attr(tag.attrs, "depart", 0.0);
+            currentInlineEdges.clear();
+
+            if (tag.selfClosing) {
+                process_vehicle(currentVehicleID, currentRouteRef, currentInlineEdges, currentDepart);
+                inVehicle = false;
+            } else {
+                inVehicle = true;
+            }
+        } else if (tag.name == "route" && !tag.closing && inVehicle) {
+            string edges = to_string_attr(tag.attrs, "edges");
+            if (!edges.empty()) currentInlineEdges = split_ws(edges);
+        } else if (tag.name == "vehicle" && tag.closing && inVehicle) {
+            process_vehicle(currentVehicleID, currentRouteRef, currentInlineEdges, currentDepart);
+            inVehicle = false;
+            currentVehicleID.clear();
+            currentRouteRef.clear();
+            currentInlineEdges.clear();
+        }
+    }
+
+    cout << "[SUMO Route] route definitions: " << sumoRouteIDToEdges.size() << endl;
+    cout << "[SUMO Route] vehicles scanned: " << vehiclesScanned << endl;
+    cout << "[SUMO Route] valid vehicles: " << validVehicles << endl;
+    cout << "[SUMO Route] skipped vehicles: " << skippedVehicles << endl;
+    if (haveDepart) {
+        cout << "[SUMO Route] first depart: " << firstDepart << endl;
+        cout << "[SUMO Route] last depart: " << lastDepart << endl;
+    } else {
+        cout << "[SUMO Route] first depart: n/a" << endl;
+        cout << "[SUMO Route] last depart: n/a" << endl;
+    }
+}
+
 void Graph::read_sumo_net_xml(const string& netXmlPath)
 {
     ifstream in(netXmlPath.c_str());
@@ -1068,6 +1256,15 @@ void Graph::route_roadID_2_movementID()
     }
     if (missingMovements > 0) {
         cout << "[Validation] missing movements from route conversion: " << missingMovements << endl;
+    }
+
+    int movementPreviewCount = min(5, static_cast<int>(routeMovementID.size()));
+    for (int i = 0; i < movementPreviewCount; ++i) {
+        cout << "[SUMO Route Preview] movementIDs:";
+        for (int movementID : routeMovementID[i]) {
+            cout << ' ' << movementID;
+        }
+        cout << endl;
     }
 }
 

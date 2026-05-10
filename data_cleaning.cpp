@@ -160,6 +160,7 @@ void Graph::validate_sumo_routes()
 {
     map<string, int> reasons;
     int invalidRoutes = 0;
+    int missingMovements = 0;
     for (const auto &route : routeRoadID) {
         bool invalid = false;
         for (int roadID : route) {
@@ -175,15 +176,19 @@ void Graph::validate_sumo_routes()
             }
         }
         for (int i = 0; i + 1 < static_cast<int>(route.size()); ++i) {
-            if (fromToRoadToMovementIDs.find(make_pair(route[i], route[i + 1])) == fromToRoadToMovementIDs.end() &&
-                roadPairToMovementID.find(make_pair(route[i], route[i + 1])) == roadPairToMovementID.end()) {
+            bool hasMovement = fromToRoadToMovementIDs.find(make_pair(route[i], route[i + 1])) != fromToRoadToMovementIDs.end() ||
+                               roadPairToMovementID.find(make_pair(route[i], route[i + 1])) != roadPairToMovementID.end();
+            if (!hasMovement) {
                 reasons["adjacent road pair has no movement"]++;
+                ++missingMovements;
                 invalid = true;
             }
         }
         if (invalid) ++invalidRoutes;
     }
+    cout << "[SUMO Validation] route sequences: " << routeRoadID.size() << endl;
     cout << "[SUMO Validation] invalid routes: " << invalidRoutes << endl;
+    cout << "[SUMO Validation] route missing movements: " << missingMovements << endl;
     for (const auto &kv : reasons) {
         cout << "[SUMO Validation] invalid route reason: " << kv.first << " count=" << kv.second << endl;
     }

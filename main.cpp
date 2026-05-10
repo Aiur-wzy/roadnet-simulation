@@ -12,6 +12,7 @@ struct RunConfig {
 
     string baseDir;
     string sumoNetPath;
+    string sumoRoutePath;
     string bjPath;
     string bjMinTravelTimePath;
     string roadInfoPath;
@@ -102,6 +103,7 @@ void print_usage(const char* programName) {
          << "Path options:\n"
          << "  --base <dir>           Derive standard input paths from this directory.\n"
          << "  --sumo-net <path>      SUMO .net.xml path.\n"
+         << "  --sumo-route <path>    SUMO .rou.xml route file used for full SUMO simulation.\n"
          << "  --bj <path>            Legacy BJ graph path.\n"
          << "  --bj-min-time <path>   Legacy BJ min travel-time path.\n"
          << "  --road-info <path>     Legacy road-info path.\n"
@@ -143,6 +145,7 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--smoke-test") cfg.smokeTest = true;
         else if (arg == "--base") cfg.baseDir = require_value(argc, argv, i, arg);
         else if (arg == "--sumo-net") { cfg.sumoNetPath = require_value(argc, argv, i, arg); cfg.sumoNetSetByCli = true; }
+        else if (arg == "--sumo-route") cfg.sumoRoutePath = require_value(argc, argv, i, arg);
         else if (arg == "--bj") cfg.bjPath = require_value(argc, argv, i, arg);
         else if (arg == "--bj-min-time") cfg.bjMinTravelTimePath = require_value(argc, argv, i, arg);
         else if (arg == "--road-info") cfg.roadInfoPath = require_value(argc, argv, i, arg);
@@ -180,6 +183,7 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
 
     if (cfg.sumoNetSetByCli) g.sumoNetPath = cfg.sumoNetPath;
     else if (cfg.baseDir.empty() && !cfg.envSumoNetPath.empty()) g.sumoNetPath = cfg.envSumoNetPath;
+    if (!cfg.sumoRoutePath.empty()) g.sumoRoutePath = cfg.sumoRoutePath;
 
     g.travelTimeMode = cfg.travelTimeMode;
     if (!cfg.travelTimeTablePath.empty()) g.travelTimeTablePath = cfg.travelTimeTablePath;
@@ -205,7 +209,10 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
     cout << "[Config] Mode: " << (cfg.useSumoNet ? "SUMO" : "Legacy BJ") << endl;
     cout << "[Config] Smoke test: " << cfg.smokeTest << endl;
     if (!g.Base.empty()) cout << "[Config] Base: " << g.Base << endl;
-    if (cfg.useSumoNet) cout << "[Config] SUMO net: " << g.sumoNetPath << endl;
+    if (cfg.useSumoNet) {
+        cout << "[Config] SUMO net: " << g.sumoNetPath << endl;
+        if (!g.sumoRoutePath.empty()) cout << "[Config] SUMO route: " << g.sumoRoutePath << endl;
+    }
     else {
         cout << "[Config] BJ graph: " << g.BJ << endl;
         cout << "[Config] BJ min travel time: " << g.BJ_minTravleTime << endl;
@@ -247,14 +254,51 @@ int main(int argc, char** argv) {
             g.validate_sumo_network();
             g.validate_sumo_connections();
             g.validate_sumo_signal_programs();
-            g.validate_sumo_routes();
-            print_sumo_sample_signal_states(g);
 
             if (cfg.smokeTest) {
+                print_sumo_sample_signal_states(g);
                 cout << "[SUMO] Smoke test complete." << endl;
-            } else {
-                cout << "[SUMO] Preparation complete. Provide SUMO-compatible route/query/time data before full simulation." << endl;
+                return 0;
             }
+
+            if (cfg.sumoRoutePath.empty()) {
+                cerr << "[Fatal] SUMO full simulation requires --sumo-route <path>. "
+                     << "Use --smoke-test if you only want network validation." << endl;
+                return 1;
+            }
+
+            g.read_sumo_route_xml(cfg.sumoRoutePath, cfg.readNum);
+            g.route_roadID_2_movementID();
+            g.validate_sumo_routes();
+
+            cout << "\nStep: Cycle-Aware SUMO Simulation" << endl;
+            cout << "-------------------------------------" << endl;
+            vector<vector<pair<int, float>>> ETA =
+                    g.cycle_aware_signal_driven_records(g.queryDataRaw, g.routeRoadID);
+
+            cout << "SUMO cycle-aware simulation done." << endl;
+            cout << "Finished vehicles: " << g.finishedVehicleCount
+                 << " / " << g.vehicles.size() << endl;
+            cout << "Invalid vehicles: " << g.invalidVehicleCount << endl;
+            cout << "Valid simulated vehicles: "
+                 << (g.vehicles.size() - g.invalidVehicleCount) << endl;
+
+            cout << "[TravelTime] mode: " << travelTimeModeToString(g.travelTimeMode) << endl;
+            if (g.travelTimeMode == TravelTimeMode::TABLE) {
+                cout << "[TravelTime] table hits: " << g.travelTimeTableHit << endl;
+                cout << "[TravelTime] table misses: " << g.travelTimeTableMiss << endl;
+            }
+            if (g.travelTimeMode == TravelTimeMode::TABLE || g.travelTimeMode == TravelTimeMode::MODEL) {
+                cout << "[TravelTime] fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
+            }
+
+            if (cfg.runEvaluation && !g.time_path.empty()) {
+                cout << "[SUMO Eval] Skipped because no compatible SUMO time ground truth was loaded." << endl;
+            } else {
+                cout << "[SUMO Eval] Skipped because --no-eval was set or no compatible SUMO time file was loaded." << endl;
+            }
+
+            (void)ETA;
             return 0;
         }
 
