@@ -1,5 +1,13 @@
 #include "head.h"
 
+namespace {
+void require_open(const std::ifstream& stream, const std::string& path, const std::string& label) {
+    if (!stream) {
+        throw std::runtime_error(label + ": cannot open required file '" + path + "'");
+    }
+}
+}
+
 
 // Read Graph
 void Graph::read_graph()
@@ -7,8 +15,7 @@ void Graph::read_graph()
 
     // 使用当前主数据源 "BJ" 构建基础路网（节点、边、RoadID 映射）
     ifstream IF(BJ);    //ID1, ID2, Weight (Length in Meters)
-    if(!IF)
-        cout<<"Cannot open Graph BJ"<<endl;
+    require_open(IF, BJ, "read_graph BJ graph");
     //Read Node Number and Edge Number
     IF>>nodenum>>edgenum; // 296710 774660
 
@@ -56,9 +63,7 @@ void Graph::read_graph()
     }
     // Open File "BJ_minTravleTime"
     ifstream IFTime(BJ_minTravleTime);
-    if(!IFTime){
-        cout<<"Cannot open Map BJ_minTravleTime"<<endl;
-    }
+    require_open(IFTime, BJ_minTravleTime, "read_graph BJ min travel time");
     // Read Node Number
     int nodenum, edgenum;
     IFTime>>nodenum>>edgenum; // 296710
@@ -89,8 +94,7 @@ void Graph::read_road_info()
 {
     // Read File
     ifstream IFNodeRoadID(beijingMoreRoadInfo);
-    if(!IFNodeRoadID)
-        cout<<"Cannot open beijingMoreRoadInfo"<<endl;
+    require_open(IFNodeRoadID, beijingMoreRoadInfo, "read_road_info road info");
     // Variable Initialization
     int nodeID1;
     int nodeID2;
@@ -269,10 +273,7 @@ string signal_state_to_string(SignalState s) {
 void Graph::read_sumo_net_xml(const string& netXmlPath)
 {
     ifstream in(netXmlPath.c_str());
-    if (!in) {
-        cout << "Cannot open SUMO net XML: " << netXmlPath << endl;
-        return;
-    }
+    require_open(in, netXmlPath, "read_sumo_net_xml SUMO net XML");
     stringstream buffer;
     buffer << in.rdbuf();
     vector<XmlTagLite> tags = parse_xml_tags_lite(buffer.str());
@@ -1149,8 +1150,7 @@ vector<vector<int>> Graph::read_query(string filename, int num)
     int DepartureTime;
     // Read Query Data
     ifstream file_name(filename);
-    if(!file_name)
-        cout<<"Cannot open Query Data"<<endl;
+    require_open(file_name, filename, "read_query query data");
     // Count Number of Lines
     int lines = CountLines(filename);
     // if defined number is greater than query data size
@@ -1190,8 +1190,7 @@ vector<vector<int>> Graph::read_route(string filename, int num)
 
     // Read Route Data
     ifstream file_name(filename);
-    if(!file_name)
-        cout<<"Cannot open Route Data" <<endl;
+    require_open(file_name, filename, "read_route route data");
     // Count Number of Lines
     int lines = CountLines(filename);
     // if defined number is greater than route data size
@@ -1249,8 +1248,7 @@ vector<vector<int>> Graph::read_time(string filename, int num, vector<vector<int
     vector<int> t;
     // Read Route Data
     ifstream file_name(filename);
-    if(!file_name)
-        cout<<"Cannot open time data" <<endl;
+    require_open(file_name, filename, "read_time time data");
     // Count Number of Lines
     int lines = CountLines(filename);
     // if defined number is greater than time data size
@@ -1301,8 +1299,7 @@ tuple<vector<int>, int> Graph::read_time_no_wait(string filename, int num) {
     int input_num;
     // Read Route Data
     ifstream file_name(filename);
-    if(!file_name)
-        cout<<"Cannot open time data" <<endl;
+    require_open(file_name, filename, "read_time_no_wait time-no-wait data");
     // Count Number of Lines
     int lines = CountLines(filename);
     // if defined number is greater than time data size

@@ -58,6 +58,8 @@ namespace boost {
 #include <tuple>
 #include <cctype>
 #include <cassert>
+#include <stdexcept>
+#include "config_defaults.h"
 
 #include <iostream>
 #include <sys/types.h>
@@ -466,11 +468,41 @@ public:
     // -----------------------------------------------------------------------------
 
     // Define Data Path
-    string Base = "/Users/xuzizhuo/Desktop/Main Folder/My_works/Finished_Projects/ICDE2025_RouteSys/Code/routeSys_Github/Traffic_Simulation_Prediction/Simulation_Prediction/Manhattan_Data/";
+    // -----------------------------------------------------------------------------
+    // Default path section:
+    // - Prefer command-line arguments for reproducible experiments.
+    // - If you do not want to pass command-line arguments, edit
+    //   roadnet_defaults::DEFAULT_BASE_DIR in config_defaults.h.
+    // - Graph::set_base_path() derives all standard input paths from Base.
+    // - Explicit command-line path arguments override these defaults.
+    string Base = roadnet_defaults::DEFAULT_BASE_DIR;
+    static string normalize_base_dir(const string& baseDir) {
+        if (baseDir.empty()) return baseDir;
+        size_t end = baseDir.size();
+        while (end > 1 && (baseDir[end - 1] == '/' || baseDir[end - 1] == '\\')) --end;
+        return baseDir.substr(0, end);
+    }
+    static string join_path(const string& baseDir, const string& child) {
+        if (baseDir.empty()) return child;
+        string b = normalize_base_dir(baseDir);
+        return b + "/" + child;
+    }
+    void set_base_path(const string& baseDir) {
+        string b = normalize_base_dir(baseDir);
+        Base = b;
+        BJ = join_path(b, "Manhattan_network_BJ.txt");
+        BJ_minTravleTime = join_path(b, "Manhattan_network_min_Travel_Time.txt");
+        beijingMoreRoadInfo = join_path(b, "beijingMoreRoadInfo");
+        queryPath = join_path(b, "query.txt");
+        route_path = join_path(b, "route.txt");
+        time_path = join_path(b, "time.txt");
+        time_path_no_wait = join_path(b, "time_no_wait.txt");
+        sumoNetPath = join_path(b, "test.net.xml");
+    }
     // Read Road Network
     void read_graph();       // Can Be "one-way" (edge:651749) or "two-way" (edge:774660)
-    // string BJ_NodeWeight = Base + "BJ_NodeWeight";
-    string BJ = Base + "Manhattan_network_BJ.txt";                // ID1, ID2, Weight (Length in Meters)
+    // string BJ_NodeWeight = join_path(Base, "BJ_NodeWeight");
+    string BJ = join_path(Base, "Manhattan_network_BJ.txt");                // ID1, ID2, Weight (Length in Meters)
     int nodenum;                                    // Node Number (296710)
     int edgenum;                                    // Edge Number (774660 or 651748) 387587
     vector<vector<pair<int, float>>> graphLength;      // ID1, ID2, Length
@@ -480,31 +512,31 @@ public:
     map<pair<int, int>, int> nodeID2RoadID;         // <ID1, ID2> -> RoadID
     map<int, pair<int, int>> roadID2NodeID;         // RoadID -> <ID1, ID2>
     map<pair<int, int>, int> nodeID2minTime;        // <ID1, ID2> -> Min Travel Time
-    string BJ_minTravleTime = Base +                // ID1, ID2, Weight (Min Travel Time in s)
-                              "Manhattan_network_min_Travel_Time.txt";
+    string BJ_minTravleTime = join_path(Base,                // ID1, ID2, Weight (Min Travel Time in s)
+                              "Manhattan_network_min_Travel_Time.txt");
     vector<vector<pair<int,int>>> graphTime;        // ID1, ID2, Weight (Min Travel Time)
     // Read Road Information
     void read_road_info();
     vector<roadMore> roadInforMore;
-    string beijingMoreRoadInfo = Base + "beijingMoreRoadInfo";
+    string beijingMoreRoadInfo = join_path(Base, "beijingMoreRoadInfo");
 
     // Read query, route, time data
     vector<vector<int>> read_query(string filename, int num);
-    string queryPath = Base + "query.txt";
+    string queryPath = join_path(Base, "query.txt");
     vector<vector<int>> queryDataRaw;
     vector<vector<int>> read_route(string filename, int num);
-    string route_path = Base + "route.txt";
+    string route_path = join_path(Base, "route.txt");
     vector<vector<int>> routeDataRaw;
     unordered_map<int, unordered_map<int, vector<int>>> route_time_Dict;
     vector<vector<int>> read_time(string filename, int num, vector<vector<int>> query);
-    string time_path = Base + "time.txt";
+    string time_path = join_path(Base, "time.txt");
     vector<vector<int>> timeDataRaw;
     tuple<vector<int>, int> read_time_no_wait(string filename, int num);
-    string time_path_no_wait = Base + "time_no_wait.txt";
+    string time_path_no_wait = join_path(Base, "time_no_wait.txt");
     vector<int> time_no_wait;
 
     // SUMO .net.xml input and adaptation
-    string sumoNetPath = Base + "test.net.xml";
+    string sumoNetPath = roadnet_defaults::DEFAULT_SUMO_NET_PATH;
     void read_sumo_net_xml(const string& netXmlPath);
     void classify_node_types_from_sumo_junctions();
     void build_movements_from_sumo_connections();
@@ -615,14 +647,14 @@ public:
     int flow2time_by_range(int &ID1index, int &ID2index, int &flow);
     //
     void read_edge_feature_2_map(const string& filePath);
-    string edge_id_to_features_path = Base + "edge_id_to_features.csv";
+    string edge_id_to_features_path = join_path(Base, "edge_id_to_features.csv");
 
     map<int, EdgeInfo> edge_id_to_features;
 
     //
     void readConnectionsToDirections(const std::string& filename);
     map<pair<int, int>, char> connections_to_direction;
-    string connections_to_direction_path = Base + "connections_to_directions.csv";
+    string connections_to_direction_path = join_path(Base, "connections_to_directions.csv");
 
     // 定义函数，返回给定边的下一边的方向
     char findNextEdgeDirection(int currentEdgeID, int route_id);
@@ -631,7 +663,7 @@ public:
     //
     void buildDictionary(const std::string& filename);
     unordered_map<RoadKey, double> dictionary;
-    string model_catch_dic_path = Base + "model_catching_with_travel_time_1.txt";
+    string model_catch_dic_path = join_path(Base, "model_catching_with_travel_time_1.txt");
     // 现行新算法主入口：基于 signal event + waiting buffer + discharge capacity 的仿真
     vector<vector<pair<int, float>>> cycle_aware_signal_driven_records(
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
@@ -676,7 +708,7 @@ public:
     void export_time_records(string route_num, vector<vector<int>> &routeData,
                              vector<vector<int>> &routeDataEdge, vector<vector<int>> &timeData,
                              vector<vector<pair<int,int>>> &ETA);
-    string file_path_time_records = Base + "time_records_out.txt";
+    string file_path_time_records = join_path(Base, "time_records_out.txt");
 
     void Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result);
 
@@ -704,9 +736,9 @@ public:
     vector<int> route_node_2_route_road(vector<int> &routeNode);
     // Generate New Data for Insertion
     void data_generation(string route_file, string depar_file, string Pi_file, int newNum, int avg_length, bool cut);
-    string routeRoadPath = Base + "new_data_update/test_route";
-    string deparTimePath = Base + "new_data_update/test_depar";
-    string routeNodePath = Base + "new_data_update/test_Pi";
+    string routeRoadPath = join_path(Base, "new_data_update/test_route");
+    string deparTimePath = join_path(Base, "new_data_update/test_depar");
+    string routeNodePath = join_path(Base, "new_data_update/test_Pi");
     // Generate Data Same as Simulation Operation for Comparison
     void data_generation_same_simulation(
             string route_file, string depar_file, string Pi_file, vector<vector<int>> &query_data, vector<vector<int>> &route_data);
@@ -761,9 +793,9 @@ public:
     // Generate New Data for Deletion
     // Main Idea: Capturing Existing Route as New Deletion Data
     void dele_data_generation(string route_file, string Pi_file, string route_index_file, int newNum);
-    string routeRoadPathD = Base + "new_data_update/deletion_routeNode";
-    string routeNodePathD = Base + "new_data_update/deletion_routeRoad";
-    string routeIndexpath = Base + "new_data_update/deletion_routeRoadIndex";
+    string routeRoadPathD = join_path(Base, "new_data_update/deletion_routeNode");
+    string routeNodePathD = join_path(Base, "new_data_update/deletion_routeRoad");
+    string routeIndexpath = join_path(Base, "new_data_update/deletion_routeRoadIndex");
     // Read Selected Deleted Route Data
     void read_deletion_data(string routeRoadPath, string routeRoadIndex);
     vector<pair<int, vector<int>>> routeRoadDelInput;
