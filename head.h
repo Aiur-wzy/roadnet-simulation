@@ -549,7 +549,9 @@ public:
 
     // SUMO .net.xml input and adaptation
     string sumoNetPath = roadnet_defaults::DEFAULT_SUMO_NET_PATH;
+    string sumoRoutePath;
     void read_sumo_net_xml(const string& netXmlPath);
+    void read_sumo_route_xml(const string& routeXmlPath, int maxVehicles);
     void classify_node_types_from_sumo_junctions();
     void build_movements_from_sumo_connections();
     void build_lane_groups_from_sumo_connections();
