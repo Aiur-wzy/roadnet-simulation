@@ -462,7 +462,7 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
     }
 
     // Write to file
-    ofstream outfile(Base + "traffic_prediction_structure_1.txt");
+    ofstream outfile(join_path(Base, "traffic_prediction_structure_1.txt"));
     if (outfile.is_open()) {
         for (int i = 0; i < traffic_prediction_structure.size(); i++) {
 
