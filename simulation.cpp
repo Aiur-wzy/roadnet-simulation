@@ -1211,7 +1211,7 @@ bool Graph::validateRoadLaneFlows() const {
     }
 
     for (const auto& vehicle : vehicles) {
-        if (!vehicle.valid || vehicle.finished) continue;
+        if (!vehicle.valid || vehicle.finished || vehicle.state == VehicleState::NotDeparted) continue;
         int roadID = vehicle.occupiedRoadID;
         int laneIndex = vehicle.occupiedLaneIndex;
         if (roadID < 0 || roadID >= static_cast<int>(roads.size())) {
@@ -1291,7 +1291,9 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
     invalidVehicleCount = 0;
     usedMovementDischargeCapacity.clear();
     while (!signalEventPQ.empty()) signalEventPQ.pop();
+    while (!departurePQ.empty()) departurePQ.pop();
     while (!dispatchPQ.empty()) dispatchPQ.pop();
+    delayedDepartureLogged.clear();
 
     this->routeRoadID = routeRoadIDInput;
     route_roadID_2_movementID();
@@ -1308,18 +1310,33 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
     initialize_signal_event_queue(simStartTime);
 
     int currentTime = simStartTime;
+    int idleWindows = 0;
+    const int maxIdleWindows = max(1000, static_cast<int>(vehicles.size()) * 10000);
     while (!allVehiclesFinished()) {
-        if (signalEventPQ.empty()) {
-            cout << "[Error] signalEventPQ is empty before all vehicles finished." << endl;
-            break;
+        int nextTime = INF;
+        if (!signalEventPQ.empty()) nextTime = min(nextTime, signalEventPQ.top().time);
+        if (!departurePQ.empty()) nextTime = min(nextTime, departurePQ.top().time);
+
+        if (nextTime == INF) {
+            // No external events remain. Keep always-open movements moving in small windows
+            // rather than stopping early while queued vehicles are still active.
+            nextTime = currentTime + 1;
+            if (++idleWindows > maxIdleWindows) {
+                cout << "[Error] no signal/departure events remain before all vehicles finished." << endl;
+                break;
+            }
+        } else {
+            idleWindows = 0;
         }
 
-        int nextTime = signalEventPQ.top().time;
+        if (nextTime < currentTime) nextTime = currentTime;
         if (currentTime < nextTime) {
+            process_departures_until(currentTime, nextTime);
             process_discharge_window(currentTime, nextTime);
         }
 
         currentTime = nextTime;
+        process_departures_until(currentTime, currentTime + 1);
 
         while (!signalEventPQ.empty() && signalEventPQ.top().time == currentTime) {
             SignalEvent e = signalEventPQ.top();
@@ -1330,8 +1347,6 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
                 signalEventPQ.push({nextT, e.signalID});
             }
         }
-
-        if (signalEventPQ.empty()) break;
     }
     validateRoadLaneFlows();
     return ETA_result_cycle_aware;
@@ -1344,13 +1359,16 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
     finishedVehicleCount = 0;
     invalidVehicleCount = 0;
     usedMovementDischargeCapacity.clear();
+    while (!departurePQ.empty()) departurePQ.pop();
+    delayedDepartureLogged.clear();
 
     for (auto &b : waitingBuffers) {
         b.vehicleQueue.clear();
     }
     initializeRoadLaneStorage();
 
-    // 路径无法映射到 movement/buffer 的车辆标记为 invalid，并从评估集中排除。
+    // Only true route/mapping errors are invalid. Vehicles with no lane storage
+    // remain NotDeparted and retry departure later.
     auto mark_invalid = [&](VehicleLabel &vehicle) {
         vehicle.valid = false;
         vehicle.finished = true;
@@ -1360,70 +1378,56 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
         invalidVehicleCount++;
     };
 
-    for (int i = 0; i < routeRoadIDInput.size(); ++i) {
+    for (int i = 0; i < static_cast<int>(routeRoadIDInput.size()); ++i) {
         VehicleLabel v;
         v.vehicleID = i;
         v.routeID = i;
         v.routeRoadIDs = routeRoadIDInput[i];
-        if (i < routeMovementID.size()) v.routeMovementIDs = routeMovementID[i];
+        if (i < static_cast<int>(routeMovementID.size())) v.routeMovementIDs = routeMovementID[i];
         v.roadIndex = 0;
+        v.state = VehicleState::NotDeparted;
 
         if (v.routeRoadIDs.empty()) {
             mark_invalid(v);
             continue;
         }
 
-        int departTime = (i < Q.size() && Q[i].size() > 2) ? Q[i][2] : 0;
+        int departTime = (i < static_cast<int>(Q.size()) && Q[i].size() > 2) ? Q[i][2] : 0;
         v.currentRoadID = v.routeRoadIDs[0];
-        v.arrivalTime = departTime + predictRoadTravelTime(v.currentRoadID, i);
+        v.arrivalTime = departTime;
+
+        if (v.currentRoadID < 0 || v.currentRoadID >= static_cast<int>(roads.size())) {
+            mark_invalid(v);
+            continue;
+        }
 
         ETA_result_cycle_aware[i].push_back({v.currentRoadID, static_cast<float>(departTime)});
 
-        if (v.routeRoadIDs.size() == 1) {
-            vehicles[i] = v;
-            recordFinalETA(i, v.arrivalTime);
-            continue;
-        } else if (!v.routeMovementIDs.empty()) {
+        if (v.routeRoadIDs.size() > 1) {
+            if (v.routeMovementIDs.empty()) {
+                mark_invalid(v);
+                continue;
+            }
             int movementID = v.routeMovementIDs[0];
             if (movementID < 0 || movementID >= static_cast<int>(movements.size())) {
                 mark_invalid(v);
                 continue;
             }
-            if (v.currentRoadID < 0 || v.currentRoadID >= static_cast<int>(roads.size())) {
-                mark_invalid(v);
-                continue;
-            }
             auto itRoad = roads[v.currentRoadID].movementIDToWaitingBufferID.find(movementID);
-            if (itRoad != roads[v.currentRoadID].movementIDToWaitingBufferID.end()) {
-                v.currentMovementID = movementID;
-                v.currentBufferID = itRoad->second;
-                if (v.currentBufferID < 0 || v.currentBufferID >= static_cast<int>(waitingBuffers.size())) {
-                    mark_invalid(v);
-                    continue;
-                }
-                vector<int> initialLanes = parseLaneIndices(movements[movementID].fromLanes, v.currentRoadID);
-                if (initialLanes.empty()) initialLanes.push_back(0);
-                vehicles[i] = v;
-                int chosenLane = chooseLeastOccupiedAvailableLane(v.currentRoadID, initialLanes, i);
-                if (chosenLane < 0) {
-                    cout << "[LaneFlow Warning] no initial lane storage for vehicle " << i
-                         << " on road " << v.currentRoadID << "; marking invalid." << endl;
-                    mark_invalid(v);
-                    continue;
-                }
-                v.state = VehicleState::WaitingAtIntersection;
-                vehicles[i] = v;
-                insertVehicleToBufferOrdered(v.currentBufferID, i);
-                reserveLaneOccupancy(i, v.currentRoadID, chosenLane);
-                continue;
-            } else {
+            if (itRoad == roads[v.currentRoadID].movementIDToWaitingBufferID.end()) {
                 mark_invalid(v);
                 continue;
             }
-        } else {
-            mark_invalid(v);
-            continue;
+            v.currentMovementID = movementID;
+            v.currentBufferID = itRoad->second;
+            if (v.currentBufferID < 0 || v.currentBufferID >= static_cast<int>(waitingBuffers.size())) {
+                mark_invalid(v);
+                continue;
+            }
         }
+
+        vehicles[i] = v;
+        departurePQ.push({departTime, i});
     }
 }
 
@@ -1457,6 +1461,64 @@ void Graph::rebuildActiveDispatchPQ(int currentTime, int windowEnd) {
             dispatchPQ.push({earliest, readyTime, m.movementID, bufferID, vehicleID});
         }
     }
+}
+
+void Graph::process_departures_until(int windowStart, int windowEnd) {
+    (void)windowStart;
+    while (!departurePQ.empty() && departurePQ.top().time < windowEnd) {
+        DepartureEvent e = departurePQ.top();
+        departurePQ.pop();
+        departVehicle(e.vehicleID, e.time);
+    }
+}
+
+bool Graph::departVehicle(int vehicleID, int departTime) {
+    if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return false;
+    VehicleLabel &v = vehicles[vehicleID];
+    if (!v.valid || v.finished || v.state != VehicleState::NotDeparted) return false;
+    if (v.routeRoadIDs.empty()) return false;
+
+    int firstRoad = v.routeRoadIDs[0];
+    if (firstRoad < 0 || firstRoad >= static_cast<int>(roads.size())) return false;
+
+    vector<int> candidateLanes;
+    int firstMovement = v.currentMovementID;
+    int firstBuffer = v.currentBufferID;
+    if (v.routeRoadIDs.size() > 1) {
+        if (firstMovement < 0 || firstMovement >= static_cast<int>(movements.size())) return false;
+        if (firstBuffer < 0 || firstBuffer >= static_cast<int>(waitingBuffers.size())) return false;
+        candidateLanes = parseLaneIndices(movements[firstMovement].fromLanes, firstRoad);
+    }
+    if (candidateLanes.empty()) {
+        int laneCount = (firstRoad >= 0 && firstRoad < static_cast<int>(roads.size()))
+            ? max(1, static_cast<int>(roads[firstRoad].laneFlow.size()))
+            : 1;
+        for (int lane = 0; lane < laneCount; ++lane) candidateLanes.push_back(lane);
+    }
+
+    int chosenLane = chooseLeastOccupiedAvailableLane(firstRoad, candidateLanes, vehicleID);
+    if (chosenLane < 0) {
+        int retryAt = departTime + 1;
+        departurePQ.push({retryAt, vehicleID});
+        if (verboseTravelTimePrediction || delayedDepartureLogged.insert(vehicleID).second) {
+            cout << "[LaneFlow] delayed departure vehicle=" << vehicleID
+                 << " road=" << firstRoad << " retryAt=" << retryAt << endl;
+        }
+        return false;
+    }
+
+    reserveLaneOccupancy(vehicleID, firstRoad, chosenLane);
+    v.arrivalTime = departTime + predictRoadTravelTime(firstRoad, vehicleID);
+
+    if (v.routeRoadIDs.size() == 1) {
+        releaseLaneOccupancy(vehicleID);
+        recordFinalETA(vehicleID, v.arrivalTime);
+        return true;
+    }
+
+    v.state = VehicleState::WaitingAtIntersection;
+    insertVehicleToBufferOrdered(firstBuffer, vehicleID);
+    return true;
 }
 
 void Graph::process_discharge_window(int windowStart, int windowEnd) {

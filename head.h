@@ -459,6 +459,11 @@ struct SignalEvent {
     int signalID = -1;
 };
 
+struct DepartureEvent {
+    int time = 0;
+    int vehicleID = -1;
+};
+
 struct DispatchCandidate {
     int earliestDischargeTime = 0;
     int readyTime = 0;
@@ -484,6 +489,13 @@ struct SignalEventCompare {
     bool operator()(const SignalEvent& a, const SignalEvent& b) const {
         if (a.time != b.time) return a.time > b.time;
         return a.signalID > b.signalID;
+    }
+};
+
+struct DepartureEventCompare {
+    bool operator()(const DepartureEvent& a, const DepartureEvent& b) const {
+        if (a.time != b.time) return a.time > b.time;
+        return a.vehicleID > b.vehicleID;
     }
 };
 
@@ -688,12 +700,14 @@ public:
 
     vector<VehicleLabel> vehicles;
     priority_queue<SignalEvent, vector<SignalEvent>, SignalEventCompare> signalEventPQ;
+    priority_queue<DepartureEvent, vector<DepartureEvent>, DepartureEventCompare> departurePQ;
     priority_queue<DispatchCandidate, vector<DispatchCandidate>, DispatchCandidateCompare> dispatchPQ;
     vector<vector<pair<int, float>>> ETA_result_cycle_aware;
     int finishedVehicleCount = 0;
     int invalidVehicleCount = 0;
     int defaultDischargeInterval = 1;
     map<tuple<int, int>, int> usedMovementDischargeCapacity;
+    unordered_set<int> delayedDepartureLogged;
     // Classify Each Road with A Unique Latency Function
     vector<vector<pair<int,vector<pair<int,int>>>>> timeRange;
     // int realPercent;
@@ -747,6 +761,8 @@ public:
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
     void initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vector<int>>& routeRoadID);
     void initialize_signal_event_queue(int simStartTime);
+    void process_departures_until(int windowStart, int windowEnd);
+    bool departVehicle(int vehicleID, int departTime);
     void process_discharge_window(int windowStart, int windowEnd);
     void rebuildActiveDispatchPQ(int currentTime, int windowEnd);
     bool isMovementActive(int movementID, int t);
