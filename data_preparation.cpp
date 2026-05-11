@@ -283,11 +283,24 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
     routeRoadID.clear();
     routeMovementID.clear();
     sumoVehicleIDs.clear();
+    vehicleTypeIDs.clear();
+    sumoVehicleTypes.clear();
+    sumoVehicleTypes["car"] = VehicleType();
 
     unordered_map<string, vector<string>> sumoRouteIDToEdges;
     bool insideVehicle = false;
     for (const auto &tag : tags) {
-        if (tag.name == "vehicle" && !tag.closing) {
+        if (tag.name == "vType" && !tag.closing) {
+            VehicleType vt;
+            vt.id = to_string_attr(tag.attrs, "id", "car");
+            vt.accel = to_double_attr(tag.attrs, "accel", vt.accel);
+            vt.decel = to_double_attr(tag.attrs, "decel", vt.decel);
+            vt.sigma = to_double_attr(tag.attrs, "sigma", vt.sigma);
+            vt.length = to_double_attr(tag.attrs, "length", vt.length);
+            vt.minGap = to_double_attr(tag.attrs, "minGap", vt.minGap);
+            vt.maxSpeed = to_double_attr(tag.attrs, "maxSpeed", vt.maxSpeed);
+            if (!vt.id.empty()) sumoVehicleTypes[vt.id] = vt;
+        } else if (tag.name == "vehicle" && !tag.closing) {
             insideVehicle = true;
             if (tag.selfClosing) insideVehicle = false;
         } else if (tag.name == "vehicle" && tag.closing) {
@@ -329,7 +342,8 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
     auto process_vehicle = [&](const string &vehicleID,
                                const string &routeRef,
                                const vector<string> &inlineEdges,
-                               double depart) -> bool {
+                               double depart,
+                               const string &vehicleTypeID) -> bool {
         if (maxVehicles > 0 && validVehicles >= maxVehicles) return false;
 
         vector<string> edgeIDs;
@@ -393,6 +407,12 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
         queryDataRaw.push_back({startNode, endNode, departTime});
         routeRoadID.push_back(roadIDSequence);
         sumoVehicleIDs.push_back(vehicleID);
+        string resolvedTypeID = vehicleTypeID.empty() ? "car" : vehicleTypeID;
+        if (sumoVehicleTypes.find(resolvedTypeID) == sumoVehicleTypes.end()) {
+            sumoVehicleTypes[resolvedTypeID] = VehicleType();
+            sumoVehicleTypes[resolvedTypeID].id = resolvedTypeID;
+        }
+        vehicleTypeIDs.push_back(resolvedTypeID);
         ++validVehicles;
         if (!haveDepart) {
             firstDepart = departTime;
@@ -416,6 +436,7 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
     bool inVehicle = false;
     string currentVehicleID;
     string currentRouteRef;
+    string currentVehicleTypeID;
     double currentDepart = 0.0;
     vector<string> currentInlineEdges;
 
@@ -426,11 +447,12 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
             ++vehiclesScanned;
             currentVehicleID = to_string_attr(tag.attrs, "id", "vehicle_" + to_string(vehiclesScanned - 1));
             currentRouteRef = to_string_attr(tag.attrs, "route");
+            currentVehicleTypeID = to_string_attr(tag.attrs, "type", "car");
             currentDepart = to_double_attr(tag.attrs, "depart", 0.0);
             currentInlineEdges.clear();
 
             if (tag.selfClosing) {
-                process_vehicle(currentVehicleID, currentRouteRef, currentInlineEdges, currentDepart);
+                process_vehicle(currentVehicleID, currentRouteRef, currentInlineEdges, currentDepart, currentVehicleTypeID);
                 inVehicle = false;
             } else {
                 inVehicle = true;
@@ -439,14 +461,19 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
             string edges = to_string_attr(tag.attrs, "edges");
             if (!edges.empty()) currentInlineEdges = split_ws(edges);
         } else if (tag.name == "vehicle" && tag.closing && inVehicle) {
-            process_vehicle(currentVehicleID, currentRouteRef, currentInlineEdges, currentDepart);
+            process_vehicle(currentVehicleID, currentRouteRef, currentInlineEdges, currentDepart, currentVehicleTypeID);
             inVehicle = false;
             currentVehicleID.clear();
             currentRouteRef.clear();
+            currentVehicleTypeID.clear();
             currentInlineEdges.clear();
         }
     }
 
+    if (sumoVehicleTypes.find("car") == sumoVehicleTypes.end()) {
+        sumoVehicleTypes["car"] = VehicleType();
+    }
+    cout << "[SUMO Route] vehicle types: " << sumoVehicleTypes.size() << endl;
     cout << "[SUMO Route] route definitions: " << sumoRouteIDToEdges.size() << endl;
     cout << "[SUMO Route] vehicles scanned: " << vehiclesScanned << endl;
     cout << "[SUMO Route] valid vehicles: " << validVehicles << endl;

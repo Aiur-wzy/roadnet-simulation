@@ -6,7 +6,8 @@ TravelTimeMode parseTravelTimeMode(const string& s) {
     if (s == "min-time") return TravelTimeMode::MIN_TIME;
     if (s == "table") return TravelTimeMode::TABLE;
     if (s == "model") return TravelTimeMode::MODEL;
-    throw runtime_error("Invalid travel time mode: " + s + " (expected speed-net, min-time, table, or model)");
+    if (s == "kinematic") return TravelTimeMode::KINEMATIC;
+    throw runtime_error("Invalid travel time mode: " + s + " (expected speed-net, min-time, table, model, or kinematic)");
 }
 
 string travelTimeModeToString(TravelTimeMode mode) {
@@ -15,6 +16,7 @@ string travelTimeModeToString(TravelTimeMode mode) {
         case TravelTimeMode::MIN_TIME: return "min-time";
         case TravelTimeMode::TABLE: return "table";
         case TravelTimeMode::MODEL: return "model";
+        case TravelTimeMode::KINEMATIC: return "kinematic";
     }
     return "speed-net";
 }
@@ -503,12 +505,39 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
 namespace {
 
 struct SumoEvalRecord {
+    double predDuration = 0.0;
     double truthDuration = 0.0;
+    double predArrival = 0.0;
+    double truthArrival = 0.0;
     double truthWaitingTime = 0.0;
     double truthTimeLoss = 0.0;
     double truthRouteLength = 0.0;
+    double predAvgSpeed = 0.0;
+    double truthAvgSpeed = 0.0;
     double durationError = 0.0;
     double absDurationError = 0.0;
+    double arrivalError = 0.0;
+    double absArrivalError = 0.0;
+    double speedError = 0.0;
+    int numMovements = 0;
+};
+
+struct DistributionMetrics {
+    double sortedMAE = 0.0;
+    double sortedMSE = 0.0;
+    double sortedRMSE = 0.0;
+    double predP10 = 0.0;
+    double truthP10 = 0.0;
+    double diffP10 = 0.0;
+    double predP50 = 0.0;
+    double truthP50 = 0.0;
+    double diffP50 = 0.0;
+    double predP90 = 0.0;
+    double truthP90 = 0.0;
+    double diffP90 = 0.0;
+    double predMean = 0.0;
+    double truthMean = 0.0;
+    double diffMean = 0.0;
 };
 
 double safe_divide(double numerator, double denominator)
@@ -529,53 +558,28 @@ double percentile_sorted(vector<double> values, double percentile)
     return values[lower] + (values[upper] - values[lower]) * fraction;
 }
 
-void print_sumo_eval_group_metrics(
-        const string& title,
-        const vector<pair<string, function<bool(const SumoEvalRecord&)>>>& bins,
-        const vector<SumoEvalRecord>& records)
+double mean_of(const vector<double>& values)
 {
-    cout << title << endl;
-    cout << "[SUMO Eval] bin,n,MAE duration,RMSE duration,Bias duration,P90 absolute duration error" << endl;
+    if (values.empty()) return 0.0;
+    double sum = 0.0;
+    for (double v : values) sum += v;
+    return sum / static_cast<double>(values.size());
+}
 
-    for (const auto &bin : bins) {
-        int n = 0;
-        double sumAbsDurationError = 0.0;
-        double sumSquaredDurationError = 0.0;
-        double sumDurationError = 0.0;
-        vector<double> absErrors;
-
-        for (const auto &record : records) {
-            if (!bin.second(record)) continue;
-            ++n;
-            sumAbsDurationError += record.absDurationError;
-            sumSquaredDurationError += record.durationError * record.durationError;
-            sumDurationError += record.durationError;
-            absErrors.push_back(record.absDurationError);
-        }
-
-        if (n == 0) {
-            cout << "[SUMO Eval] " << bin.first << ",0,n/a,n/a,n/a,n/a" << endl;
-            continue;
-        }
-
-        cout << "[SUMO Eval] " << bin.first << ','
-             << n << ','
-             << (sumAbsDurationError / n) << ','
-             << sqrt(sumSquaredDurationError / n) << ','
-             << (sumDurationError / n) << ','
-             << percentile_sorted(absErrors, 90.0) << endl;
-    }
+string eval_sibling_path(const string& evalOutputPath, const string& filename)
+{
+    const size_t slash = evalOutputPath.find_last_of("/\\");
+    if (slash == string::npos) return filename;
+    return evalOutputPath.substr(0, slash + 1) + filename;
 }
 
 vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_duration_bins()
 {
     return {
-        {"[0,30)", [](const SumoEvalRecord& r) { return r.truthDuration >= 0.0 && r.truthDuration < 30.0; }},
-        {"[30,60)", [](const SumoEvalRecord& r) { return r.truthDuration >= 30.0 && r.truthDuration < 60.0; }},
-        {"[60,120)", [](const SumoEvalRecord& r) { return r.truthDuration >= 60.0 && r.truthDuration < 120.0; }},
-        {"[120,300)", [](const SumoEvalRecord& r) { return r.truthDuration >= 120.0 && r.truthDuration < 300.0; }},
+        {"[0,300)", [](const SumoEvalRecord& r) { return r.truthDuration >= 0.0 && r.truthDuration < 300.0; }},
         {"[300,600)", [](const SumoEvalRecord& r) { return r.truthDuration >= 300.0 && r.truthDuration < 600.0; }},
-        {"[600,+inf)", [](const SumoEvalRecord& r) { return r.truthDuration >= 600.0; }}
+        {"[600,900)", [](const SumoEvalRecord& r) { return r.truthDuration >= 600.0 && r.truthDuration < 900.0; }},
+        {"[900,+inf)", [](const SumoEvalRecord& r) { return r.truthDuration >= 900.0; }}
     };
 }
 
@@ -583,21 +587,21 @@ vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_waiting_time_bi
 {
     return {
         {"0", [](const SumoEvalRecord& r) { return r.truthWaitingTime == 0.0; }},
-        {"(0,10)", [](const SumoEvalRecord& r) { return r.truthWaitingTime > 0.0 && r.truthWaitingTime < 10.0; }},
-        {"[10,30)", [](const SumoEvalRecord& r) { return r.truthWaitingTime >= 10.0 && r.truthWaitingTime < 30.0; }},
+        {"(0,30)", [](const SumoEvalRecord& r) { return r.truthWaitingTime > 0.0 && r.truthWaitingTime < 30.0; }},
         {"[30,60)", [](const SumoEvalRecord& r) { return r.truthWaitingTime >= 30.0 && r.truthWaitingTime < 60.0; }},
-        {"[60,+inf)", [](const SumoEvalRecord& r) { return r.truthWaitingTime >= 60.0; }}
+        {"[60,120)", [](const SumoEvalRecord& r) { return r.truthWaitingTime >= 60.0 && r.truthWaitingTime < 120.0; }},
+        {"[120,+inf)", [](const SumoEvalRecord& r) { return r.truthWaitingTime >= 120.0; }}
     };
 }
 
 vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_time_loss_bins()
 {
     return {
-        {"0", [](const SumoEvalRecord& r) { return r.truthTimeLoss == 0.0; }},
-        {"(0,10)", [](const SumoEvalRecord& r) { return r.truthTimeLoss > 0.0 && r.truthTimeLoss < 10.0; }},
-        {"[10,30)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 10.0 && r.truthTimeLoss < 30.0; }},
+        {"[0,30)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 0.0 && r.truthTimeLoss < 30.0; }},
         {"[30,60)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 30.0 && r.truthTimeLoss < 60.0; }},
-        {"[60,+inf)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 60.0; }}
+        {"[60,120)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 60.0 && r.truthTimeLoss < 120.0; }},
+        {"[120,300)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 120.0 && r.truthTimeLoss < 300.0; }},
+        {"[300,+inf)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 300.0; }}
     };
 }
 
@@ -612,6 +616,121 @@ vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_route_length_bi
     };
 }
 
+vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_num_movements_bins()
+{
+    return {
+        {"[0,2]", [](const SumoEvalRecord& r) { return r.numMovements >= 0 && r.numMovements <= 2; }},
+        {"[3,5]", [](const SumoEvalRecord& r) { return r.numMovements >= 3 && r.numMovements <= 5; }},
+        {"[6,10]", [](const SumoEvalRecord& r) { return r.numMovements >= 6 && r.numMovements <= 10; }},
+        {"[11,+inf)", [](const SumoEvalRecord& r) { return r.numMovements >= 11; }}
+    };
+}
+
+DistributionMetrics compute_distribution_metrics(const vector<SumoEvalRecord>& records)
+{
+    DistributionMetrics m;
+    vector<double> pred;
+    vector<double> truth;
+    pred.reserve(records.size());
+    truth.reserve(records.size());
+    for (const auto& r : records) {
+        pred.push_back(r.predDuration);
+        truth.push_back(r.truthDuration);
+    }
+    sort(pred.begin(), pred.end());
+    sort(truth.begin(), truth.end());
+    if (pred.empty()) return m;
+
+    double sumAbs = 0.0;
+    double sumSq = 0.0;
+    for (size_t i = 0; i < pred.size(); ++i) {
+        const double diff = pred[i] - truth[i];
+        sumAbs += abs(diff);
+        sumSq += diff * diff;
+    }
+    m.sortedMAE = sumAbs / static_cast<double>(pred.size());
+    m.sortedMSE = sumSq / static_cast<double>(pred.size());
+    m.sortedRMSE = sqrt(m.sortedMSE);
+    m.predP10 = percentile_sorted(pred, 10.0);
+    m.truthP10 = percentile_sorted(truth, 10.0);
+    m.diffP10 = m.predP10 - m.truthP10;
+    m.predP50 = percentile_sorted(pred, 50.0);
+    m.truthP50 = percentile_sorted(truth, 50.0);
+    m.diffP50 = m.predP50 - m.truthP50;
+    m.predP90 = percentile_sorted(pred, 90.0);
+    m.truthP90 = percentile_sorted(truth, 90.0);
+    m.diffP90 = m.predP90 - m.truthP90;
+    m.predMean = mean_of(pred);
+    m.truthMean = mean_of(truth);
+    m.diffMean = m.predMean - m.truthMean;
+    return m;
+}
+
+void write_distribution_metrics_csv(const string& path, const DistributionMetrics& m)
+{
+    ofstream out(path.c_str());
+    if (!out) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open distribution metrics output '" + path + "'");
+    out << "metric,value\n";
+    out << "sortedMAE," << m.sortedMAE << '\n';
+    out << "sortedMSE," << m.sortedMSE << '\n';
+    out << "sortedRMSE," << m.sortedRMSE << '\n';
+    out << "predP10," << m.predP10 << '\n';
+    out << "truthP10," << m.truthP10 << '\n';
+    out << "diffP10," << m.diffP10 << '\n';
+    out << "predP50," << m.predP50 << '\n';
+    out << "truthP50," << m.truthP50 << '\n';
+    out << "diffP50," << m.diffP50 << '\n';
+    out << "predP90," << m.predP90 << '\n';
+    out << "truthP90," << m.truthP90 << '\n';
+    out << "diffP90," << m.diffP90 << '\n';
+    out << "predMean," << m.predMean << '\n';
+    out << "truthMean," << m.truthMean << '\n';
+    out << "diffMean," << m.diffMean << '\n';
+}
+
+void append_group_metrics_csv(ostream& out,
+        const string& groupType,
+        const vector<pair<string, function<bool(const SumoEvalRecord&)>>>& bins,
+        const vector<SumoEvalRecord>& records)
+{
+    for (const auto& bin : bins) {
+        vector<double> absErrors;
+        int n = 0;
+        double sumTruth = 0.0, sumPred = 0.0, sumError = 0.0, sumAbs = 0.0, sumSq = 0.0, sumPct = 0.0;
+        int pctN = 0;
+        for (const auto& r : records) {
+            if (!bin.second(r)) continue;
+            ++n;
+            sumTruth += r.truthDuration;
+            sumPred += r.predDuration;
+            sumError += r.durationError;
+            sumAbs += r.absDurationError;
+            sumSq += r.durationError * r.durationError;
+            if (r.truthDuration > 0.0) { sumPct += r.absDurationError / r.truthDuration; ++pctN; }
+            absErrors.push_back(r.absDurationError);
+        }
+        if (n == 0) continue;
+        const double mse = sumSq / n;
+        out << groupType << ',' << bin.first << ',' << n << ','
+            << (sumTruth / n) << ',' << (sumPred / n) << ',' << (sumError / n) << ','
+            << (sumAbs / n) << ',' << mse << ',' << sqrt(mse) << ','
+            << ((pctN > 0) ? (sumPct / pctN) * 100.0 : 0.0) << ','
+            << percentile_sorted(absErrors, 50.0) << ',' << percentile_sorted(absErrors, 90.0) << '\n';
+    }
+}
+
+void write_grouped_metrics_csv(const string& path, const vector<SumoEvalRecord>& records)
+{
+    ofstream out(path.c_str());
+    if (!out) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open grouped metrics output '" + path + "'");
+    out << "groupType,groupName,n,meanTruth,meanPred,bias,mae,mse,rmse,mape,medAE,p90AE\n";
+    append_group_metrics_csv(out, "truthDuration", sumo_duration_bins(), records);
+    append_group_metrics_csv(out, "truthWaitingTime", sumo_waiting_time_bins(), records);
+    append_group_metrics_csv(out, "truthTimeLoss", sumo_time_loss_bins(), records);
+    append_group_metrics_csv(out, "truthRouteLength", sumo_route_length_bins(), records);
+    append_group_metrics_csv(out, "numMovements", sumo_num_movements_bins(), records);
+}
+
 } // namespace
 
 float Graph::evaluate_sumo_tripinfo_truth(
@@ -624,6 +743,10 @@ float Graph::evaluate_sumo_tripinfo_truth(
         return 0.0f;
     }
 
+    const string summaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_summary.txt");
+    const string groupedPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_grouped_metrics.csv");
+    const string distributionPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_distribution_metrics.csv");
+
     ofstream csv;
     if (!evalOutputPath.empty()) {
         csv.open(evalOutputPath.c_str());
@@ -633,6 +756,7 @@ float Graph::evaluate_sumo_tripinfo_truth(
         csv << "vehicleID,predDepart,truthDepart,predArrival,truthArrival,"
             << "predDuration,truthDuration,durationError,absDurationError,"
             << "arrivalError,truthWaitingTime,truthTimeLoss,truthRouteLength,"
+            << "durationErrorSigned,arrivalErrorSigned,absArrivalError,relativeDurationError,"
             << "absDurationErrorPerKm,predAvgSpeed,truthAvgSpeed,speedError,"
             << "numRoads,numMovements,validVehicle\n";
     }
@@ -641,20 +765,18 @@ float Graph::evaluate_sumo_tripinfo_truth(
     int missingTruthCount = 0;
     int invalidVehicleSkipped = 0;
     int etaMissingSkipped = 0;
-    double squaredDurationError = 0.0;
-    double absoluteDurationError = 0.0;
-    double percentageDurationError = 0.0;
-    int percentageCount = 0;
-    double durationBiasSum = 0.0;
-    double squaredArrivalError = 0.0;
-    double absoluteArrivalError = 0.0;
-    double arrivalBiasSum = 0.0;
-    double absoluteDurationErrorPerKm = 0.0;
-    double absoluteSpeedError = 0.0;
-    double speedBiasSum = 0.0;
-    vector<double> absDurationErrors;
-    vector<double> absDurationErrorsPerKm;
     vector<SumoEvalRecord> evalRecords;
+    vector<double> absDurationErrors;
+    vector<double> absArrivalErrors;
+    vector<double> durationErrors;
+    vector<double> arrivalErrors;
+    vector<double> predDurations;
+    vector<double> truthDurations;
+    vector<double> predArrivals;
+    vector<double> truthArrivals;
+    vector<double> predSpeeds;
+    vector<double> truthSpeeds;
+    vector<double> speedErrors;
 
     int n = static_cast<int>(ETA.size());
     n = max(n, static_cast<int>(vehicles.size()));
@@ -697,7 +819,8 @@ float Graph::evaluate_sumo_tripinfo_truth(
         double absDurationError = abs(durationError);
         double arrivalError = predArrival - truth.arrival;
         double absArrivalError = abs(arrivalError);
-        double routeLengthKm = max(truth.routeLength / 1000.0, epsilon);
+        double relativeDurationError = (truthDuration > 0.0) ? (absDurationError / truthDuration) : 0.0;
+        double routeLengthKm = max(truth.routeLength / 1000.0, 1e-6);
         double absDurationErrorPerKm = absDurationError / routeLengthKm;
         double truthAvgSpeed = (truthDuration > epsilon) ? (truth.routeLength / truthDuration) : 0.0;
         double predAvgSpeed = (predDuration > epsilon) ? (truth.routeLength / predDuration) : 0.0;
@@ -709,24 +832,22 @@ float Graph::evaluate_sumo_tripinfo_truth(
                          ? static_cast<int>(routeMovementID[i].size())
                          : 0;
 
-        squaredDurationError += durationError * durationError;
-        absoluteDurationError += absDurationError;
-        durationBiasSum += durationError;
-        if (truthDuration > 0.0) {
-            percentageDurationError += absDurationError / truthDuration;
-            ++percentageCount;
-        }
-        squaredArrivalError += arrivalError * arrivalError;
-        absoluteArrivalError += absArrivalError;
-        arrivalBiasSum += arrivalError;
-        absoluteDurationErrorPerKm += absDurationErrorPerKm;
-        absoluteSpeedError += abs(speedError);
-        speedBiasSum += speedError;
+        comparedCount++;
         absDurationErrors.push_back(absDurationError);
-        absDurationErrorsPerKm.push_back(absDurationErrorPerKm);
-        evalRecords.push_back({truthDuration, truth.waitingTime, truth.timeLoss,
-                               truth.routeLength, durationError, absDurationError});
-        ++comparedCount;
+        absArrivalErrors.push_back(absArrivalError);
+        durationErrors.push_back(durationError);
+        arrivalErrors.push_back(arrivalError);
+        predDurations.push_back(predDuration);
+        truthDurations.push_back(truthDuration);
+        predArrivals.push_back(predArrival);
+        truthArrivals.push_back(truth.arrival);
+        predSpeeds.push_back(predAvgSpeed);
+        truthSpeeds.push_back(truthAvgSpeed);
+        speedErrors.push_back(speedError);
+        evalRecords.push_back({predDuration, truthDuration, predArrival, truth.arrival,
+                               truth.waitingTime, truth.timeLoss, truth.routeLength,
+                               predAvgSpeed, truthAvgSpeed, durationError, absDurationError,
+                               arrivalError, absArrivalError, speedError, numMovements});
 
         if (csv) {
             csv << vehicleID << ','
@@ -742,13 +863,17 @@ float Graph::evaluate_sumo_tripinfo_truth(
                 << truth.waitingTime << ','
                 << truth.timeLoss << ','
                 << truth.routeLength << ','
+                << durationError << ','
+                << arrivalError << ','
+                << absArrivalError << ','
+                << relativeDurationError << ','
                 << absDurationErrorPerKm << ','
                 << predAvgSpeed << ','
                 << truthAvgSpeed << ','
                 << speedError << ','
                 << numRoads << ','
                 << numMovements << ','
-                << (validVehicle ? 1 : 0) << '\n';
+                << (validVehicle ? "true" : "false") << '\n';
         }
     }
 
@@ -761,50 +886,130 @@ float Graph::evaluate_sumo_tripinfo_truth(
 
     const int totalTruthVehicles = static_cast<int>(sumoTruthByVehicleID.size());
     const int totalSimulatedVehicles = n;
-    const double comparisonCoverage = safe_divide(comparedCount, totalTruthVehicles);
+    const double coverageByTruth = safe_divide(comparedCount, totalTruthVehicles);
+    const double coverageBySimulation = safe_divide(comparedCount, totalSimulatedVehicles);
+
+    double mse = 0.0, mae = 0.0, rmse = 0.0, mape = 0.0, biasDuration = 0.0;
+    double medianAbsDurationError = 0.0, p90AbsDurationError = 0.0, p95AbsDurationError = 0.0;
+    double mseArrival = 0.0, maeArrival = 0.0, rmseArrival = 0.0, biasArrival = 0.0;
+    double medianAbsArrivalError = 0.0, p90AbsArrivalError = 0.0, p95AbsArrivalError = 0.0;
+    double sumSqDuration = 0.0, sumAbsDuration = 0.0, sumPctDuration = 0.0;
+    double sumSqArrival = 0.0, sumAbsArrival = 0.0;
+    int pctCount = 0;
+    for (size_t i = 0; i < durationErrors.size(); ++i) {
+        sumSqDuration += durationErrors[i] * durationErrors[i];
+        sumAbsDuration += absDurationErrors[i];
+        if (truthDurations[i] > 0.0) { sumPctDuration += absDurationErrors[i] / truthDurations[i]; ++pctCount; }
+        sumSqArrival += arrivalErrors[i] * arrivalErrors[i];
+        sumAbsArrival += absArrivalErrors[i];
+    }
+    if (comparedCount > 0) {
+        mse = sumSqDuration / comparedCount;
+        mae = sumAbsDuration / comparedCount;
+        rmse = sqrt(mse);
+        mape = (pctCount > 0) ? (sumPctDuration / pctCount) * 100.0 : 0.0;
+        biasDuration = mean_of(durationErrors);
+        medianAbsDurationError = percentile_sorted(absDurationErrors, 50.0);
+        p90AbsDurationError = percentile_sorted(absDurationErrors, 90.0);
+        p95AbsDurationError = percentile_sorted(absDurationErrors, 95.0);
+        mseArrival = sumSqArrival / comparedCount;
+        maeArrival = sumAbsArrival / comparedCount;
+        rmseArrival = sqrt(mseArrival);
+        biasArrival = mean_of(arrivalErrors);
+        medianAbsArrivalError = percentile_sorted(absArrivalErrors, 50.0);
+        p90AbsArrivalError = percentile_sorted(absArrivalErrors, 90.0);
+        p95AbsArrivalError = percentile_sorted(absArrivalErrors, 95.0);
+    }
+
+    const double meanPredDuration = mean_of(predDurations);
+    const double meanTruthDuration = mean_of(truthDurations);
+    const double meanDurationDiff = meanPredDuration - meanTruthDuration;
+    const double relativeMeanDurationDiff = safe_divide(meanDurationDiff, meanTruthDuration);
+    double sumPredDuration = 0.0, sumTruthDuration = 0.0;
+    for (double v : predDurations) sumPredDuration += v;
+    for (double v : truthDurations) sumTruthDuration += v;
+    const double sumDurationDiff = sumPredDuration - sumTruthDuration;
+    const double relativeSumDurationDiff = safe_divide(sumDurationDiff, sumTruthDuration);
+    const double meanPredArrival = mean_of(predArrivals);
+    const double meanTruthArrival = mean_of(truthArrivals);
+    const double meanArrivalDiff = meanPredArrival - meanTruthArrival;
+    const double meanPredSpeed = mean_of(predSpeeds);
+    const double meanTruthSpeed = mean_of(truthSpeeds);
+    const double speedBias = mean_of(speedErrors);
+    double speedMAE = 0.0;
+    for (double v : speedErrors) speedMAE += abs(v);
+    speedMAE = safe_divide(speedMAE, static_cast<double>(speedErrors.size()));
+    const double biasThreshold = 1.0;
+    const string durationBiasDirection = (meanDurationDiff > biasThreshold) ? "slower" : ((meanDurationDiff < -biasThreshold) ? "faster" : "balanced");
+    const string arrivalBiasDirection = (meanArrivalDiff > biasThreshold) ? "later" : ((meanArrivalDiff < -biasThreshold) ? "earlier" : "balanced");
+    const DistributionMetrics distribution = compute_distribution_metrics(evalRecords);
+
+    ostringstream summary;
+    summary << "[Coverage]\n";
+    summary << "simulatedVehicles=" << totalSimulatedVehicles << '\n';
+    summary << "truthVehicles=" << totalTruthVehicles << '\n';
+    summary << "comparedVehicles=" << comparedCount << '\n';
+    summary << "missingTruth=" << missingTruthCount << '\n';
+    summary << "invalidSkipped=" << invalidVehicleSkipped << '\n';
+    summary << "etaMissingSkipped=" << etaMissingSkipped << '\n';
+    summary << "truthNotSimulated=" << truthNotSimulated << '\n';
+    summary << "coverageByTruth=" << coverageByTruth << '\n';
+    summary << "coverageBySimulation=" << coverageBySimulation << "\n\n";
+
+    if (comparedCount == 0) {
+        summary << "[SUMO Eval Warning]\ncomparedCount == 0; no valid vehicles compared and accuracy metrics are unavailable.\n\n";
+    }
+
+    summary << "[Per-Vehicle Duration Error]\n";
+    summary << "MAE=" << mae << '\n' << "MSE=" << mse << '\n' << "RMSE=" << rmse << '\n' << "MAPE=" << mape << '\n';
+    summary << "Bias=" << biasDuration << '\n' << "Median absolute error=" << medianAbsDurationError << '\n';
+    summary << "P90 absolute error=" << p90AbsDurationError << '\n' << "P95 absolute error=" << p95AbsDurationError << "\n\n";
+
+    summary << "[Per-Vehicle Arrival Error]\n";
+    summary << "MAE=" << maeArrival << '\n' << "MSE=" << mseArrival << '\n' << "RMSE=" << rmseArrival << '\n';
+    summary << "Bias=" << biasArrival << '\n' << "Median absolute error=" << medianAbsArrivalError << '\n';
+    summary << "P90 absolute error=" << p90AbsArrivalError << '\n' << "P95 absolute error=" << p95AbsArrivalError << "\n\n";
+
+    summary << "[Aggregate Travel-Time Error]\n";
+    summary << "meanPredDuration=" << meanPredDuration << '\n' << "meanTruthDuration=" << meanTruthDuration << '\n';
+    summary << "meanDurationDiff=" << meanDurationDiff << '\n' << "relativeMeanDurationDiff=" << relativeMeanDurationDiff << '\n';
+    summary << "sumPredDuration=" << sumPredDuration << '\n' << "sumTruthDuration=" << sumTruthDuration << '\n';
+    summary << "sumDurationDiff=" << sumDurationDiff << '\n' << "relativeSumDurationDiff=" << relativeSumDurationDiff << '\n';
+    summary << "meanPredArrival=" << meanPredArrival << '\n' << "meanTruthArrival=" << meanTruthArrival << '\n';
+    summary << "meanArrivalDiff=" << meanArrivalDiff << "\n\n";
+
+    summary << "[Speed Error]\n";
+    summary << "meanPredSpeed=" << meanPredSpeed << '\n' << "meanTruthSpeed=" << meanTruthSpeed << '\n';
+    summary << "speedBias=" << speedBias << '\n' << "speedMAE=" << speedMAE << "\n\n";
+
+    summary << "[Bias Direction]\n";
+    summary << "durationBiasDirection=" << durationBiasDirection << '\n';
+    summary << "arrivalBiasDirection=" << arrivalBiasDirection << "\n\n";
+
+    summary << "[Distribution-Level Duration Error]\n";
+    summary << "sortedMAE=" << distribution.sortedMAE << '\n';
+    summary << "sortedMSE=" << distribution.sortedMSE << '\n';
+    summary << "sortedRMSE=" << distribution.sortedRMSE << '\n';
+    summary << "predP10=" << distribution.predP10 << '\n' << "truthP10=" << distribution.truthP10 << '\n' << "diffP10=" << distribution.diffP10 << '\n';
+    summary << "predP50=" << distribution.predP50 << '\n' << "truthP50=" << distribution.truthP50 << '\n' << "diffP50=" << distribution.diffP50 << '\n';
+    summary << "predP90=" << distribution.predP90 << '\n' << "truthP90=" << distribution.truthP90 << '\n' << "diffP90=" << distribution.diffP90 << '\n';
+    summary << "predMean=" << distribution.predMean << '\n' << "truthMean=" << distribution.truthMean << '\n' << "diffMean=" << distribution.diffMean << "\n";
 
     cout << "[SUMO Eval] Overall Accuracy" << endl;
     cout << "[SUMO Eval] comparedCount: " << comparedCount << endl;
     cout << "[SUMO Eval] totalTruthVehicles: " << totalTruthVehicles << endl;
     cout << "[SUMO Eval] totalSimulatedVehicles: " << totalSimulatedVehicles << endl;
-
     cout << "[SUMO Eval] Coverage" << endl;
-    cout << "[SUMO Eval] comparisonCoverage: " << comparisonCoverage << endl;
+    cout << "[SUMO Eval] comparisonCoverage: " << coverageByTruth << endl;
     cout << "[SUMO Eval] invalidVehicleSkipped: " << invalidVehicleSkipped << endl;
     cout << "[SUMO Eval] missingTruthCount: " << missingTruthCount << endl;
     cout << "[SUMO Eval] etaMissingSkipped: " << etaMissingSkipped << endl;
     cout << "[SUMO Eval] truthNotSimulated: " << truthNotSimulated << endl;
-    // Preserve legacy summary labels for downstream log parsers.
     cout << "[SUMO Eval] compared vehicles: " << comparedCount << endl;
     cout << "[SUMO Eval] missing truth: " << missingTruthCount << endl;
     cout << "[SUMO Eval] invalid skipped: " << invalidVehicleSkipped << endl;
     cout << "[SUMO Eval] ETA missing skipped: " << etaMissingSkipped << endl;
     cout << "[SUMO Eval] truth not simulated: " << truthNotSimulated << endl;
-
-    if (comparedCount == 0) {
-        cout << "[SUMO Eval Warning] comparedCount == 0; no valid vehicles compared and accuracy metrics are unavailable." << endl;
-        if (csv) cout << "[SUMO Eval] CSV written to " << evalOutputPath << endl;
-        return 0.0f;
-    }
-
-    double mse = squaredDurationError / comparedCount;
-    double mae = absoluteDurationError / comparedCount;
-    double rmse = sqrt(mse);
-    double mape = (percentageCount > 0)
-                ? (percentageDurationError / percentageCount) * 100.0
-                : 0.0;
-    double biasDuration = durationBiasSum / comparedCount;
-    double medianAbsDurationError = percentile_sorted(absDurationErrors, 50.0);
-    double p90AbsDurationError = percentile_sorted(absDurationErrors, 90.0);
-    double p95AbsDurationError = percentile_sorted(absDurationErrors, 95.0);
-    double maeArrival = absoluteArrivalError / comparedCount;
-    double rmseArrival = sqrt(squaredArrivalError / comparedCount);
-    double biasArrival = arrivalBiasSum / comparedCount;
-    double maeDurationPerKm = absoluteDurationErrorPerKm / comparedCount;
-    double p90DurationErrorPerKm = percentile_sorted(absDurationErrorsPerKm, 90.0);
-    double maeSpeed = absoluteSpeedError / comparedCount;
-    double biasSpeed = speedBiasSum / comparedCount;
-
     cout << "[SUMO Eval] MSE duration: " << mse << endl;
     cout << "[SUMO Eval] MAE duration: " << mae << endl;
     cout << "[SUMO Eval] RMSE duration: " << rmse << endl;
@@ -816,21 +1021,19 @@ float Graph::evaluate_sumo_tripinfo_truth(
     cout << "[SUMO Eval] MAE arrival: " << maeArrival << endl;
     cout << "[SUMO Eval] RMSE arrival: " << rmseArrival << endl;
     cout << "[SUMO Eval] Bias arrival: " << biasArrival << endl;
-    cout << "[SUMO Eval] MAE duration per km: " << maeDurationPerKm << endl;
-    cout << "[SUMO Eval] P90 duration error per km: " << p90DurationErrorPerKm << endl;
-    cout << "[SUMO Eval] MAE speed: " << maeSpeed << endl;
-    cout << "[SUMO Eval] Bias speed: " << biasSpeed << endl;
+    cout << summary.str();
 
-    print_sumo_eval_group_metrics("[SUMO Eval] Error by Duration Bin",
-                                  sumo_duration_bins(), evalRecords);
-    print_sumo_eval_group_metrics("[SUMO Eval] Error by WaitingTime Bin",
-                                  sumo_waiting_time_bins(), evalRecords);
-    print_sumo_eval_group_metrics("[SUMO Eval] Error by TimeLoss Bin",
-                                  sumo_time_loss_bins(), evalRecords);
-    print_sumo_eval_group_metrics("[SUMO Eval] Error by RouteLength Bin",
-                                  sumo_route_length_bins(), evalRecords);
-
-    if (csv) cout << "[SUMO Eval] CSV written to " << evalOutputPath << endl;
+    if (!evalOutputPath.empty()) {
+        ofstream summaryOut(summaryPath.c_str());
+        if (!summaryOut) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open summary output '" + summaryPath + "'");
+        summaryOut << summary.str();
+        write_grouped_metrics_csv(groupedPath, evalRecords);
+        write_distribution_metrics_csv(distributionPath, distribution);
+        cout << "[SUMO Eval] CSV written to " << evalOutputPath << endl;
+        cout << "[SUMO Eval] Summary written to " << summaryPath << endl;
+        cout << "[SUMO Eval] Grouped metrics written to " << groupedPath << endl;
+        cout << "[SUMO Eval] Distribution metrics written to " << distributionPath << endl;
+    }
 
     return static_cast<float>(mse);
 }
@@ -1232,6 +1435,8 @@ int Graph::predictRoadTravelTime(int roadID, int vehicleID) {
             return predictRoadTravelTimeTable(roadID, vehicleID);
         case TravelTimeMode::MODEL:
             return predictRoadTravelTimeModel(roadID, vehicleID);
+        case TravelTimeMode::KINEMATIC:
+            return predictRoadTravelTimeKinematic(roadID, vehicleID);
     }
     return predictRoadTravelTimeSpeedNet(roadID);
 }
@@ -1302,6 +1507,50 @@ int Graph::predictRoadTravelTimeTable(int roadID, int vehicleID) {
     return fallbackToSpeedNet
         ? predictRoadTravelTimeSpeedNet(roadID)
         : predictRoadTravelTimeMinTime(roadID);
+}
+
+
+int Graph::predictRoadTravelTimeKinematic(int roadID, int vehicleID) const {
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return 1;
+    const RoadSegment& r = roads[roadID];
+
+    VehicleType vt;
+    if (vehicleID >= 0 && vehicleID < static_cast<int>(vehicleTypeIDs.size())) {
+        auto typeIt = sumoVehicleTypes.find(vehicleTypeIDs[vehicleID]);
+        if (typeIt != sumoVehicleTypes.end()) vt = typeIt->second;
+    } else {
+        auto carIt = sumoVehicleTypes.find("car");
+        if (carIt != sumoVehicleTypes.end()) vt = carIt->second;
+    }
+
+    const double L = max(0.0, r.length);
+    const double vRoad = max(0.1, r.speedLimit);
+    const double vVeh = max(0.1, vt.maxSpeed);
+    double v = min(vRoad, vVeh);
+    v = v * max(0.7, 1.0 - 0.1 * vt.sigma);
+    const double a = max(0.1, vt.accel);
+    const double dAcc = v * v / (2.0 * a);
+
+    double tFree = 0.0;
+    if (L <= dAcc) {
+        tFree = sqrt(2.0 * L / a);
+    } else {
+        tFree = v / a + (L - dAcc) / v;
+    }
+
+    int waitingOnRoad = 0;
+    for (const auto& wb : waitingBuffers) {
+        if (wb.roadID == roadID) waitingOnRoad += wb.vehicleCount();
+    }
+    const int occupancy = r.runningCount + waitingOnRoad;
+    const double vehicleSpace = max(1e-6, vt.length + vt.minGap);
+    int capacity = static_cast<int>(floor(L * max(1, r.laneNum) / vehicleSpace));
+    capacity = max(1, capacity);
+    double rho = safe_divide(static_cast<double>(occupancy), static_cast<double>(capacity));
+    rho = max(0.0, min(0.95, rho));
+    const double alpha = max(0.0, kinematicCongestionAlpha);
+    const double t = tFree * (1.0 + alpha * rho);
+    return max(1, static_cast<int>(round(t)));
 }
 
 bool Graph::queryExternalTravelTimeModel(int roadID, int vehicleID, double& predictedTime) {
