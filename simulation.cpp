@@ -1038,6 +1038,249 @@ float Graph::evaluate_sumo_tripinfo_truth(
     return static_cast<float>(mse);
 }
 
+
+const VehicleType& Graph::getVehicleTypeForVehicle(int vehicleID) const {
+    if (vehicleID >= 0 && vehicleID < static_cast<int>(vehicleTypeIDs.size())) {
+        auto it = sumoVehicleTypes.find(vehicleTypeIDs[vehicleID]);
+        if (it != sumoVehicleTypes.end()) return it->second;
+    }
+    auto carIt = sumoVehicleTypes.find("car");
+    if (carIt != sumoVehicleTypes.end()) return carIt->second;
+
+    static const VehicleType defaultVehicleType;
+    return defaultVehicleType;
+}
+
+vector<int> Graph::parseLaneIndices(const vector<string>& lanes, int roadID) const {
+    vector<int> parsed;
+    int laneNum = 0;
+    if (roadID >= 0 && roadID < static_cast<int>(roads.size())) {
+        laneNum = max(1, roads[roadID].laneNum);
+        if (!roads[roadID].laneFlow.empty()) laneNum = static_cast<int>(roads[roadID].laneFlow.size());
+    }
+
+    for (const string& lane : lanes) {
+        if (lane.empty()) continue;
+        char *end = nullptr;
+        long value = strtol(lane.c_str(), &end, 10);
+        if (end == lane.c_str() || *end != '\0') continue;
+        int laneIndex = static_cast<int>(value);
+        if (laneNum > 0) laneIndex = max(0, min(laneIndex, laneNum - 1));
+        if (find(parsed.begin(), parsed.end(), laneIndex) == parsed.end()) {
+            parsed.push_back(laneIndex);
+        }
+    }
+    return parsed;
+}
+
+vector<int> Graph::laneIntersection(const vector<int>& a, const vector<int>& b) const {
+    vector<int> result;
+    for (int lane : a) {
+        if (find(b.begin(), b.end(), lane) != b.end() &&
+            find(result.begin(), result.end(), lane) == result.end()) {
+            result.push_back(lane);
+        }
+    }
+    return result;
+}
+
+void Graph::initializeRoadLaneStorage() {
+    const VehicleType& representative = getVehicleTypeForVehicle(-1);
+    const double vehicleSpace = max(1e-6, representative.length + representative.minGap);
+    for (auto &road : roads) {
+        int laneNum = max(1, road.laneNum);
+        int capacityPerLane = max(1, static_cast<int>(floor(max(0.0, road.length) / vehicleSpace)));
+        road.roadFlow = 0;
+        road.laneFlow.assign(laneNum, 0);
+        road.laneCapacity.assign(laneNum, capacityPerLane);
+        road.laneOccupiedLength.assign(laneNum, 0.0);
+        road.laneStorageLength.assign(laneNum, max(vehicleSpace, max(0.0, road.length)));
+    }
+}
+
+int Graph::chooseLeastOccupiedAvailableLane(int roadID, const vector<int>& candidateLanes, int vehicleID) const {
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return -1;
+    const RoadSegment& road = roads[roadID];
+    if (road.laneFlow.empty()) return -1;
+
+    const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
+    const double requiredLength = max(1e-6, vt.length + vt.minGap);
+    int bestLane = -1;
+    int bestFlow = numeric_limits<int>::max();
+    double bestOccupiedLength = numeric_limits<double>::max();
+
+    for (int rawLane : candidateLanes) {
+        if (rawLane < 0) continue;
+        int lane = min(rawLane, static_cast<int>(road.laneFlow.size()) - 1);
+        if (lane < 0) continue;
+        int capacity = (lane < static_cast<int>(road.laneCapacity.size())) ? road.laneCapacity[lane] : 1;
+        double occupiedLength = (lane < static_cast<int>(road.laneOccupiedLength.size())) ? road.laneOccupiedLength[lane] : 0.0;
+        double storageLength = (lane < static_cast<int>(road.laneStorageLength.size()))
+            ? road.laneStorageLength[lane]
+            : max(0.0, road.length);
+        bool hasCountCapacity = road.laneFlow[lane] < max(1, capacity);
+        bool hasLengthCapacity = occupiedLength + requiredLength <= storageLength + 1e-9;
+        if (!hasCountCapacity || !hasLengthCapacity) continue;
+        if (road.laneFlow[lane] < bestFlow ||
+            (road.laneFlow[lane] == bestFlow && occupiedLength < bestOccupiedLength)) {
+            bestLane = lane;
+            bestFlow = road.laneFlow[lane];
+            bestOccupiedLength = occupiedLength;
+        }
+    }
+    return bestLane;
+}
+
+void Graph::reserveLaneOccupancy(int vehicleID, int roadID, int laneIndex) {
+    if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return;
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return;
+    RoadSegment& road = roads[roadID];
+    if (laneIndex < 0 || laneIndex >= static_cast<int>(road.laneFlow.size())) return;
+
+    VehicleLabel& vehicle = vehicles[vehicleID];
+    if (vehicle.occupiedRoadID >= 0 || vehicle.occupiedLaneIndex >= 0) {
+        releaseLaneOccupancy(vehicleID);
+    }
+
+    const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
+    const double occupiedLength = max(1e-6, vt.length + vt.minGap);
+    road.roadFlow++;
+    road.laneFlow[laneIndex]++;
+    if (laneIndex < static_cast<int>(road.laneOccupiedLength.size())) {
+        road.laneOccupiedLength[laneIndex] += occupiedLength;
+    }
+    vehicle.occupiedRoadID = roadID;
+    vehicle.occupiedLaneIndex = laneIndex;
+    vehicle.occupiedLength = occupiedLength;
+}
+
+void Graph::releaseLaneOccupancy(int vehicleID) {
+    if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return;
+    VehicleLabel& vehicle = vehicles[vehicleID];
+    int roadID = vehicle.occupiedRoadID;
+    int laneIndex = vehicle.occupiedLaneIndex;
+    if (roadID >= 0 && roadID < static_cast<int>(roads.size())) {
+        RoadSegment& road = roads[roadID];
+        if (road.roadFlow > 0) road.roadFlow--;
+        if (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneFlow.size()) && road.laneFlow[laneIndex] > 0) {
+            road.laneFlow[laneIndex]--;
+        }
+        if (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneOccupiedLength.size())) {
+            road.laneOccupiedLength[laneIndex] = max(0.0, road.laneOccupiedLength[laneIndex] - vehicle.occupiedLength);
+        }
+    }
+    vehicle.occupiedRoadID = -1;
+    vehicle.occupiedLaneIndex = -1;
+    vehicle.occupiedLength = 0.0;
+}
+
+bool Graph::hasDownstreamLaneStorage(int movementID, int vehicleID, int &chosenLane) {
+    chosenLane = -1;
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return false;
+    if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return false;
+
+    const Movement& m = movements[movementID];
+    int toRoadID = m.toRoadID;
+    if (toRoadID < 0 || toRoadID >= static_cast<int>(roads.size())) return false;
+
+    vector<int> toLanes = parseLaneIndices(m.toLanes, toRoadID);
+    vector<int> candidateLanes = toLanes;
+    const VehicleLabel& vehicle = vehicles[vehicleID];
+    int nextMovementIndex = vehicle.roadIndex + 1;
+    if (nextMovementIndex >= 0 && nextMovementIndex < static_cast<int>(vehicle.routeMovementIDs.size())) {
+        int nextMovementID = vehicle.routeMovementIDs[nextMovementIndex];
+        if (nextMovementID >= 0 && nextMovementID < static_cast<int>(movements.size())) {
+            vector<int> nextFromLanes = parseLaneIndices(movements[nextMovementID].fromLanes, toRoadID);
+            vector<int> intersected = laneIntersection(toLanes, nextFromLanes);
+            candidateLanes = !intersected.empty() ? intersected : nextFromLanes;
+        }
+    }
+    if (candidateLanes.empty()) candidateLanes = toLanes;
+    if (candidateLanes.empty()) candidateLanes.push_back(0);
+
+    chosenLane = chooseLeastOccupiedAvailableLane(toRoadID, candidateLanes, vehicleID);
+    return chosenLane >= 0;
+}
+
+bool Graph::validateRoadLaneFlows() const {
+    vector<int> expectedRoadFlow(roads.size(), 0);
+    vector<vector<int>> expectedLaneFlow;
+    expectedLaneFlow.reserve(roads.size());
+    for (const auto& road : roads) {
+        expectedLaneFlow.push_back(vector<int>(road.laneFlow.size(), 0));
+    }
+
+    for (const auto& vehicle : vehicles) {
+        if (!vehicle.valid || vehicle.finished) continue;
+        int roadID = vehicle.occupiedRoadID;
+        int laneIndex = vehicle.occupiedLaneIndex;
+        if (roadID < 0 || roadID >= static_cast<int>(roads.size())) {
+            cout << "[LaneFlow Warning] active vehicle " << vehicle.vehicleID << " has no occupied road/lane." << endl;
+            return false;
+        }
+        if (laneIndex < 0 || laneIndex >= static_cast<int>(expectedLaneFlow[roadID].size())) {
+            cout << "[LaneFlow Warning] vehicle " << vehicle.vehicleID << " has invalid lane " << laneIndex
+                 << " on road " << roadID << endl;
+            return false;
+        }
+        expectedRoadFlow[roadID]++;
+        expectedLaneFlow[roadID][laneIndex]++;
+    }
+
+    bool ok = true;
+    vector<tuple<double, int, int, int, int>> congested;
+    for (int roadID = 0; roadID < static_cast<int>(roads.size()); ++roadID) {
+        const RoadSegment& road = roads[roadID];
+        int laneSum = 0;
+        for (int lane = 0; lane < static_cast<int>(road.laneFlow.size()); ++lane) {
+            laneSum += road.laneFlow[lane];
+            int expected = (roadID < static_cast<int>(expectedLaneFlow.size()) && lane < static_cast<int>(expectedLaneFlow[roadID].size()))
+                ? expectedLaneFlow[roadID][lane]
+                : 0;
+            if (road.laneFlow[lane] != expected) {
+                cout << "[LaneFlow Warning] laneFlow mismatch road=" << roadID << " lane=" << lane
+                     << " actual=" << road.laneFlow[lane] << " expected=" << expected << endl;
+                ok = false;
+            }
+            int capacity = (lane < static_cast<int>(road.laneCapacity.size())) ? road.laneCapacity[lane] : 0;
+            if (capacity > 0) congested.emplace_back(safe_divide(static_cast<double>(road.laneFlow[lane]), static_cast<double>(capacity)), roadID, lane, road.laneFlow[lane], capacity);
+            if (capacity > 0 && road.laneFlow[lane] > capacity) {
+                cout << "[LaneFlow Warning] lane exceeds capacity road=" << roadID << " lane=" << lane
+                     << " flow=" << road.laneFlow[lane] << " capacity=" << capacity << endl;
+                ok = false;
+            }
+            double occupiedLength = (lane < static_cast<int>(road.laneOccupiedLength.size())) ? road.laneOccupiedLength[lane] : 0.0;
+            double storageLength = (lane < static_cast<int>(road.laneStorageLength.size())) ? road.laneStorageLength[lane] : 0.0;
+            if (storageLength > 0.0 && occupiedLength > storageLength + 1e-6) {
+                cout << "[LaneFlow Warning] lane exceeds storage length road=" << roadID << " lane=" << lane
+                     << " occupiedLength=" << occupiedLength << " storageLength=" << storageLength << endl;
+                ok = false;
+            }
+        }
+        if (road.roadFlow != laneSum || road.roadFlow != expectedRoadFlow[roadID]) {
+            cout << "[LaneFlow Warning] roadFlow mismatch road=" << roadID
+                 << " actual=" << road.roadFlow << " laneSum=" << laneSum
+                 << " expected=" << expectedRoadFlow[roadID] << endl;
+            ok = false;
+        }
+    }
+
+    sort(congested.begin(), congested.end(), greater<tuple<double, int, int, int, int>>());
+    int printed = 0;
+    for (const auto& item : congested) {
+        if (printed >= 5) break;
+        double ratio;
+        int roadID, lane, flow, capacity;
+        tie(ratio, roadID, lane, flow, capacity) = item;
+        if (flow <= 0) continue;
+        cout << "[LaneFlow Debug] congested lane road=" << roadID << " lane=" << lane
+             << " flow=" << flow << " capacity=" << capacity
+             << " ratio=" << ratio << endl;
+        ++printed;
+    }
+    return ok;
+}
+
 vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
         vector<vector<int>> &Q, vector<vector<int>> &routeRoadIDInput) {
     // 新算法核心：事件驱动（signal change）+ 候选放行队列（dispatchPQ）+ 缓冲区排队
@@ -1053,6 +1296,7 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
     this->routeRoadID = routeRoadIDInput;
     route_roadID_2_movementID();
     initializeMovementLaneDischargeCapacity();
+    initializeRoadLaneStorage();
 
     int simStartTime = 0;
     if (!Q.empty()) {
@@ -1089,6 +1333,7 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
 
         if (signalEventPQ.empty()) break;
     }
+    validateRoadLaneFlows();
     return ETA_result_cycle_aware;
 }
 
@@ -1103,6 +1348,7 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
     for (auto &b : waitingBuffers) {
         b.vehicleQueue.clear();
     }
+    initializeRoadLaneStorage();
 
     // 路径无法映射到 movement/buffer 的车辆标记为 invalid，并从评估集中排除。
     auto mark_invalid = [&](VehicleLabel &vehicle) {
@@ -1155,9 +1401,20 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
                     mark_invalid(v);
                     continue;
                 }
+                vector<int> initialLanes = parseLaneIndices(movements[movementID].fromLanes, v.currentRoadID);
+                if (initialLanes.empty()) initialLanes.push_back(0);
+                vehicles[i] = v;
+                int chosenLane = chooseLeastOccupiedAvailableLane(v.currentRoadID, initialLanes, i);
+                if (chosenLane < 0) {
+                    cout << "[LaneFlow Warning] no initial lane storage for vehicle " << i
+                         << " on road " << v.currentRoadID << "; marking invalid." << endl;
+                    mark_invalid(v);
+                    continue;
+                }
                 v.state = VehicleState::WaitingAtIntersection;
                 vehicles[i] = v;
                 insertVehicleToBufferOrdered(v.currentBufferID, i);
+                reserveLaneOccupancy(i, v.currentRoadID, chosenLane);
                 continue;
             } else {
                 mark_invalid(v);
@@ -1213,6 +1470,7 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
         if (!canDischarge(c.movementID, c.earliestDischargeTime, windowEnd)) continue;
 
         DischargeResult result = dischargeOneVehicle(c.movementID, c.earliestDischargeTime);
+        if (result.vehicleID < 0) continue;
         pushCandidateIfPossible(c.movementID, c.earliestDischargeTime, windowEnd);
         if (!result.finished) {
             pushCandidateIfPossible(result.nextMovementID, c.earliestDischargeTime, windowEnd);
@@ -1272,7 +1530,8 @@ bool Graph::canDischarge(int movementID, int dischargeTime, int windowEnd) {
     int vehicleID = b.vehicleQueue.front();
     if (vehicleID < 0 || vehicleID >= vehicles.size()) return false;
     if (vehicles[vehicleID].arrivalTime > dischargeTime) return false;
-    if (!hasDownstreamStorage(m.toRoadID)) return false;
+    int chosenLane = -1;
+    if (!hasDownstreamLaneStorage(movementID, vehicleID, chosenLane)) return false;
     if (!hasDischargeCapacity(movementID, dischargeTime)) return false;
     return true;
 }
@@ -1288,7 +1547,11 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     if (b.vehicleQueue.empty()) return result;
 
     int vehicleID = b.vehicleQueue.front();
+    int chosenLane = -1;
+    if (!hasDownstreamLaneStorage(movementID, vehicleID, chosenLane)) return result;
+
     b.vehicleQueue.pop_front();
+    releaseLaneOccupancy(vehicleID);
     consumeDischargeCapacity(movementID, dischargeTime);
 
     VehicleLabel &v = vehicles[vehicleID];
@@ -1321,6 +1584,7 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
             v.currentBufferID = nextBufferID;
             v.state = VehicleState::WaitingAtIntersection;
             insertVehicleToBufferOrdered(nextBufferID, vehicleID);
+            reserveLaneOccupancy(vehicleID, m.toRoadID, chosenLane);
             result.nextMovementID = nextMovementID;
             result.nextBufferID = nextBufferID;
         } else {
@@ -1469,21 +1733,13 @@ RoadKey Graph::buildRoadKeyForPrediction(int roadID, int vehicleID) const {
     const double speed = std::max(0.1, r.speedLimit);
     const double length = std::max(0.0, r.length);
 
-    int waitingOnRoad = 0;
-    for (const auto& kv : r.movementIDToWaitingBufferID) {
-        int bufferID = kv.second;
-        if (bufferID >= 0 && bufferID < static_cast<int>(waitingBuffers.size())) {
-            waitingOnRoad += waitingBuffers[bufferID].vehicleCount();
-        }
-    }
-
     key.lane_num = r.laneNum;
     key.speed_limit = static_cast<float>(std::round(speed));
     key.edge_length = static_cast<float>(std::round(length));
-    key.driving_number = r.runningCount;
+    key.driving_number = r.roadFlow;
     key.delay_time = 0;
     key.lowSpee_time = 0;
-    key.wait_time = waitingOnRoad;
+    key.wait_time = r.roadFlow;
     key.ratio = static_cast<int>(std::round(length / speed));
     key.length_square = static_cast<int>(std::round(length * length));
     return key;
@@ -1514,14 +1770,7 @@ int Graph::predictRoadTravelTimeKinematic(int roadID, int vehicleID) const {
     if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return 1;
     const RoadSegment& r = roads[roadID];
 
-    VehicleType vt;
-    if (vehicleID >= 0 && vehicleID < static_cast<int>(vehicleTypeIDs.size())) {
-        auto typeIt = sumoVehicleTypes.find(vehicleTypeIDs[vehicleID]);
-        if (typeIt != sumoVehicleTypes.end()) vt = typeIt->second;
-    } else {
-        auto carIt = sumoVehicleTypes.find("car");
-        if (carIt != sumoVehicleTypes.end()) vt = carIt->second;
-    }
+    const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
 
     const double L = max(0.0, r.length);
     const double vRoad = max(0.1, r.speedLimit);
@@ -1538,11 +1787,7 @@ int Graph::predictRoadTravelTimeKinematic(int roadID, int vehicleID) const {
         tFree = v / a + (L - dAcc) / v;
     }
 
-    int waitingOnRoad = 0;
-    for (const auto& wb : waitingBuffers) {
-        if (wb.roadID == roadID) waitingOnRoad += wb.vehicleCount();
-    }
-    const int occupancy = r.runningCount + waitingOnRoad;
+    const int occupancy = r.roadFlow;
     const double vehicleSpace = max(1e-6, vt.length + vt.minGap);
     int capacity = static_cast<int>(floor(L * max(1, r.laneNum) / vehicleSpace));
     capacity = max(1, capacity);
