@@ -24,6 +24,8 @@
 #include <thread>
 #include <future>
 #include <memory>
+#include <limits>
+#include <cstdlib>
 #if defined(__has_include)
 #  if __has_include(<boost/thread/thread.hpp>) && __has_include(<boost/thread.hpp>)
 #    include <boost/thread/thread.hpp>
@@ -342,6 +344,11 @@ struct RoadSegment {
     bool hasSignalizedDownstream = false;
     int downstreamIntersectionID = -1;
     int storageCapacityVehicles = 0;
+    int roadFlow = 0;
+    vector<int> laneFlow;
+    vector<int> laneCapacity;
+    vector<double> laneOccupiedLength;
+    vector<double> laneStorageLength;
     int runningCount = 0;
     vector<int> runningVehicles;
     unordered_map<int, int> movementIDToWaitingBufferID;
@@ -437,6 +444,10 @@ struct VehicleLabel {
     VehicleState state = VehicleState::NotDeparted;
 
     bool finished = false;
+
+    int occupiedRoadID = -1;
+    int occupiedLaneIndex = -1;
+    double occupiedLength = 0.0;
 
     // invalid=true means route conversion failed or required movement/buffer is missing.
     // invalid vehicles should be excluded from normal cycle-aware evaluation.
@@ -641,7 +652,16 @@ public:
     void build_waiting_buffers();
     void route_roadID_2_movementID();
     void initializeMovementLaneDischargeCapacity();
+    void initializeRoadLaneStorage();
     void validate_cycle_aware_graph();
+    bool validateRoadLaneFlows() const;
+    const VehicleType& getVehicleTypeForVehicle(int vehicleID) const;
+    vector<int> parseLaneIndices(const vector<string>& lanes, int roadID = -1) const;
+    vector<int> laneIntersection(const vector<int>& a, const vector<int>& b) const;
+    int chooseLeastOccupiedAvailableLane(int roadID, const vector<int>& candidateLanes, int vehicleID = -1) const;
+    void reserveLaneOccupancy(int vehicleID, int roadID, int laneIndex);
+    void releaseLaneOccupancy(int vehicleID);
+    bool hasDownstreamLaneStorage(int movementID, int vehicleID, int &chosenLane);
     TurnDir parseTurnDir(char c);
 
     vector<NodeInfo> nodes;
