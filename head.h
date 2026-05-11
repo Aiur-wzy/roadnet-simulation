@@ -360,8 +360,9 @@ struct Movement {
     int priorityOrder = 0;
     string tlID;
     int linkIndex = -1;
-    vector<int> fromLanes;
-    vector<int> toLanes;
+    vector<string> fromLanes;
+    vector<string> toLanes;
+    int laneDischargeCapacity = 1;
     char defaultConnectionState = 'O';
 };
 
@@ -626,6 +627,7 @@ public:
     void build_signal_controllers_assume_default();
     void build_waiting_buffers();
     void route_roadID_2_movementID();
+    void initializeMovementLaneDischargeCapacity();
     void validate_cycle_aware_graph();
     TurnDir parseTurnDir(char c);
 
@@ -658,7 +660,7 @@ public:
     int finishedVehicleCount = 0;
     int invalidVehicleCount = 0;
     int defaultDischargeInterval = 1;
-    map<tuple<int, int, int>, int> usedDischargeCapacity;
+    map<tuple<int, int>, int> usedMovementDischargeCapacity;
     // Classify Each Road with A Unique Latency Function
     vector<vector<pair<int,vector<pair<int,int>>>>> timeRange;
     // int realPercent;
@@ -719,9 +721,9 @@ public:
     void pushCandidateIfPossible(int movementID, int currentTime, int windowEnd);
     bool isDispatchCandidateValid(const DispatchCandidate& c);
     int computeEarliestDischargeTime(int movementID, int readyTime, int currentTime);
-    bool hasDischargeCapacity(int intersectionID, int toRoadID, int t);
-    void consumeDischargeCapacity(int intersectionID, int toRoadID, int t);
-    int nextAvailableCapacityTime(int intersectionID, int toRoadID, int t);
+    bool hasDischargeCapacity(int movementID, int t);
+    void consumeDischargeCapacity(int movementID, int t);
+    int nextAvailableCapacityTime(int movementID, int t);
     bool hasDownstreamStorage(int roadID);
     int predictRoadTravelTime(int roadID, int vehicleID);
     int predictRoadTravelTimeSpeedNet(int roadID) const;
