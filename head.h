@@ -222,7 +222,8 @@ enum class TravelTimeMode {
     SPEED_NET,
     MIN_TIME,
     TABLE,
-    MODEL
+    MODEL,
+    KINEMATIC
 };
 
 TravelTimeMode parseTravelTimeMode(const string& s);
@@ -282,6 +283,16 @@ struct SumoSignalProgram {
     int offset = 0;
     int cycleLength = 0;
     vector<SumoSignalPhase> phases;
+};
+
+struct VehicleType {
+    string id = "car";
+    double accel = 2.6;
+    double decel = 4.5;
+    double sigma = 0.5;
+    double length = 5.0;
+    double minGap = 2.5;
+    double maxSpeed = 13.89;
 };
 
 struct SumoTripInfoTruth {
@@ -590,7 +601,9 @@ public:
     vector<SumoSignalProgram> sumoSignalPrograms;
     vector<SumoTripInfoTruth> sumoTruthAligned;
     unordered_map<string, SumoTripInfoTruth> sumoTruthByVehicleID;
+    unordered_map<string, VehicleType> sumoVehicleTypes;
     vector<string> sumoVehicleIDs;
+    vector<string> vehicleTypeIDs;
     vector<SignalProgram> signalPrograms;
     unordered_map<string, int> movementKeyToID;
     // Remove data with duplicate values
@@ -708,6 +721,7 @@ public:
     bool modelWarningPrinted = false;
     int travelTimeTableHit = 0;
     int travelTimeTableMiss = 0;
+    double kinematicCongestionAlpha = 1.0;
     // 现行新算法主入口：基于 signal event + waiting buffer + discharge capacity 的仿真
     vector<vector<pair<int, float>>> cycle_aware_signal_driven_records(
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
@@ -730,6 +744,7 @@ public:
     int predictRoadTravelTimeMinTime(int roadID) const;
     int predictRoadTravelTimeTable(int roadID, int vehicleID);
     int predictRoadTravelTimeModel(int roadID, int vehicleID);
+    int predictRoadTravelTimeKinematic(int roadID, int vehicleID) const;
     RoadKey buildRoadKeyForPrediction(int roadID, int vehicleID) const;
     bool queryExternalTravelTimeModel(int roadID, int vehicleID, double& predictedTime);
     void insertVehicleToBufferOrdered(int bufferID, int vehicleID);

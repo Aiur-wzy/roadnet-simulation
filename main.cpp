@@ -30,6 +30,7 @@ struct RunConfig {
     int modelPort = 9000;
     bool fallbackToSpeedNet = true;
     bool verboseTravelTimePrediction = false;
+    double kinematicCongestionAlpha = 1.0;
 
     bool useSumoSetByCli = false;
     bool sumoNetSetByCli = false;
@@ -56,6 +57,17 @@ int parse_int_value(const string &value, const string &option) {
         return parsed;
     } catch (const exception&) {
         throw runtime_error("Invalid integer for " + option + ": " + value);
+    }
+}
+
+double parse_double_value(const string &value, const string &option) {
+    try {
+        size_t pos = 0;
+        double parsed = stod(value, &pos);
+        if (pos != value.size()) throw invalid_argument("trailing characters");
+        return parsed;
+    } catch (const exception&) {
+        throw runtime_error("Invalid number for " + option + ": " + value);
     }
 }
 
@@ -117,10 +129,12 @@ void print_usage(const char* programName) {
          << "  --time <path>          Time data path.\n"
          << "  --time-no-wait <path>  Time-no-wait data path.\n\n"
          << "Travel-time prediction options:\n"
-         << "  --travel-time-mode <speed-net|min-time|table|model>\n"
+         << "  --travel-time-mode <speed-net|min-time|table|model|kinematic>\n"
          << "                         Single-road travel-time predictor (default: min-time).\n"
          << "  --travel-time-table <path>\n"
          << "                         Table dictionary path for --travel-time-mode table.\n"
+         << "  --kinematic-congestion-alpha <value>\n"
+         << "                         Congestion multiplier for --travel-time-mode kinematic (default: 1.0; negative clamps to 0).\n"
          << "  --model-host <host>    External model host for future model mode (default: 127.0.0.1).\n"
          << "  --model-port <port>    External model port for future model mode (default: 9000).\n"
          << "  --tt-fallback <speed-net|min-time>\n"
@@ -164,6 +178,10 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--time-no-wait") cfg.timeNoWaitPath = require_value(argc, argv, i, arg);
         else if (arg == "--travel-time-mode") cfg.travelTimeMode = parseTravelTimeMode(require_value(argc, argv, i, arg));
         else if (arg == "--travel-time-table") cfg.travelTimeTablePath = require_value(argc, argv, i, arg);
+        else if (arg == "--kinematic-congestion-alpha") {
+            cfg.kinematicCongestionAlpha = parse_double_value(require_value(argc, argv, i, arg), arg);
+            if (cfg.kinematicCongestionAlpha < 0.0) cfg.kinematicCongestionAlpha = 0.0;
+        }
         else if (arg == "--model-host") cfg.modelHost = require_value(argc, argv, i, arg);
         else if (arg == "--model-port") cfg.modelPort = parse_int_value(require_value(argc, argv, i, arg), arg);
         else if (arg == "--tt-fallback") cfg.fallbackToSpeedNet = parse_tt_fallback(require_value(argc, argv, i, arg));
@@ -211,6 +229,7 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     g.modelPort = cfg.modelPort;
     g.fallbackToSpeedNet = cfg.fallbackToSpeedNet;
     g.verboseTravelTimePrediction = cfg.verboseTravelTimePrediction;
+    g.kinematicCongestionAlpha = max(0.0, cfg.kinematicCongestionAlpha);
     g.defaultDischargeInterval = max(1, cfg.laneDischargeInterval);
     g.modelWarningPrinted = false;
     g.travelTimeTableHit = 0;
@@ -252,6 +271,7 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
     cout << "[Config] Lane discharge interval: " << max(1, g.defaultDischargeInterval) << "s" << endl;
     cout << "[Config] Travel time mode: " << travelTimeModeToString(g.travelTimeMode) << endl;
     cout << "[Config] Travel time table: " << g.travelTimeTablePath << endl;
+    cout << "[Config] Kinematic congestion alpha: " << g.kinematicCongestionAlpha << endl;
     cout << "[Config] TT fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
     cout << "[Config] Model host/port: " << g.modelHost << ":" << g.modelPort << endl;
     cout << "[Config] Verbose travel time: " << g.verboseTravelTimePrediction << endl;
