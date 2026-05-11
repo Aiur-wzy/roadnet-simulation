@@ -500,9 +500,125 @@ void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
 }
 
 
+namespace {
+
+struct SumoEvalRecord {
+    double truthDuration = 0.0;
+    double truthWaitingTime = 0.0;
+    double truthTimeLoss = 0.0;
+    double truthRouteLength = 0.0;
+    double durationError = 0.0;
+    double absDurationError = 0.0;
+};
+
+double safe_divide(double numerator, double denominator)
+{
+    return denominator != 0.0 ? numerator / denominator : 0.0;
+}
+
+double percentile_sorted(vector<double> values, double percentile)
+{
+    if (values.empty()) return 0.0;
+    sort(values.begin(), values.end());
+    if (values.size() == 1) return values.front();
+
+    const double rank = (percentile / 100.0) * static_cast<double>(values.size() - 1);
+    const int lower = static_cast<int>(floor(rank));
+    const int upper = static_cast<int>(ceil(rank));
+    const double fraction = rank - static_cast<double>(lower);
+    return values[lower] + (values[upper] - values[lower]) * fraction;
+}
+
+void print_sumo_eval_group_metrics(
+        const string& title,
+        const vector<pair<string, function<bool(const SumoEvalRecord&)>>>& bins,
+        const vector<SumoEvalRecord>& records)
+{
+    cout << title << endl;
+    cout << "[SUMO Eval] bin,n,MAE duration,RMSE duration,Bias duration,P90 absolute duration error" << endl;
+
+    for (const auto &bin : bins) {
+        int n = 0;
+        double sumAbsDurationError = 0.0;
+        double sumSquaredDurationError = 0.0;
+        double sumDurationError = 0.0;
+        vector<double> absErrors;
+
+        for (const auto &record : records) {
+            if (!bin.second(record)) continue;
+            ++n;
+            sumAbsDurationError += record.absDurationError;
+            sumSquaredDurationError += record.durationError * record.durationError;
+            sumDurationError += record.durationError;
+            absErrors.push_back(record.absDurationError);
+        }
+
+        if (n == 0) {
+            cout << "[SUMO Eval] " << bin.first << ",0,n/a,n/a,n/a,n/a" << endl;
+            continue;
+        }
+
+        cout << "[SUMO Eval] " << bin.first << ','
+             << n << ','
+             << (sumAbsDurationError / n) << ','
+             << sqrt(sumSquaredDurationError / n) << ','
+             << (sumDurationError / n) << ','
+             << percentile_sorted(absErrors, 90.0) << endl;
+    }
+}
+
+vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_duration_bins()
+{
+    return {
+        {"[0,30)", [](const SumoEvalRecord& r) { return r.truthDuration >= 0.0 && r.truthDuration < 30.0; }},
+        {"[30,60)", [](const SumoEvalRecord& r) { return r.truthDuration >= 30.0 && r.truthDuration < 60.0; }},
+        {"[60,120)", [](const SumoEvalRecord& r) { return r.truthDuration >= 60.0 && r.truthDuration < 120.0; }},
+        {"[120,300)", [](const SumoEvalRecord& r) { return r.truthDuration >= 120.0 && r.truthDuration < 300.0; }},
+        {"[300,600)", [](const SumoEvalRecord& r) { return r.truthDuration >= 300.0 && r.truthDuration < 600.0; }},
+        {"[600,+inf)", [](const SumoEvalRecord& r) { return r.truthDuration >= 600.0; }}
+    };
+}
+
+vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_waiting_time_bins()
+{
+    return {
+        {"0", [](const SumoEvalRecord& r) { return r.truthWaitingTime == 0.0; }},
+        {"(0,10)", [](const SumoEvalRecord& r) { return r.truthWaitingTime > 0.0 && r.truthWaitingTime < 10.0; }},
+        {"[10,30)", [](const SumoEvalRecord& r) { return r.truthWaitingTime >= 10.0 && r.truthWaitingTime < 30.0; }},
+        {"[30,60)", [](const SumoEvalRecord& r) { return r.truthWaitingTime >= 30.0 && r.truthWaitingTime < 60.0; }},
+        {"[60,+inf)", [](const SumoEvalRecord& r) { return r.truthWaitingTime >= 60.0; }}
+    };
+}
+
+vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_time_loss_bins()
+{
+    return {
+        {"0", [](const SumoEvalRecord& r) { return r.truthTimeLoss == 0.0; }},
+        {"(0,10)", [](const SumoEvalRecord& r) { return r.truthTimeLoss > 0.0 && r.truthTimeLoss < 10.0; }},
+        {"[10,30)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 10.0 && r.truthTimeLoss < 30.0; }},
+        {"[30,60)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 30.0 && r.truthTimeLoss < 60.0; }},
+        {"[60,+inf)", [](const SumoEvalRecord& r) { return r.truthTimeLoss >= 60.0; }}
+    };
+}
+
+vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_route_length_bins()
+{
+    return {
+        {"[0,500)", [](const SumoEvalRecord& r) { return r.truthRouteLength >= 0.0 && r.truthRouteLength < 500.0; }},
+        {"[500,1000)", [](const SumoEvalRecord& r) { return r.truthRouteLength >= 500.0 && r.truthRouteLength < 1000.0; }},
+        {"[1000,3000)", [](const SumoEvalRecord& r) { return r.truthRouteLength >= 1000.0 && r.truthRouteLength < 3000.0; }},
+        {"[3000,5000)", [](const SumoEvalRecord& r) { return r.truthRouteLength >= 3000.0 && r.truthRouteLength < 5000.0; }},
+        {"[5000,+inf)", [](const SumoEvalRecord& r) { return r.truthRouteLength >= 5000.0; }}
+    };
+}
+
+} // namespace
+
 float Graph::evaluate_sumo_tripinfo_truth(
         const vector<vector<pair<int, float>>>& ETA)
 {
+    const double epsilon = 1e-9;
+
     if (sumoTruthByVehicleID.empty()) {
         cout << "[SUMO Eval] No SUMO tripinfo truth loaded; skipping evaluation." << endl;
         return 0.0f;
@@ -516,7 +632,9 @@ float Graph::evaluate_sumo_tripinfo_truth(
         }
         csv << "vehicleID,predDepart,truthDepart,predArrival,truthArrival,"
             << "predDuration,truthDuration,durationError,absDurationError,"
-            << "arrivalError,truthWaitingTime,truthTimeLoss,truthRouteLength\n";
+            << "arrivalError,truthWaitingTime,truthTimeLoss,truthRouteLength,"
+            << "absDurationErrorPerKm,predAvgSpeed,truthAvgSpeed,speedError,"
+            << "numRoads,numMovements,validVehicle\n";
     }
 
     int comparedCount = 0;
@@ -527,13 +645,22 @@ float Graph::evaluate_sumo_tripinfo_truth(
     double absoluteDurationError = 0.0;
     double percentageDurationError = 0.0;
     int percentageCount = 0;
+    double durationBiasSum = 0.0;
     double squaredArrivalError = 0.0;
     double absoluteArrivalError = 0.0;
+    double arrivalBiasSum = 0.0;
+    double absoluteDurationErrorPerKm = 0.0;
+    double absoluteSpeedError = 0.0;
+    double speedBiasSum = 0.0;
+    vector<double> absDurationErrors;
+    vector<double> absDurationErrorsPerKm;
+    vector<SumoEvalRecord> evalRecords;
 
     int n = static_cast<int>(ETA.size());
     n = max(n, static_cast<int>(vehicles.size()));
     n = max(n, static_cast<int>(queryDataRaw.size()));
     n = max(n, static_cast<int>(routeRoadID.size()));
+    n = max(n, static_cast<int>(sumoVehicleIDs.size()));
 
     unordered_set<string> simulatedVehicleIDs;
 
@@ -549,7 +676,9 @@ float Graph::evaluate_sumo_tripinfo_truth(
             continue;
         }
 
-        if (i < static_cast<int>(vehicles.size()) && !vehicles[i].valid) {
+        bool validVehicle = true;
+        if (i < static_cast<int>(vehicles.size())) validVehicle = vehicles[i].valid;
+        if (!validVehicle) {
             ++invalidVehicleSkipped;
             continue;
         }
@@ -567,15 +696,36 @@ float Graph::evaluate_sumo_tripinfo_truth(
         double durationError = predDuration - truthDuration;
         double absDurationError = abs(durationError);
         double arrivalError = predArrival - truth.arrival;
+        double absArrivalError = abs(arrivalError);
+        double routeLengthKm = max(truth.routeLength / 1000.0, epsilon);
+        double absDurationErrorPerKm = absDurationError / routeLengthKm;
+        double truthAvgSpeed = (truthDuration > epsilon) ? (truth.routeLength / truthDuration) : 0.0;
+        double predAvgSpeed = (predDuration > epsilon) ? (truth.routeLength / predDuration) : 0.0;
+        double speedError = predAvgSpeed - truthAvgSpeed;
+        int numRoads = (i < static_cast<int>(routeRoadID.size()))
+                     ? static_cast<int>(routeRoadID[i].size())
+                     : 0;
+        int numMovements = (i < static_cast<int>(routeMovementID.size()))
+                         ? static_cast<int>(routeMovementID[i].size())
+                         : 0;
 
         squaredDurationError += durationError * durationError;
         absoluteDurationError += absDurationError;
+        durationBiasSum += durationError;
         if (truthDuration > 0.0) {
             percentageDurationError += absDurationError / truthDuration;
             ++percentageCount;
         }
         squaredArrivalError += arrivalError * arrivalError;
-        absoluteArrivalError += abs(arrivalError);
+        absoluteArrivalError += absArrivalError;
+        arrivalBiasSum += arrivalError;
+        absoluteDurationErrorPerKm += absDurationErrorPerKm;
+        absoluteSpeedError += abs(speedError);
+        speedBiasSum += speedError;
+        absDurationErrors.push_back(absDurationError);
+        absDurationErrorsPerKm.push_back(absDurationErrorPerKm);
+        evalRecords.push_back({truthDuration, truth.waitingTime, truth.timeLoss,
+                               truth.routeLength, durationError, absDurationError});
         ++comparedCount;
 
         if (csv) {
@@ -591,7 +741,14 @@ float Graph::evaluate_sumo_tripinfo_truth(
                 << arrivalError << ','
                 << truth.waitingTime << ','
                 << truth.timeLoss << ','
-                << truth.routeLength << '\n';
+                << truth.routeLength << ','
+                << absDurationErrorPerKm << ','
+                << predAvgSpeed << ','
+                << truthAvgSpeed << ','
+                << speedError << ','
+                << numRoads << ','
+                << numMovements << ','
+                << (validVehicle ? 1 : 0) << '\n';
         }
     }
 
@@ -602,6 +759,22 @@ float Graph::evaluate_sumo_tripinfo_truth(
         }
     }
 
+    const int totalTruthVehicles = static_cast<int>(sumoTruthByVehicleID.size());
+    const int totalSimulatedVehicles = n;
+    const double comparisonCoverage = safe_divide(comparedCount, totalTruthVehicles);
+
+    cout << "[SUMO Eval] Overall Accuracy" << endl;
+    cout << "[SUMO Eval] comparedCount: " << comparedCount << endl;
+    cout << "[SUMO Eval] totalTruthVehicles: " << totalTruthVehicles << endl;
+    cout << "[SUMO Eval] totalSimulatedVehicles: " << totalSimulatedVehicles << endl;
+
+    cout << "[SUMO Eval] Coverage" << endl;
+    cout << "[SUMO Eval] comparisonCoverage: " << comparisonCoverage << endl;
+    cout << "[SUMO Eval] invalidVehicleSkipped: " << invalidVehicleSkipped << endl;
+    cout << "[SUMO Eval] missingTruthCount: " << missingTruthCount << endl;
+    cout << "[SUMO Eval] etaMissingSkipped: " << etaMissingSkipped << endl;
+    cout << "[SUMO Eval] truthNotSimulated: " << truthNotSimulated << endl;
+    // Preserve legacy summary labels for downstream log parsers.
     cout << "[SUMO Eval] compared vehicles: " << comparedCount << endl;
     cout << "[SUMO Eval] missing truth: " << missingTruthCount << endl;
     cout << "[SUMO Eval] invalid skipped: " << invalidVehicleSkipped << endl;
@@ -609,7 +782,7 @@ float Graph::evaluate_sumo_tripinfo_truth(
     cout << "[SUMO Eval] truth not simulated: " << truthNotSimulated << endl;
 
     if (comparedCount == 0) {
-        cout << "[SUMO Eval] No valid vehicles compared." << endl;
+        cout << "[SUMO Eval Warning] comparedCount == 0; no valid vehicles compared and accuracy metrics are unavailable." << endl;
         if (csv) cout << "[SUMO Eval] CSV written to " << evalOutputPath << endl;
         return 0.0f;
     }
@@ -620,15 +793,43 @@ float Graph::evaluate_sumo_tripinfo_truth(
     double mape = (percentageCount > 0)
                 ? (percentageDurationError / percentageCount) * 100.0
                 : 0.0;
+    double biasDuration = durationBiasSum / comparedCount;
+    double medianAbsDurationError = percentile_sorted(absDurationErrors, 50.0);
+    double p90AbsDurationError = percentile_sorted(absDurationErrors, 90.0);
+    double p95AbsDurationError = percentile_sorted(absDurationErrors, 95.0);
     double maeArrival = absoluteArrivalError / comparedCount;
     double rmseArrival = sqrt(squaredArrivalError / comparedCount);
+    double biasArrival = arrivalBiasSum / comparedCount;
+    double maeDurationPerKm = absoluteDurationErrorPerKm / comparedCount;
+    double p90DurationErrorPerKm = percentile_sorted(absDurationErrorsPerKm, 90.0);
+    double maeSpeed = absoluteSpeedError / comparedCount;
+    double biasSpeed = speedBiasSum / comparedCount;
 
     cout << "[SUMO Eval] MSE duration: " << mse << endl;
     cout << "[SUMO Eval] MAE duration: " << mae << endl;
     cout << "[SUMO Eval] RMSE duration: " << rmse << endl;
     cout << "[SUMO Eval] MAPE duration: " << mape << "%" << endl;
+    cout << "[SUMO Eval] Bias duration: " << biasDuration << endl;
+    cout << "[SUMO Eval] Median absolute duration error: " << medianAbsDurationError << endl;
+    cout << "[SUMO Eval] P90 absolute duration error: " << p90AbsDurationError << endl;
+    cout << "[SUMO Eval] P95 absolute duration error: " << p95AbsDurationError << endl;
     cout << "[SUMO Eval] MAE arrival: " << maeArrival << endl;
     cout << "[SUMO Eval] RMSE arrival: " << rmseArrival << endl;
+    cout << "[SUMO Eval] Bias arrival: " << biasArrival << endl;
+    cout << "[SUMO Eval] MAE duration per km: " << maeDurationPerKm << endl;
+    cout << "[SUMO Eval] P90 duration error per km: " << p90DurationErrorPerKm << endl;
+    cout << "[SUMO Eval] MAE speed: " << maeSpeed << endl;
+    cout << "[SUMO Eval] Bias speed: " << biasSpeed << endl;
+
+    print_sumo_eval_group_metrics("[SUMO Eval] Error by Duration Bin",
+                                  sumo_duration_bins(), evalRecords);
+    print_sumo_eval_group_metrics("[SUMO Eval] Error by WaitingTime Bin",
+                                  sumo_waiting_time_bins(), evalRecords);
+    print_sumo_eval_group_metrics("[SUMO Eval] Error by TimeLoss Bin",
+                                  sumo_time_loss_bins(), evalRecords);
+    print_sumo_eval_group_metrics("[SUMO Eval] Error by RouteLength Bin",
+                                  sumo_route_length_bins(), evalRecords);
+
     if (csv) cout << "[SUMO Eval] CSV written to " << evalOutputPath << endl;
 
     return static_cast<float>(mse);
