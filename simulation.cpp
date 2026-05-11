@@ -642,12 +642,13 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
     ETA_result_cycle_aware.clear();
     finishedVehicleCount = 0;
     invalidVehicleCount = 0;
-    usedDischargeCapacity.clear();
+    usedMovementDischargeCapacity.clear();
     while (!signalEventPQ.empty()) signalEventPQ.pop();
     while (!dispatchPQ.empty()) dispatchPQ.pop();
 
     this->routeRoadID = routeRoadIDInput;
     route_roadID_2_movementID();
+    initializeMovementLaneDischargeCapacity();
 
     int simStartTime = 0;
     if (!Q.empty()) {
@@ -693,7 +694,7 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
     ETA_result_cycle_aware.assign(routeRoadIDInput.size(), {});
     finishedVehicleCount = 0;
     invalidVehicleCount = 0;
-    usedDischargeCapacity.clear();
+    usedMovementDischargeCapacity.clear();
 
     for (auto &b : waitingBuffers) {
         b.vehicleQueue.clear();
@@ -820,6 +821,32 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
     }
 }
 
+void Graph::initializeMovementLaneDischargeCapacity() {
+    int missingLaneSideCount = 0;
+    for (auto &movement : movements) {
+        int upstreamLaneCount = static_cast<int>(movement.fromLanes.size());
+        int downstreamLaneCount = static_cast<int>(movement.toLanes.size());
+        if (upstreamLaneCount <= 0 || downstreamLaneCount <= 0) {
+            movement.laneDischargeCapacity = 1;
+            ++missingLaneSideCount;
+            cout << "[Discharge Warning] movementID=" << movement.movementID
+                 << " has incomplete lane-level connection data"
+                 << " (fromLanes=" << upstreamLaneCount
+                 << ", toLanes=" << downstreamLaneCount
+                 << "); using laneDischargeCapacity=1." << endl;
+            continue;
+        }
+        movement.laneDischargeCapacity = max(1, min(upstreamLaneCount, downstreamLaneCount));
+    }
+    cout << "[Discharge] lane discharge interval: " << max(1, defaultDischargeInterval) << "s" << endl;
+    cout << "[Discharge] initialized movement lane capacities for " << movements.size()
+         << " movements";
+    if (missingLaneSideCount > 0) {
+        cout << " (fallback capacity used for " << missingLaneSideCount << " movements)";
+    }
+    cout << endl;
+}
+
 bool Graph::isMovementActive(int movementID, int t) {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return false;
     SignalState state = signalStateAtMovement(movementID, t);
@@ -842,7 +869,7 @@ bool Graph::canDischarge(int movementID, int dischargeTime, int windowEnd) {
     if (vehicleID < 0 || vehicleID >= vehicles.size()) return false;
     if (vehicles[vehicleID].arrivalTime > dischargeTime) return false;
     if (!hasDownstreamStorage(m.toRoadID)) return false;
-    if (!hasDischargeCapacity(m.intersectionID, m.toRoadID, dischargeTime)) return false;
+    if (!hasDischargeCapacity(movementID, dischargeTime)) return false;
     return true;
 }
 
@@ -858,7 +885,7 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
 
     int vehicleID = b.vehicleQueue.front();
     b.vehicleQueue.pop_front();
-    consumeDischargeCapacity(m.intersectionID, m.toRoadID, dischargeTime);
+    consumeDischargeCapacity(movementID, dischargeTime);
 
     VehicleLabel &v = vehicles[vehicleID];
     v.roadIndex += 1;
@@ -942,33 +969,31 @@ bool Graph::isDispatchCandidateValid(const DispatchCandidate& c) {
 
 int Graph::computeEarliestDischargeTime(int movementID, int readyTime, int currentTime) {
     if (movementID < 0 || movementID >= movements.size()) return INF;
-    const Movement &m = movements[movementID];
     int t = max(readyTime, currentTime);
-    int capT = nextAvailableCapacityTime(m.intersectionID, m.toRoadID, t);
+    int capT = nextAvailableCapacityTime(movementID, t);
     return max(t, capT);
 }
 
-bool Graph::hasDischargeCapacity(int intersectionID, int toRoadID, int t) {
+bool Graph::hasDischargeCapacity(int movementID, int t) {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return false;
     int interval = max(1, defaultDischargeInterval);
     int slot = t / interval;
-    int used = usedDischargeCapacity[make_tuple(intersectionID, toRoadID, slot)];
-    int cap = 1;
-    if (toRoadID >= 0 && toRoadID < roads.size()) {
-        cap = max(1, roads[toRoadID].laneNum);
-    }
+    int used = usedMovementDischargeCapacity[make_tuple(movementID, slot)];
+    int cap = max(1, movements[movementID].laneDischargeCapacity);
     return used < cap;
 }
 
-void Graph::consumeDischargeCapacity(int intersectionID, int toRoadID, int t) {
+void Graph::consumeDischargeCapacity(int movementID, int t) {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return;
     int interval = max(1, defaultDischargeInterval);
     int slot = t / interval;
-    usedDischargeCapacity[make_tuple(intersectionID, toRoadID, slot)]++;
+    usedMovementDischargeCapacity[make_tuple(movementID, slot)]++;
 }
 
-int Graph::nextAvailableCapacityTime(int intersectionID, int toRoadID, int t) {
+int Graph::nextAvailableCapacityTime(int movementID, int t) {
     int interval = max(1, defaultDischargeInterval);
     int cur = t;
-    while (!hasDischargeCapacity(intersectionID, toRoadID, cur)) {
+    while (!hasDischargeCapacity(movementID, cur)) {
         cur = ((cur / interval) + 1) * interval;
     }
     return cur;

@@ -821,12 +821,13 @@ void Graph::build_movements_from_sumo_connections()
                 movementIDsByIntersection[m.intersectionID].push_back(movementID);
             }
         }
-        auto add_unique_int = [](vector<int> &v, int x) {
+        auto add_unique_lane = [](vector<string> &v, int x) {
             if (x < 0) return;
-            if (find(v.begin(), v.end(), x) == v.end()) v.push_back(x);
+            string lane = to_string(x);
+            if (find(v.begin(), v.end(), lane) == v.end()) v.push_back(lane);
         };
-        add_unique_int(movements[movementID].fromLanes, c.fromLane);
-        add_unique_int(movements[movementID].toLanes, c.toLane);
+        add_unique_lane(movements[movementID].fromLanes, c.fromLane);
+        add_unique_lane(movements[movementID].toLanes, c.toLane);
     }
     cout << "[SUMO] movements: " << movements.size() << endl;
 }
@@ -844,7 +845,17 @@ void Graph::build_lane_groups_from_sumo_connections()
         group.laneGroupID = static_cast<int>(laneGroups.size());
         group.roadID = m.fromRoadID;
         group.turn = m.turn;
-        group.laneIndices = m.fromLanes;
+        group.laneIndices.clear();
+        for (const string &lane : m.fromLanes) {
+            try {
+                size_t pos = 0;
+                int laneIndex = stoi(lane, &pos);
+                if (pos == lane.size()) group.laneIndices.push_back(laneIndex);
+            } catch (const exception&) {
+                // Ignore non-numeric lane identifiers for lane-group indexing;
+                // discharge capacity uses Movement::fromLanes directly.
+            }
+        }
         sort(group.laneIndices.begin(), group.laneIndices.end());
         group.laneIndices.erase(unique(group.laneIndices.begin(), group.laneIndices.end()), group.laneIndices.end());
         if (group.laneIndices.empty()) group.laneIndices.push_back(0);

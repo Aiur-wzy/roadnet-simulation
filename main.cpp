@@ -9,6 +9,7 @@ struct RunConfig {
 
     int readNum = 192484;
     int avgLength = 30;
+    int laneDischargeInterval = 1;
 
     string baseDir;
     string sumoNetPath;
@@ -128,7 +129,9 @@ void print_usage(const char* programName) {
          << "Data options:\n"
          << "  --read-num <n>         Number of query/route/time records to read (default: 192484).\n"
          << "  --cut                  Cut route/query/time data before simulation (default: false).\n"
-         << "  --avg-length <n>       Average length used when --cut is enabled (default: 30).\n\n"
+         << "  --avg-length <n>       Average length used when --cut is enabled (default: 30).\n"
+         << "  --lane-discharge-interval <k>\n"
+         << "                         Global seconds per movement lane-discharge slot (default: 1; <=0 clamps to 1).\n\n"
          << "Environment fallback (lower priority than command-line args):\n"
          << "  USE_SUMO_NET=1 SUMO_NET_PATH=test.net.xml " << programName << "\n";
 }
@@ -168,6 +171,15 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--read-num") cfg.readNum = parse_int_value(require_value(argc, argv, i, arg), arg);
         else if (arg == "--cut") cfg.cut = true;
         else if (arg == "--avg-length") cfg.avgLength = parse_int_value(require_value(argc, argv, i, arg), arg);
+        else if (arg == "--lane-discharge-interval") {
+            int parsedInterval = parse_int_value(require_value(argc, argv, i, arg), arg);
+            if (parsedInterval <= 0) {
+                cout << "[Config Warning] --lane-discharge-interval=" << parsedInterval
+                     << " is invalid; clamping to 1." << endl;
+                parsedInterval = 1;
+            }
+            cfg.laneDischargeInterval = parsedInterval;
+        }
         else if (arg == "--no-eval") cfg.runEvaluation = false;
         else throw runtime_error("Unknown option: " + arg);
     }
@@ -199,6 +211,7 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     g.modelPort = cfg.modelPort;
     g.fallbackToSpeedNet = cfg.fallbackToSpeedNet;
     g.verboseTravelTimePrediction = cfg.verboseTravelTimePrediction;
+    g.defaultDischargeInterval = max(1, cfg.laneDischargeInterval);
     g.modelWarningPrinted = false;
     g.travelTimeTableHit = 0;
     g.travelTimeTableMiss = 0;
@@ -236,6 +249,7 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
     cout << "[Config] Cut: " << cfg.cut << endl;
     cout << "[Config] Avg length: " << cfg.avgLength << endl;
     cout << "[Config] Evaluation: " << cfg.runEvaluation << endl;
+    cout << "[Config] Lane discharge interval: " << max(1, g.defaultDischargeInterval) << "s" << endl;
     cout << "[Config] Travel time mode: " << travelTimeModeToString(g.travelTimeMode) << endl;
     cout << "[Config] Travel time table: " << g.travelTimeTablePath << endl;
     cout << "[Config] TT fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
