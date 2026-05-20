@@ -1444,22 +1444,12 @@ void Graph::initialize_signal_event_queue(int simStartTime) {
 }
 
 void Graph::rebuildActiveDispatchPQ(int currentTime, int windowEnd) {
-    // 在当前放行窗口内，收集所有 active movement 的队首车辆作为候选。
+    // 在当前放行窗口内，收集所有 movement 的队首车辆作为候选。
+    // 即使窗口起点时 buffer 为空，也可在窗口中后续到达后通过 re-push 激活。
     while (!dispatchPQ.empty()) dispatchPQ.pop();
     for (const auto &m : movements) {
         if (m.movementID < 0) continue;
-        if (!isMovementActive(m.movementID, currentTime)) continue;
-        auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(m.movementID);
-        if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) continue;
-        int bufferID = it->second;
-        if (bufferID < 0 || bufferID >= waitingBuffers.size()) continue;
-        if (waitingBuffers[bufferID].vehicleQueue.empty()) continue;
-        int vehicleID = waitingBuffers[bufferID].vehicleQueue.front();
-        int readyTime = vehicles[vehicleID].arrivalTime;
-        int earliest = computeEarliestDischargeTime(m.movementID, readyTime, currentTime);
-        if (earliest < windowEnd) {
-            dispatchPQ.push({earliest, readyTime, m.movementID, bufferID, vehicleID});
-        }
+        pushCandidateIfPossible(m.movementID, currentTime, windowEnd);
     }
 }
 
@@ -1534,8 +1524,14 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
         DischargeResult result = dischargeOneVehicle(c.movementID, c.earliestDischargeTime);
         if (result.vehicleID < 0) continue;
         pushCandidateIfPossible(c.movementID, c.earliestDischargeTime, windowEnd);
-        if (!result.finished) {
-            pushCandidateIfPossible(result.nextMovementID, c.earliestDischargeTime, windowEnd);
+        if (!result.finished && result.newArrivalTime < windowEnd) {
+            if (verboseTravelTimePrediction) {
+                cout << "[Dispatch Reactivate] movement=" << result.nextMovementID
+                     << " arrival=" << result.newArrivalTime
+                     << " window=[" << windowStart << "," << windowEnd << ")"
+                     << " triggeredByVehicle=" << result.vehicleID << endl;
+            }
+            pushCandidateIfPossible(result.nextMovementID, result.newArrivalTime, windowEnd);
         }
         for (const auto &m : movements) {
             if (m.intersectionID == result.intersectionID && m.toRoadID == result.toRoadID) {
@@ -1670,7 +1666,6 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
 
 void Graph::pushCandidateIfPossible(int movementID, int currentTime, int windowEnd) {
     if (movementID < 0 || movementID >= movements.size()) return;
-    if (!isMovementActive(movementID, currentTime)) return;
     const Movement &m = movements[movementID];
     auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(movementID);
     if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) return;
@@ -1692,16 +1687,27 @@ bool Graph::isDispatchCandidateValid(const DispatchCandidate& c) {
     if (b.vehicleQueue.empty()) return false;
     if (b.vehicleQueue.front() != c.vehicleID) return false;
     const auto &v = vehicles[c.vehicleID];
+    if (!v.valid || v.finished || v.state == VehicleState::Finished) return false;
     if (v.currentBufferID != c.bufferID) return false;
     if (v.currentMovementID != c.movementID) return false;
+    if (v.arrivalTime > c.earliestDischargeTime) return false;
+    if (!isMovementActive(c.movementID, c.earliestDischargeTime)) return false;
+    if (!hasDischargeCapacity(c.movementID, c.earliestDischargeTime)) return false;
+    int chosenLane = -1;
+    if (!hasDownstreamLaneStorage(c.movementID, c.vehicleID, chosenLane)) return false;
     return true;
 }
 
 int Graph::computeEarliestDischargeTime(int movementID, int readyTime, int currentTime) {
     if (movementID < 0 || movementID >= movements.size()) return INF;
     int t = max(readyTime, currentTime);
-    int capT = nextAvailableCapacityTime(movementID, t);
-    return max(t, capT);
+    const int maxSearchSteps = 24 * 3600;
+    for (int step = 0; step < maxSearchSteps; ++step) {
+        t = nextAvailableCapacityTime(movementID, t);
+        if (isMovementActive(movementID, t) && hasDischargeCapacity(movementID, t)) return t;
+        t += 1;
+    }
+    return INF;
 }
 
 bool Graph::hasDischargeCapacity(int movementID, int t) {
