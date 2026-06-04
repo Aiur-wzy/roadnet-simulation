@@ -465,11 +465,19 @@ struct DepartureEvent {
 };
 
 struct DispatchCandidate {
-    int earliestDischargeTime = 0;
-    int readyTime = 0;
+    int timeLabel = 0;
     int movementID = -1;
-    int bufferID = -1;
-    int vehicleID = -1;
+    int version = 0;
+};
+
+enum class DischargeBlockReason {
+    None,
+    EmptyBuffer,
+    NotArrived,
+    RedSignal,
+    Capacity,
+    DownstreamFull,
+    Invalid
 };
 
 struct DischargeResult {
@@ -483,6 +491,8 @@ struct DischargeResult {
     bool finished = false;
     int nextMovementID = -1;
     int nextBufferID = -1;
+    int releasedRoadID = -1;
+    int releasedLaneIndex = -1;
 };
 
 struct SignalEventCompare {
@@ -501,12 +511,11 @@ struct DepartureEventCompare {
 
 struct DispatchCandidateCompare {
     bool operator()(const DispatchCandidate& a, const DispatchCandidate& b) const {
-        if (a.earliestDischargeTime != b.earliestDischargeTime) {
-            return a.earliestDischargeTime > b.earliestDischargeTime;
+        if (a.timeLabel != b.timeLabel) {
+            return a.timeLabel > b.timeLabel;
         }
-        if (a.readyTime != b.readyTime) return a.readyTime > b.readyTime;
         if (a.movementID != b.movementID) return a.movementID > b.movementID;
-        return a.vehicleID > b.vehicleID;
+        return a.version > b.version;
     }
 };
 
@@ -707,6 +716,10 @@ public:
     int invalidVehicleCount = 0;
     int defaultDischargeInterval = 1;
     map<tuple<int, int>, int> usedMovementDischargeCapacity;
+    vector<int> movementTimeLabel;
+    vector<int> movementPQVersion;
+    vector<bool> movementBlockedByDownstream;
+    vector<bool> movementInDispatchPQ;
     unordered_set<int> delayedDepartureLogged;
     // Classify Each Road with A Unique Latency Function
     vector<vector<pair<int,vector<pair<int,int>>>>> timeRange;
@@ -771,6 +784,15 @@ public:
     void pushCandidateIfPossible(int movementID, int currentTime, int windowEnd);
     bool isDispatchCandidateValid(const DispatchCandidate& c);
     int computeEarliestDischargeTime(int movementID, int readyTime, int currentTime);
+    int getMovementBufferID(int movementID) const;
+    int getFrontVehicleForMovement(int movementID) const;
+    int computeMovementAttemptTime(int movementID, int lowerBoundTime);
+    int nextGreenTimeForMovement(int movementID, int t);
+    bool hasReadyFrontVehicle(int movementID, int t);
+    DischargeBlockReason getDischargeBlockReason(int movementID, int t, int &frontVehicleID, int &chosenLane);
+    void scheduleMovementCandidate(int movementID, int time);
+    void deactivateMovementForDownstreamBlock(int movementID);
+    void reactivateMovementsBlockedByRoad(int freedRoadID, int currentTime);
     bool hasDischargeCapacity(int movementID, int t);
     void consumeDischargeCapacity(int movementID, int t);
     int nextAvailableCapacityTime(int movementID, int t);

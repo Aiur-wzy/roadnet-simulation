@@ -1290,6 +1290,10 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
     finishedVehicleCount = 0;
     invalidVehicleCount = 0;
     usedMovementDischargeCapacity.clear();
+    movementTimeLabel.assign(movements.size(), 0);
+    movementPQVersion.assign(movements.size(), 0);
+    movementBlockedByDownstream.assign(movements.size(), false);
+    movementInDispatchPQ.assign(movements.size(), false);
     while (!signalEventPQ.empty()) signalEventPQ.pop();
     while (!departurePQ.empty()) departurePQ.pop();
     while (!dispatchPQ.empty()) dispatchPQ.pop();
@@ -1359,7 +1363,12 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
     finishedVehicleCount = 0;
     invalidVehicleCount = 0;
     usedMovementDischargeCapacity.clear();
+    movementTimeLabel.assign(movements.size(), 0);
+    movementPQVersion.assign(movements.size(), 0);
+    movementBlockedByDownstream.assign(movements.size(), false);
+    movementInDispatchPQ.assign(movements.size(), false);
     while (!departurePQ.empty()) departurePQ.pop();
+    while (!dispatchPQ.empty()) dispatchPQ.pop();
     delayedDepartureLogged.clear();
 
     for (auto &b : waitingBuffers) {
@@ -1444,12 +1453,22 @@ void Graph::initialize_signal_event_queue(int simStartTime) {
 }
 
 void Graph::rebuildActiveDispatchPQ(int currentTime, int windowEnd) {
-    // 在当前放行窗口内，收集所有 movement 的队首车辆作为候选。
-    // 即使窗口起点时 buffer 为空，也可在窗口中后续到达后通过 re-push 激活。
+    (void)windowEnd;
+    // Rebuild only the heap contents; persistent movement labels/capacity history remain intact.
     while (!dispatchPQ.empty()) dispatchPQ.pop();
+    if (movementTimeLabel.size() != movements.size()) movementTimeLabel.assign(movements.size(), currentTime);
+    if (movementPQVersion.size() != movements.size()) movementPQVersion.assign(movements.size(), 0);
+    if (movementBlockedByDownstream.size() != movements.size()) movementBlockedByDownstream.assign(movements.size(), false);
+    movementInDispatchPQ.assign(movements.size(), false);
+
     for (const auto &m : movements) {
-        if (m.movementID < 0) continue;
-        pushCandidateIfPossible(m.movementID, currentTime, windowEnd);
+        int movementID = m.movementID;
+        if (movementID < 0 || movementID >= static_cast<int>(movements.size())) continue;
+        if (movementBlockedByDownstream[movementID]) continue;
+        int frontVehicleID = getFrontVehicleForMovement(movementID);
+        if (frontVehicleID < 0) continue;
+        int t = computeMovementAttemptTime(movementID, currentTime);
+        scheduleMovementCandidate(movementID, t);
     }
 }
 
@@ -1503,6 +1522,7 @@ bool Graph::departVehicle(int vehicleID, int departTime) {
     if (v.routeRoadIDs.size() == 1) {
         releaseLaneOccupancy(vehicleID);
         recordFinalETA(vehicleID, v.arrivalTime);
+        reactivateMovementsBlockedByRoad(firstRoad, departTime);
         return true;
     }
 
@@ -1512,32 +1532,110 @@ bool Graph::departVehicle(int vehicleID, int departTime) {
 }
 
 void Graph::process_discharge_window(int windowStart, int windowEnd) {
-    // 窗口内持续弹出“最早可放行”候选，直到无合法候选或越过窗口右边界。
+    (void)windowStart;
     rebuildActiveDispatchPQ(windowStart, windowEnd);
+
     while (!dispatchPQ.empty()) {
         DispatchCandidate c = dispatchPQ.top();
+        if (c.timeLabel >= windowEnd) break;
         dispatchPQ.pop();
-        if (!isDispatchCandidateValid(c)) continue;
-        if (c.earliestDischargeTime >= windowEnd) continue;
-        if (!canDischarge(c.movementID, c.earliestDischargeTime, windowEnd)) continue;
 
-        DischargeResult result = dischargeOneVehicle(c.movementID, c.earliestDischargeTime);
-        if (result.vehicleID < 0) continue;
-        pushCandidateIfPossible(c.movementID, c.earliestDischargeTime, windowEnd);
-        if (!result.finished && result.newArrivalTime < windowEnd) {
-            if (verboseTravelTimePrediction) {
-                cout << "[Dispatch Reactivate] movement=" << result.nextMovementID
-                     << " arrival=" << result.newArrivalTime
-                     << " window=[" << windowStart << "," << windowEnd << ")"
-                     << " triggeredByVehicle=" << result.vehicleID << endl;
-            }
-            pushCandidateIfPossible(result.nextMovementID, result.newArrivalTime, windowEnd);
+        if (!isDispatchCandidateValid(c)) continue;
+        int movementID = c.movementID;
+        movementInDispatchPQ[movementID] = false;
+
+        if (movementBlockedByDownstream[movementID]) continue;
+
+        int bufferID = getMovementBufferID(movementID);
+        if (bufferID < 0 || waitingBuffers[bufferID].vehicleQueue.empty()) continue;
+
+        int vehicleID = waitingBuffers[bufferID].vehicleQueue.front();
+        if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) continue;
+        int t = max(max(movementTimeLabel[movementID], vehicles[vehicleID].arrivalTime), c.timeLabel);
+
+        if (t >= windowEnd) {
+            scheduleMovementCandidate(movementID, t);
+            continue;
         }
-        for (const auto &m : movements) {
-            if (m.intersectionID == result.intersectionID && m.toRoadID == result.toRoadID) {
-                pushCandidateIfPossible(m.movementID, c.earliestDischargeTime, windowEnd);
+
+        int frontVehicleID = -1;
+        int chosenLane = -1;
+        DischargeBlockReason reason = getDischargeBlockReason(movementID, t, frontVehicleID, chosenLane);
+
+        if (reason == DischargeBlockReason::RedSignal) {
+            int nextT = nextGreenTimeForMovement(movementID, t);
+            if (nextT < INF) {
+                movementTimeLabel[movementID] = max(movementTimeLabel[movementID], nextT);
+                scheduleMovementCandidate(movementID, movementTimeLabel[movementID]);
             }
+            continue;
         }
+
+        if (reason == DischargeBlockReason::Capacity) {
+            int nextT = nextAvailableCapacityTime(movementID, t);
+            movementTimeLabel[movementID] = max(movementTimeLabel[movementID], nextT);
+            scheduleMovementCandidate(movementID, movementTimeLabel[movementID]);
+            continue;
+        }
+
+        if (reason == DischargeBlockReason::NotArrived) {
+            int nextT = (frontVehicleID >= 0 && frontVehicleID < static_cast<int>(vehicles.size()))
+                ? vehicles[frontVehicleID].arrivalTime
+                : t + 1;
+            movementTimeLabel[movementID] = max(movementTimeLabel[movementID], nextT);
+            scheduleMovementCandidate(movementID, movementTimeLabel[movementID]);
+            continue;
+        }
+
+        if (reason == DischargeBlockReason::DownstreamFull) {
+            deactivateMovementForDownstreamBlock(movementID);
+            continue;
+        }
+
+        if (reason != DischargeBlockReason::None) continue;
+
+        int oldLabel = movementTimeLabel[movementID];
+        int fifoBefore = waitingBuffers[bufferID].vehicleQueue.empty() ? -1 : waitingBuffers[bufferID].vehicleQueue.front();
+        DischargeResult result = dischargeOneVehicle(movementID, t);
+        if (result.vehicleID < 0) {
+            if (fifoBefore >= 0 && !waitingBuffers[bufferID].vehicleQueue.empty()
+                    && waitingBuffers[bufferID].vehicleQueue.front() != fifoBefore) {
+                cout << "[Dispatch Sanity Warning] failed discharge changed FIFO movement=" << movementID << endl;
+            }
+            continue;
+        }
+
+        int nextLabel = nextAvailableCapacityTime(movementID, t);
+        if (nextLabel < oldLabel) {
+            cout << "[Dispatch Sanity Warning] movementTimeLabel would decrease movement=" << movementID
+                 << " old=" << oldLabel << " new=" << nextLabel << endl;
+            nextLabel = oldLabel;
+        }
+        movementTimeLabel[movementID] = nextLabel;
+
+        if (verboseTravelTimePrediction) {
+            cout << "[Dispatch Success] movement=" << movementID
+                 << " vehicle=" << result.vehicleID
+                 << " dischargeTime=" << t
+                 << " oldLabel=" << oldLabel
+                 << " newLabel=" << movementTimeLabel[movementID]
+                 << " releasedRoad=" << result.releasedRoadID
+                 << " toRoad=" << result.toRoadID << endl;
+        }
+
+        if (!waitingBuffers[bufferID].vehicleQueue.empty()) {
+            int nextFront = waitingBuffers[bufferID].vehicleQueue.front();
+            int nextT = max(movementTimeLabel[movementID], vehicles[nextFront].arrivalTime);
+            scheduleMovementCandidate(movementID, computeMovementAttemptTime(movementID, nextT));
+        }
+
+        if (!result.finished && result.nextMovementID >= 0) {
+            int nextT = max(movementTimeLabel[result.nextMovementID], result.newArrivalTime);
+            scheduleMovementCandidate(result.nextMovementID,
+                                      computeMovementAttemptTime(result.nextMovementID, nextT));
+        }
+
+        reactivateMovementsBlockedByRoad(result.releasedRoadID, t);
     }
 }
 
@@ -1575,32 +1673,18 @@ bool Graph::isMovementActive(int movementID, int t) {
 
 bool Graph::canDischarge(int movementID, int dischargeTime, int windowEnd) {
     (void)windowEnd;
-    // 放行条件：相位有效 + 队首车辆已到达 + 下游存储可用 + 断面放行能力可用。
-    if (!isMovementActive(movementID, dischargeTime)) return false;
-    if (movementID < 0 || movementID >= movements.size()) return false;
-    const Movement &m = movements[movementID];
-    auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(movementID);
-    if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) return false;
-    int bufferID = it->second;
-    if (bufferID < 0 || bufferID >= waitingBuffers.size()) return false;
-    auto &b = waitingBuffers[bufferID];
-    if (b.vehicleQueue.empty()) return false;
-    int vehicleID = b.vehicleQueue.front();
-    if (vehicleID < 0 || vehicleID >= vehicles.size()) return false;
-    if (vehicles[vehicleID].arrivalTime > dischargeTime) return false;
+    int frontVehicleID = -1;
     int chosenLane = -1;
-    if (!hasDownstreamLaneStorage(movementID, vehicleID, chosenLane)) return false;
-    if (!hasDischargeCapacity(movementID, dischargeTime)) return false;
-    return true;
+    return getDischargeBlockReason(movementID, dischargeTime, frontVehicleID, chosenLane)
+        == DischargeBlockReason::None;
 }
 
 DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     DischargeResult result;
-    if (movementID < 0 || movementID >= movements.size()) return result;
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return result;
     const Movement &m = movements[movementID];
-    auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(movementID);
-    if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) return result;
-    int bufferID = it->second;
+    int bufferID = getMovementBufferID(movementID);
+    if (bufferID < 0) return result;
     auto &b = waitingBuffers[bufferID];
     if (b.vehicleQueue.empty()) return result;
 
@@ -1608,11 +1692,14 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     int chosenLane = -1;
     if (!hasDownstreamLaneStorage(movementID, vehicleID, chosenLane)) return result;
 
+    VehicleLabel &v = vehicles[vehicleID];
+    result.releasedRoadID = v.occupiedRoadID;
+    result.releasedLaneIndex = v.occupiedLaneIndex;
+
     b.vehicleQueue.pop_front();
     releaseLaneOccupancy(vehicleID);
     consumeDischargeCapacity(movementID, dischargeTime);
 
-    VehicleLabel &v = vehicles[vehicleID];
     v.roadIndex += 1;
     v.currentRoadID = m.toRoadID;
     v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID);
@@ -1633,7 +1720,7 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
         return result;
     }
 
-    if (v.roadIndex < v.routeMovementIDs.size()) {
+    if (v.roadIndex < static_cast<int>(v.routeMovementIDs.size())) {
         int nextMovementID = v.routeMovementIDs[v.roadIndex];
         auto itBuffer = roads[m.toRoadID].movementIDToWaitingBufferID.find(nextMovementID);
         if (itBuffer != roads[m.toRoadID].movementIDToWaitingBufferID.end()) {
@@ -1665,49 +1752,198 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
 }
 
 void Graph::pushCandidateIfPossible(int movementID, int currentTime, int windowEnd) {
-    if (movementID < 0 || movementID >= movements.size()) return;
-    const Movement &m = movements[movementID];
-    auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(movementID);
-    if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) return;
-    int bufferID = it->second;
-    if (bufferID < 0 || bufferID >= waitingBuffers.size()) return;
-    auto &b = waitingBuffers[bufferID];
-    if (b.vehicleQueue.empty()) return;
-    int vehicleID = b.vehicleQueue.front();
-    int readyTime = vehicles[vehicleID].arrivalTime;
-    int earliest = computeEarliestDischargeTime(movementID, readyTime, currentTime);
-    if (earliest >= windowEnd) return;
-    dispatchPQ.push({earliest, readyTime, movementID, bufferID, vehicleID});
+    (void)windowEnd;
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return;
+    if (movementBlockedByDownstream.size() == movements.size() && movementBlockedByDownstream[movementID]) return;
+    if (getFrontVehicleForMovement(movementID) < 0) return;
+    int t = computeMovementAttemptTime(movementID, currentTime);
+    scheduleMovementCandidate(movementID, t);
 }
 
 bool Graph::isDispatchCandidateValid(const DispatchCandidate& c) {
-    if (c.bufferID < 0 || c.bufferID >= waitingBuffers.size()) return false;
-    if (c.vehicleID < 0 || c.vehicleID >= vehicles.size()) return false;
-    auto &b = waitingBuffers[c.bufferID];
-    if (b.vehicleQueue.empty()) return false;
-    if (b.vehicleQueue.front() != c.vehicleID) return false;
-    const auto &v = vehicles[c.vehicleID];
-    if (!v.valid || v.finished || v.state == VehicleState::Finished) return false;
-    if (v.currentBufferID != c.bufferID) return false;
-    if (v.currentMovementID != c.movementID) return false;
-    if (v.arrivalTime > c.earliestDischargeTime) return false;
-    if (!isMovementActive(c.movementID, c.earliestDischargeTime)) return false;
-    if (!hasDischargeCapacity(c.movementID, c.earliestDischargeTime)) return false;
-    int chosenLane = -1;
-    if (!hasDownstreamLaneStorage(c.movementID, c.vehicleID, chosenLane)) return false;
-    return true;
+    if (c.movementID < 0 || c.movementID >= static_cast<int>(movements.size())) return false;
+    if (movementPQVersion.size() != movements.size()) return false;
+    if (c.version != movementPQVersion[c.movementID]) {
+        if (verboseTravelTimePrediction) {
+            cout << "[Dispatch Stale] movement=" << c.movementID
+                 << " candidateVersion=" << c.version
+                 << " currentVersion=" << movementPQVersion[c.movementID]
+                 << " timeLabel=" << c.timeLabel << endl;
+        }
+        return false;
+    }
+    if (movementBlockedByDownstream.size() == movements.size() && movementBlockedByDownstream[c.movementID]) return false;
+    return getFrontVehicleForMovement(c.movementID) >= 0;
 }
 
 int Graph::computeEarliestDischargeTime(int movementID, int readyTime, int currentTime) {
-    if (movementID < 0 || movementID >= movements.size()) return INF;
-    int t = max(readyTime, currentTime);
-    const int maxSearchSteps = 24 * 3600;
-    for (int step = 0; step < maxSearchSteps; ++step) {
-        t = nextAvailableCapacityTime(movementID, t);
-        if (isMovementActive(movementID, t) && hasDischargeCapacity(movementID, t)) return t;
-        t += 1;
+    return computeMovementAttemptTime(movementID, max(readyTime, currentTime));
+}
+
+int Graph::getMovementBufferID(int movementID) const {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return -1;
+    const Movement &m = movements[movementID];
+    if (m.fromRoadID < 0 || m.fromRoadID >= static_cast<int>(roads.size())) return -1;
+    auto it = roads[m.fromRoadID].movementIDToWaitingBufferID.find(movementID);
+    if (it == roads[m.fromRoadID].movementIDToWaitingBufferID.end()) return -1;
+    int bufferID = it->second;
+    if (bufferID < 0 || bufferID >= static_cast<int>(waitingBuffers.size())) return -1;
+    return bufferID;
+}
+
+int Graph::getFrontVehicleForMovement(int movementID) const {
+    int bufferID = getMovementBufferID(movementID);
+    if (bufferID < 0) return -1;
+    const auto &q = waitingBuffers[bufferID].vehicleQueue;
+    if (q.empty()) return -1;
+    int vehicleID = q.front();
+    if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return -1;
+    const auto &v = vehicles[vehicleID];
+    if (!v.valid || v.finished || v.state == VehicleState::Finished) return -1;
+    if (v.currentMovementID != movementID || v.currentBufferID != bufferID) return -1;
+    return vehicleID;
+}
+
+int Graph::computeMovementAttemptTime(int movementID, int lowerBoundTime) {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return INF;
+    if (movementTimeLabel.size() != movements.size()) movementTimeLabel.assign(movements.size(), 0);
+    int t = max(movementTimeLabel[movementID], lowerBoundTime);
+    int vehicleID = getFrontVehicleForMovement(movementID);
+    if (vehicleID >= 0) t = max(t, vehicles[vehicleID].arrivalTime);
+    int greenT = nextGreenTimeForMovement(movementID, t);
+    if (greenT >= INF) return INF;
+    t = max(t, greenT);
+    t = nextAvailableCapacityTime(movementID, t);
+    return t;
+}
+
+int Graph::nextGreenTimeForMovement(int movementID, int t) {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return INF;
+    if (isMovementActive(movementID, t)) return t;
+    const Movement &m = movements[movementID];
+    if (m.alwaysOpen) return t;
+
+    if (!m.tlID.empty()) {
+        auto programIt = tlIDToSignalProgramID.find(m.tlID);
+        if (programIt == tlIDToSignalProgramID.end()) return INF;
+        const SignalProgram &p = signalPrograms[programIt->second];
+        if (p.cycleLength <= 0 || p.phases.empty()) return INF;
+        int baseK = (t - p.offset) / p.cycleLength;
+        if (p.offset + baseK * p.cycleLength > t) --baseK;
+        int best = INF;
+        for (int k = baseK; k <= baseK + 2; ++k) {
+            for (const auto &phase : p.phases) {
+                if (m.linkIndex < 0 || m.linkIndex >= static_cast<int>(phase.state.size())) continue;
+                char state = phase.state[m.linkIndex];
+                if (!(state == 'G' || state == 'g' || state == 'O')) continue;
+                int start = p.offset + k * p.cycleLength + phase.startTime;
+                int end = p.offset + k * p.cycleLength + phase.endTime;
+                if (end <= t) continue;
+                best = min(best, max(t, start));
+            }
+        }
+        return best;
     }
-    return INF;
+
+    if (m.signalID < 0 || m.signalID >= static_cast<int>(signals.size())) return t;
+    const SignalController &s = signals[m.signalID];
+    if (s.alwaysOpen) return t;
+    if (s.cycleLength <= 0) return INF;
+    int local = (t - s.offset) % s.cycleLength;
+    if (local < 0) local += s.cycleLength;
+    int delta = 0;
+    if (s.greenStart <= s.greenEnd) {
+        delta = (local < s.greenStart) ? (s.greenStart - local) : (s.cycleLength - local + s.greenStart);
+    } else {
+        // Wrapped green interval; if we reached this branch, local is in the red gap [greenEnd, greenStart).
+        delta = s.greenStart - local;
+    }
+    return t + max(0, delta);
+}
+
+bool Graph::hasReadyFrontVehicle(int movementID, int t) {
+    int vehicleID = getFrontVehicleForMovement(movementID);
+    return vehicleID >= 0 && vehicles[vehicleID].arrivalTime <= t;
+}
+
+DischargeBlockReason Graph::getDischargeBlockReason(int movementID, int t, int &frontVehicleID, int &chosenLane) {
+    frontVehicleID = -1;
+    chosenLane = -1;
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return DischargeBlockReason::Invalid;
+    int bufferID = getMovementBufferID(movementID);
+    if (bufferID < 0) return DischargeBlockReason::Invalid;
+    if (waitingBuffers[bufferID].vehicleQueue.empty()) return DischargeBlockReason::EmptyBuffer;
+    frontVehicleID = getFrontVehicleForMovement(movementID);
+    if (frontVehicleID < 0) return DischargeBlockReason::Invalid;
+    if (vehicles[frontVehicleID].arrivalTime > t) return DischargeBlockReason::NotArrived;
+    if (!isMovementActive(movementID, t)) return DischargeBlockReason::RedSignal;
+    if (!hasDischargeCapacity(movementID, t)) return DischargeBlockReason::Capacity;
+    if (!hasDownstreamLaneStorage(movementID, frontVehicleID, chosenLane)) return DischargeBlockReason::DownstreamFull;
+    return DischargeBlockReason::None;
+}
+
+void Graph::scheduleMovementCandidate(int movementID, int time) {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return;
+    if (time >= INF) return;
+    if (movementPQVersion.size() != movements.size()) movementPQVersion.assign(movements.size(), 0);
+    if (movementTimeLabel.size() != movements.size()) movementTimeLabel.assign(movements.size(), 0);
+    if (movementBlockedByDownstream.size() != movements.size()) movementBlockedByDownstream.assign(movements.size(), false);
+    if (movementInDispatchPQ.size() != movements.size()) movementInDispatchPQ.assign(movements.size(), false);
+    if (movementBlockedByDownstream[movementID]) {
+        if (verboseTravelTimePrediction) {
+            cout << "[Dispatch Sanity Warning] not scheduling downstream-blocked movement=" << movementID << endl;
+        }
+        return;
+    }
+    if (getFrontVehicleForMovement(movementID) < 0) return;
+
+    int label = max(movementTimeLabel[movementID], time);
+    movementTimeLabel[movementID] = label;
+    int version = ++movementPQVersion[movementID];
+    dispatchPQ.push({label, movementID, version});
+    movementInDispatchPQ[movementID] = true;
+
+    if (verboseTravelTimePrediction) {
+        cout << "[Dispatch Schedule] movement=" << movementID
+             << " timeLabel=" << label
+             << " version=" << version << endl;
+    }
+}
+
+void Graph::deactivateMovementForDownstreamBlock(int movementID) {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return;
+    if (movementBlockedByDownstream.size() != movements.size()) movementBlockedByDownstream.assign(movements.size(), false);
+    if (movementPQVersion.size() != movements.size()) movementPQVersion.assign(movements.size(), 0);
+    if (movementInDispatchPQ.size() != movements.size()) movementInDispatchPQ.assign(movements.size(), false);
+    movementBlockedByDownstream[movementID] = true;
+    movementInDispatchPQ[movementID] = false;
+    ++movementPQVersion[movementID];
+    if (verboseTravelTimePrediction) {
+        cout << "[Dispatch DownstreamBlock] movement=" << movementID
+             << " timeLabel=" << movementTimeLabel[movementID] << endl;
+    }
+}
+
+void Graph::reactivateMovementsBlockedByRoad(int freedRoadID, int currentTime) {
+    if (freedRoadID < 0 || movementBlockedByDownstream.size() != movements.size()) return;
+    for (const auto &m : movements) {
+        int movementID = m.movementID;
+        if (movementID < 0 || movementID >= static_cast<int>(movements.size())) continue;
+        if (m.toRoadID != freedRoadID) continue;
+        if (!movementBlockedByDownstream[movementID]) continue;
+        if (getFrontVehicleForMovement(movementID) < 0) continue;
+
+        int t = computeMovementAttemptTime(movementID, currentTime);
+        if (t >= INF) continue;
+        movementBlockedByDownstream[movementID] = false;
+        if (verboseTravelTimePrediction) {
+            cout << "[Dispatch Reactivate] movement=" << movementID
+                 << " freedRoad=" << freedRoadID
+                 << " timeLabel=" << movementTimeLabel[movementID]
+                 << " scheduledAt=" << t << endl;
+        }
+        scheduleMovementCandidate(movementID, t);
+    }
 }
 
 bool Graph::hasDischargeCapacity(int movementID, int t) {
