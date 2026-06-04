@@ -297,6 +297,30 @@ struct VehicleType {
     double maxSpeed = 13.89;
 };
 
+
+struct BasicRoadModelFeatures {
+    int time = 0;
+    int vehicleID = -1;
+    int roadID = -1;
+    int movementID = -1;
+    int laneIndex = -1;
+
+    double road_length = 0.0;
+    int turn_type = 0;
+
+    int road_flow = 0;
+    int lane_flow = 0;
+
+    int lane_num = 1;
+    double speed_limit = 0.0;
+    double vehicle_length = 5.0;
+    double vehicle_min_gap = 2.5;
+    int lane_capacity = 0;
+    double lane_occupied_length = 0.0;
+
+    unordered_map<string, double> extra;
+};
+
 struct SumoTripInfoTruth {
     string vehicleID;
     double depart = 0.0;
@@ -769,6 +793,9 @@ public:
     int travelTimeTableHit = 0;
     int travelTimeTableMiss = 0;
     double kinematicCongestionAlpha = 1.0;
+    bool enableBasicFeatureLogging = false;
+    vector<BasicRoadModelFeatures> basicFeatureSnapshots;
+    void exportBasicFeatureSnapshots(const string& path) const;
     // 现行新算法主入口：基于 signal event + waiting buffer + discharge capacity 的仿真
     vector<vector<pair<int, float>>> cycle_aware_signal_driven_records(
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
@@ -797,14 +824,33 @@ public:
     void consumeDischargeCapacity(int movementID, int t);
     int nextAvailableCapacityTime(int movementID, int t);
     bool hasDownstreamStorage(int roadID);
+    BasicRoadModelFeatures buildBasicRoadModelFeatures(
+            int roadID,
+            int vehicleID,
+            int movementID,
+            int currentTime,
+            int preferredLaneIndex = -1
+    ) const;
+    int encodeTurnDirForModel(TurnDir turn) const;
+    int predictRoadTravelTime(
+            int roadID,
+            int vehicleID,
+            int movementID,
+            int currentTime,
+            int preferredLaneIndex = -1
+    );
     int predictRoadTravelTime(int roadID, int vehicleID);
     int predictRoadTravelTimeSpeedNet(int roadID) const;
     int predictRoadTravelTimeMinTime(int roadID) const;
+    int predictRoadTravelTimeTable(const BasicRoadModelFeatures& features);
     int predictRoadTravelTimeTable(int roadID, int vehicleID);
+    int predictRoadTravelTimeModel(const BasicRoadModelFeatures& features);
     int predictRoadTravelTimeModel(int roadID, int vehicleID);
+    int predictRoadTravelTimeKinematic(const BasicRoadModelFeatures& features) const;
     int predictRoadTravelTimeKinematic(int roadID, int vehicleID) const;
+    RoadKey buildRoadKeyForPrediction(const BasicRoadModelFeatures& features) const;
     RoadKey buildRoadKeyForPrediction(int roadID, int vehicleID) const;
-    bool queryExternalTravelTimeModel(int roadID, int vehicleID, double& predictedTime);
+    bool queryExternalTravelTimeModel(const BasicRoadModelFeatures& features, double& predictedTime);
     void insertVehicleToBufferOrdered(int bufferID, int vehicleID);
     void handle_signal_change_event(const SignalEvent& e);
     int nextSignalChangeTime(int signalID, int afterTime);
