@@ -1139,6 +1139,11 @@ void Graph::reserveLaneOccupancy(int vehicleID, int roadID, int laneIndex) {
 
     VehicleLabel& vehicle = vehicles[vehicleID];
     if (vehicle.occupiedRoadID >= 0 || vehicle.occupiedLaneIndex >= 0) {
+        cout << "[LaneFlow Warning] reserveLaneOccupancy called for vehicle=" << vehicleID
+             << " while it already occupies road=" << vehicle.occupiedRoadID
+             << " lane=" << vehicle.occupiedLaneIndex
+             << "; releasing old occupancy before reserving road=" << roadID
+             << " lane=" << laneIndex << endl;
         releaseLaneOccupancy(vehicleID);
     }
 
@@ -1517,7 +1522,7 @@ bool Graph::departVehicle(int vehicleID, int departTime) {
     }
 
     reserveLaneOccupancy(vehicleID, firstRoad, chosenLane);
-    v.arrivalTime = departTime + predictRoadTravelTime(firstRoad, vehicleID);
+    v.arrivalTime = departTime + predictRoadTravelTime(firstRoad, vehicleID, firstMovement, departTime, chosenLane);
 
     if (v.routeRoadIDs.size() == 1) {
         releaseLaneOccupancy(vehicleID);
@@ -1702,7 +1707,6 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
 
     v.roadIndex += 1;
     v.currentRoadID = m.toRoadID;
-    v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID);
 
     result.vehicleID = vehicleID;
     result.movementID = movementID;
@@ -1710,9 +1714,12 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     result.fromRoadID = m.fromRoadID;
     result.toRoadID = m.toRoadID;
     result.dischargeTime = dischargeTime;
-    result.newArrivalTime = v.arrivalTime;
 
+    // The model turn_type for an entered road is the movement that led into that road.
+    // A future model can add next-movement features without changing this call shape.
     if (v.roadIndex >= static_cast<int>(v.routeRoadIDs.size()) - 1) {
+        v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
+        result.newArrivalTime = v.arrivalTime;
         v.currentMovementID = -1;
         v.currentBufferID = -1;
         result.finished = true;
@@ -1728,8 +1735,10 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
             v.currentMovementID = nextMovementID;
             v.currentBufferID = nextBufferID;
             v.state = VehicleState::WaitingAtIntersection;
-            insertVehicleToBufferOrdered(nextBufferID, vehicleID);
             reserveLaneOccupancy(vehicleID, m.toRoadID, chosenLane);
+            v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
+            result.newArrivalTime = v.arrivalTime;
+            insertVehicleToBufferOrdered(nextBufferID, vehicleID);
             result.nextMovementID = nextMovementID;
             result.nextBufferID = nextBufferID;
         } else {
@@ -1993,20 +2002,112 @@ bool Graph::hasDownstreamStorage(int roadID) {
     return currentOccupancy < capacity;
 }
 
-int Graph::predictRoadTravelTime(int roadID, int vehicleID) {
+int Graph::encodeTurnDirForModel(TurnDir turn) const {
+    switch (turn) {
+        case TurnDir::Left: return 1;
+        case TurnDir::Straight: return 2;
+        case TurnDir::Right: return 3;
+        case TurnDir::UTurn: return 4;
+        case TurnDir::Unknown: return 0;
+    }
+    return 0;
+}
+
+BasicRoadModelFeatures Graph::buildBasicRoadModelFeatures(
+        int roadID,
+        int vehicleID,
+        int movementID,
+        int currentTime,
+        int preferredLaneIndex) const {
+    BasicRoadModelFeatures features;
+    features.time = currentTime;
+    features.vehicleID = vehicleID;
+    features.roadID = roadID;
+    features.movementID = movementID;
+
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) {
+        const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
+        features.vehicle_length = vt.length;
+        features.vehicle_min_gap = vt.minGap;
+        return features;
+    }
+
+    const RoadSegment& road = roads[roadID];
+    features.road_length = max(0.0, road.length);
+    features.lane_num = max(1, road.laneNum);
+    if (!road.laneFlow.empty()) features.lane_num = max(1, static_cast<int>(road.laneFlow.size()));
+    features.speed_limit = road.speedLimit;
+    features.road_flow = road.roadFlow;
+
+    int laneIndex = -1;
+    if (preferredLaneIndex >= 0 && preferredLaneIndex < static_cast<int>(road.laneFlow.size())) {
+        laneIndex = preferredLaneIndex;
+    } else if (vehicleID >= 0 && vehicleID < static_cast<int>(vehicles.size())) {
+        const VehicleLabel& vehicle = vehicles[vehicleID];
+        if (vehicle.occupiedRoadID == roadID &&
+            vehicle.occupiedLaneIndex >= 0 &&
+            vehicle.occupiedLaneIndex < static_cast<int>(road.laneFlow.size())) {
+            laneIndex = vehicle.occupiedLaneIndex;
+        }
+    }
+    features.laneIndex = laneIndex;
+
+    if (laneIndex >= 0) {
+        features.lane_flow = road.laneFlow[laneIndex];
+        if (laneIndex < static_cast<int>(road.laneCapacity.size())) {
+            features.lane_capacity = road.laneCapacity[laneIndex];
+        }
+        if (laneIndex < static_cast<int>(road.laneOccupiedLength.size())) {
+            features.lane_occupied_length = road.laneOccupiedLength[laneIndex];
+        }
+    } else {
+        features.lane_flow = road.laneFlow.empty() ? road.roadFlow : *max_element(road.laneFlow.begin(), road.laneFlow.end());
+        features.lane_capacity = 0;
+        for (int capacity : road.laneCapacity) features.lane_capacity += capacity;
+        features.lane_occupied_length = 0.0;
+        for (double occupiedLength : road.laneOccupiedLength) features.lane_occupied_length += occupiedLength;
+    }
+
+    if (movementID >= 0 && movementID < static_cast<int>(movements.size())) {
+        features.turn_type = encodeTurnDirForModel(movements[movementID].turn);
+    }
+
+    const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
+    features.vehicle_length = vt.length;
+    features.vehicle_min_gap = vt.minGap;
+    return features;
+}
+
+int Graph::predictRoadTravelTime(
+        int roadID,
+        int vehicleID,
+        int movementID,
+        int currentTime,
+        int preferredLaneIndex) {
+    BasicRoadModelFeatures features = buildBasicRoadModelFeatures(
+            roadID, vehicleID, movementID, currentTime, preferredLaneIndex);
+
+    if (enableBasicFeatureLogging) {
+        basicFeatureSnapshots.push_back(features);
+    }
+
     switch (travelTimeMode) {
         case TravelTimeMode::SPEED_NET:
             return predictRoadTravelTimeSpeedNet(roadID);
         case TravelTimeMode::MIN_TIME:
             return predictRoadTravelTimeMinTime(roadID);
         case TravelTimeMode::TABLE:
-            return predictRoadTravelTimeTable(roadID, vehicleID);
+            return predictRoadTravelTimeTable(features);
         case TravelTimeMode::MODEL:
-            return predictRoadTravelTimeModel(roadID, vehicleID);
+            return predictRoadTravelTimeModel(features);
         case TravelTimeMode::KINEMATIC:
-            return predictRoadTravelTimeKinematic(roadID, vehicleID);
+            return predictRoadTravelTimeKinematic(features);
     }
     return predictRoadTravelTimeSpeedNet(roadID);
+}
+
+int Graph::predictRoadTravelTime(int roadID, int vehicleID) {
+    return predictRoadTravelTime(roadID, vehicleID, -1, 0, -1);
 }
 
 int Graph::predictRoadTravelTimeSpeedNet(int roadID) const {
@@ -2026,33 +2127,33 @@ int Graph::predictRoadTravelTimeMinTime(int roadID) const {
     return predictRoadTravelTimeSpeedNet(roadID);
 }
 
-RoadKey Graph::buildRoadKeyForPrediction(int roadID, int vehicleID) const {
-    (void)vehicleID;
+RoadKey Graph::buildRoadKeyForPrediction(const BasicRoadModelFeatures& features) const {
     RoadKey key{};
-    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) {
-        return key;
-    }
+    const double speed = std::max(0.1, features.speed_limit);
+    const double length = std::max(0.0, features.road_length);
 
-    const RoadSegment& r = roads[roadID];
-    const double speed = std::max(0.1, r.speedLimit);
-    const double length = std::max(0.0, r.length);
-
-    key.lane_num = r.laneNum;
+    key.lane_num = max(1, features.lane_num);
     key.speed_limit = static_cast<float>(std::round(speed));
     key.edge_length = static_cast<float>(std::round(length));
-    key.driving_number = r.roadFlow;
+    key.driving_number = features.road_flow;
     key.delay_time = 0;
     key.lowSpee_time = 0;
-    key.wait_time = r.roadFlow;
-    key.ratio = static_cast<int>(std::round(length / speed));
+    key.wait_time = 0;
+    // Conservative lane-level congestion proxy: use the selected lane's flow, or the
+    // max lane flow supplied by buildBasicRoadModelFeatures when no lane is selected.
+    key.ratio = features.lane_flow;
     key.length_square = static_cast<int>(std::round(length * length));
     return key;
 }
 
-int Graph::predictRoadTravelTimeTable(int roadID, int vehicleID) {
-    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return 1;
+RoadKey Graph::buildRoadKeyForPrediction(int roadID, int vehicleID) const {
+    return buildRoadKeyForPrediction(buildBasicRoadModelFeatures(roadID, vehicleID, -1, 0, -1));
+}
 
-    RoadKey key = buildRoadKeyForPrediction(roadID, vehicleID);
+int Graph::predictRoadTravelTimeTable(const BasicRoadModelFeatures& features) {
+    if (features.roadID < 0 || features.roadID >= static_cast<int>(roads.size())) return 1;
+
+    RoadKey key = buildRoadKeyForPrediction(features);
     auto it = dictionary.find(key);
     if (it != dictionary.end()) {
         ++travelTimeTableHit;
@@ -2061,27 +2162,27 @@ int Graph::predictRoadTravelTimeTable(int roadID, int vehicleID) {
 
     ++travelTimeTableMiss;
     if (verboseTravelTimePrediction) {
-        cout << "[TravelTime] TABLE miss roadID=" << roadID << endl;
+        cout << "[TravelTime] TABLE miss roadID=" << features.roadID << endl;
     }
 
     return fallbackToSpeedNet
-        ? predictRoadTravelTimeSpeedNet(roadID)
-        : predictRoadTravelTimeMinTime(roadID);
+        ? predictRoadTravelTimeSpeedNet(features.roadID)
+        : predictRoadTravelTimeMinTime(features.roadID);
 }
 
+int Graph::predictRoadTravelTimeTable(int roadID, int vehicleID) {
+    return predictRoadTravelTimeTable(buildBasicRoadModelFeatures(roadID, vehicleID, -1, 0, -1));
+}
 
-int Graph::predictRoadTravelTimeKinematic(int roadID, int vehicleID) const {
-    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return 1;
-    const RoadSegment& r = roads[roadID];
+int Graph::predictRoadTravelTimeKinematic(const BasicRoadModelFeatures& features) const {
+    if (features.roadID < 0 || features.roadID >= static_cast<int>(roads.size())) return 1;
 
-    const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
-
-    const double L = max(0.0, r.length);
-    const double vRoad = max(0.1, r.speedLimit);
-    const double vVeh = max(0.1, vt.maxSpeed);
+    const double L = max(0.0, features.road_length);
+    const double vRoad = max(0.1, features.speed_limit);
+    const double vVeh = max(0.1, getVehicleTypeForVehicle(features.vehicleID).maxSpeed);
     double v = min(vRoad, vVeh);
-    v = v * max(0.7, 1.0 - 0.1 * vt.sigma);
-    const double a = max(0.1, vt.accel);
+    v = v * max(0.7, 1.0 - 0.1 * getVehicleTypeForVehicle(features.vehicleID).sigma);
+    const double a = max(0.1, getVehicleTypeForVehicle(features.vehicleID).accel);
     const double dAcc = v * v / (2.0 * a);
 
     double tFree = 0.0;
@@ -2091,9 +2192,9 @@ int Graph::predictRoadTravelTimeKinematic(int roadID, int vehicleID) const {
         tFree = v / a + (L - dAcc) / v;
     }
 
-    const int occupancy = r.roadFlow;
-    const double vehicleSpace = max(1e-6, vt.length + vt.minGap);
-    int capacity = static_cast<int>(floor(L * max(1, r.laneNum) / vehicleSpace));
+    const int occupancy = features.road_flow;
+    const double vehicleSpace = max(1e-6, features.vehicle_length + features.vehicle_min_gap);
+    int capacity = static_cast<int>(floor(L * max(1, features.lane_num) / vehicleSpace));
     capacity = max(1, capacity);
     double rho = safe_divide(static_cast<double>(occupancy), static_cast<double>(capacity));
     rho = max(0.0, min(0.95, rho));
@@ -2102,17 +2203,31 @@ int Graph::predictRoadTravelTimeKinematic(int roadID, int vehicleID) const {
     return max(1, static_cast<int>(round(t)));
 }
 
-bool Graph::queryExternalTravelTimeModel(int roadID, int vehicleID, double& predictedTime) {
-    (void)roadID;
-    (void)vehicleID;
+int Graph::predictRoadTravelTimeKinematic(int roadID, int vehicleID) const {
+    return predictRoadTravelTimeKinematic(buildBasicRoadModelFeatures(roadID, vehicleID, -1, 0, -1));
+}
+
+bool Graph::queryExternalTravelTimeModel(const BasicRoadModelFeatures& features, double& predictedTime) {
     predictedTime = -1.0;
+    if (verboseTravelTimePrediction) {
+        cout << "[TravelTime] MODEL features"
+             << " road_length=" << features.road_length
+             << " turn_type=" << features.turn_type
+             << " road_flow=" << features.road_flow
+             << " lane_flow=" << features.lane_flow
+             << " lane_num=" << features.lane_num
+             << " speed_limit=" << features.speed_limit
+             << " lane_capacity=" << features.lane_capacity
+             << " lane_occupied_length=" << features.lane_occupied_length
+             << endl;
+    }
     // TODO: future implementation. This can later use socket / Python service / embedded model.
     return false;
 }
 
-int Graph::predictRoadTravelTimeModel(int roadID, int vehicleID) {
+int Graph::predictRoadTravelTimeModel(const BasicRoadModelFeatures& features) {
     double pred = -1.0;
-    if (queryExternalTravelTimeModel(roadID, vehicleID, pred) && pred > 0) {
+    if (queryExternalTravelTimeModel(features, pred) && pred > 0) {
         return std::max(1, static_cast<int>(std::round(pred)));
     }
 
@@ -2122,8 +2237,40 @@ int Graph::predictRoadTravelTimeModel(int roadID, int vehicleID) {
     }
 
     return fallbackToSpeedNet
-        ? predictRoadTravelTimeSpeedNet(roadID)
-        : predictRoadTravelTimeMinTime(roadID);
+        ? predictRoadTravelTimeSpeedNet(features.roadID)
+        : predictRoadTravelTimeMinTime(features.roadID);
+}
+
+int Graph::predictRoadTravelTimeModel(int roadID, int vehicleID) {
+    return predictRoadTravelTimeModel(buildBasicRoadModelFeatures(roadID, vehicleID, -1, 0, -1));
+}
+
+void Graph::exportBasicFeatureSnapshots(const string& path) const {
+    ofstream out(path);
+    if (!out.is_open()) {
+        cout << "[TravelTime] failed to open basic feature snapshot CSV: " << path << endl;
+        return;
+    }
+    out << "time,vehicleID,roadID,movementID,laneIndex,"
+        << "road_length,turn_type,road_flow,lane_flow,"
+        << "lane_num,speed_limit,vehicle_length,vehicle_min_gap,lane_capacity,lane_occupied_length\n";
+    for (const auto& f : basicFeatureSnapshots) {
+        out << f.time << ','
+            << f.vehicleID << ','
+            << f.roadID << ','
+            << f.movementID << ','
+            << f.laneIndex << ','
+            << f.road_length << ','
+            << f.turn_type << ','
+            << f.road_flow << ','
+            << f.lane_flow << ','
+            << f.lane_num << ','
+            << f.speed_limit << ','
+            << f.vehicle_length << ','
+            << f.vehicle_min_gap << ','
+            << f.lane_capacity << ','
+            << f.lane_occupied_length << '\n';
+    }
 }
 
 void Graph::insertVehicleToBufferOrdered(int bufferID, int vehicleID) {
