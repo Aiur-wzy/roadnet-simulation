@@ -65,11 +65,7 @@ namespace boost {
 
 #include <iostream>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
 #include <string.h>
-#include <arpa/inet.h>
 #include <set>
 #include <sstream>
 #define INF 999999999
@@ -183,14 +179,6 @@ typedef struct ROADMORE
     int kindNumber;
     string kind;
 }roadMore;
-
-// Structure to store edge's static infor
-struct EdgeInfo {
-    int lane_num;
-    float speed;
-    float length;
-    string edge_str;
-};
 
 enum class NodeType {
     NormalSplit,
@@ -561,8 +549,6 @@ public:
     // Step 1: Data Cleaning
     // -----------------------------------------------------------------------------
 
-    // Check Why "BJ" had different edge number with "Minimal Travel Time"
-    void edge_num_check();
     Semaphore* smGlobal = new Semaphore(1);
 
     // Step 2: Data Preparation
@@ -597,7 +583,6 @@ public:
         queryPath = join_path(b, "query.txt");
         route_path = join_path(b, "route.txt");
         time_path = join_path(b, "time.txt");
-        time_path_no_wait = join_path(b, "time_no_wait.txt");
         travelTimeTablePath = join_path(b, "model_catching_with_travel_time_1.txt");
         model_catch_dic_path = travelTimeTablePath;
         sumoNetPath = join_path(b, "test.net.xml");
@@ -634,9 +619,6 @@ public:
     vector<vector<int>> read_time(string filename, int num, vector<vector<int>> query);
     string time_path = join_path(Base, "time.txt");
     vector<vector<int>> timeDataRaw;
-    tuple<vector<int>, int> read_time_no_wait(string filename, int num);
-    string time_path_no_wait = join_path(Base, "time_no_wait.txt");
-    vector<int> time_no_wait;
 
     // SUMO .net.xml input and adaptation
     string sumoNetPath = roadnet_defaults::DEFAULT_SUMO_NET_PATH;
@@ -674,8 +656,6 @@ public:
     vector<string> vehicleTypeIDs;
     vector<SignalProgram> signalPrograms;
     unordered_map<string, int> movementKeyToID;
-    // Remove data with duplicate values
-    void removeDuplicates();
     // Check if route data, query data, and time data size are same
     void check_size();
     // Cut route data
@@ -685,13 +665,8 @@ public:
     // Cut time data
     vector<vector<int>> cut_time_data(vector<vector<int>> &timeDataRaw, int avg_length);
 
-    // Split Route and Query Data as Average Length
-    pair<vector<vector<int>>, vector<vector<int>>> data_length_modify(vector<vector<int>> &queryDataRaw,
-                                                                      vector<vector<int>> &routeDataRaw, int avg_length);
     // Convert Route from "Node ID Pair" to "Road ID"
     void route_nodeID_2_roadID(vector<vector<int>> &routeData);
-    // Convert Single Route from "Node ID Pair" to "Road ID"
-    void route_nodeID_2_roadID_single(vector<int> &routeData);
     vector<vector<int>> routeRoadID;
     vector<vector<int>> routeMovementID;
 
@@ -757,40 +732,14 @@ public:
     vector<bool> movementBlockedByDownstream;
     vector<bool> movementInDispatchPQ;
     unordered_set<int> delayedDepartureLogged;
-    // Classify Each Road with A Unique Latency Function
-    vector<vector<pair<int,vector<pair<int,int>>>>> timeRange;
-    // int realPercent;
-    void classify_latency_function();
-    // Generate Hour Index and Its Related Minutes Index
-    pair<int, int> time_to_base_index(int seconds, int minRange);
-    // Define Flow Base
-    void flow_base_ini(int minRange, int flowValue);
-    vector<vector<pair<int, vector<vector<int>>>>> flowBaseList;
-    int minRange;   // minRange -> Min Time Range
-    int flowIni;    // flowIni -> Initialized Flow Base Value
-
     // Step 3: ALGORITHM I SIMULATION
     // -----------------------------------------------------------------------------
-
-    vector<int> Dij_vetex(int ID1, int ID2);
-    // flow -> travel time range -> travel time
-    int flow2time_by_range(int &ID1index, int &ID2index, int &flow);
-    //
-    void read_edge_feature_2_map(const string& filePath);
-    string edge_id_to_features_path = join_path(Base, "edge_id_to_features.csv");
-
-    map<int, EdgeInfo> edge_id_to_features;
 
     //
     void readConnectionsToDirections(const std::string& filename);
     map<pair<int, int>, char> connections_to_direction;
     string connections_to_direction_path = join_path(Base, "connections_to_directions.csv");
 
-    // 定义函数，返回给定边的下一边的方向
-    char findNextEdgeDirection(int currentEdgeID, int route_id);
-    //
-    set<char> processVehicleDirections(const std::vector<int>& vehicleIDs, int& currentEdgeID);
-    //
     void buildDictionary(const std::string& filename);
     unordered_map<RoadKey, double> dictionary;
     string model_catch_dic_path = join_path(Base, "model_catching_with_travel_time_1.txt");
@@ -818,16 +767,13 @@ public:
     void process_discharge_window(int windowStart, int windowEnd);
     void rebuildActiveDispatchPQ(int currentTime, int windowEnd);
     bool isMovementActive(int movementID, int t);
-    bool canDischarge(int movementID, int dischargeTime, int windowEnd);
     DischargeResult dischargeOneVehicle(int movementID, int dischargeTime);
     void pushCandidateIfPossible(int movementID, int currentTime, int windowEnd);
     bool isDispatchCandidateValid(const DispatchCandidate& c);
-    int computeEarliestDischargeTime(int movementID, int readyTime, int currentTime);
     int getMovementBufferID(int movementID) const;
     int getFrontVehicleForMovement(int movementID) const;
     int computeMovementAttemptTime(int movementID, int lowerBoundTime);
     int nextGreenTimeForMovement(int movementID, int t);
-    bool hasReadyFrontVehicle(int movementID, int t);
     DischargeBlockReason getDischargeBlockReason(int movementID, int t, int &frontVehicleID, int &chosenLane);
     void scheduleMovementCandidate(int movementID, int time);
     void deactivateMovementForDownstreamBlock(int movementID);
@@ -835,7 +781,6 @@ public:
     bool hasDischargeCapacity(int movementID, int t);
     void consumeDischargeCapacity(int movementID, int t);
     int nextAvailableCapacityTime(int movementID, int t);
-    bool hasDownstreamStorage(int roadID);
     BasicRoadModelFeatures buildBasicRoadModelFeatures(
             int roadID,
             int vehicleID,
@@ -866,19 +811,11 @@ public:
     void insertVehicleToBufferOrdered(int bufferID, int vehicleID);
     void handle_signal_change_event(const SignalEvent& e);
     int nextSignalChangeTime(int signalID, int afterTime);
-    SignalState signalStateAt(int signalID, int t);
     bool allVehiclesFinished() const;
     void recordFinalETA(int vehicleID, int finalTime);
-    vector<vector<pair<int, float>>> ETA_result;
-    vector<vector<pair<int, map<float, vector<vector<int>>>>>> timeFlowChange;
-    float sigma = 0.15; float varphi = 20; float beta = 2;
     float percent;
     int small, big;
 
-    // Estimate average travel time of ground truth
-    float AVG_estimation(vector<vector<int>> routeData, vector<vector<int>> timeData);
-    // Estimate travel time MSE between simulated results and truth
-    float MSE_estimation(vector<vector<int>> time, vector<vector<pair<int, float>>> ETA);
     float MSE_estimation_cycle_aware_total(
             vector<vector<int>> &timeData,
             vector<vector<pair<int, float>>> &ETA);
@@ -891,117 +828,10 @@ public:
                              vector<vector<pair<int,int>>> &ETA);
     string file_path_time_records = join_path(Base, "time_records_out.txt");
 
-    void Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result);
-
-    // Step 4: ROUTE DATA UPDATE OPERATIONS PREPARATION
-    // -----------------------------------------------------------------------------
-
-    // Check Simulation
-    void check_simulation(int simulation);
-    // Change NodeID to RoadID
-    void nodeID_2_roadID_in_records(vector<vector<pair<int,map<float, vector<vector<int>>>>>> &timeFlowChange);
-    vector<map<float, vector<vector<int>>>> route_timeFlowChange;
-    // Check Correctness of Time Records in Slices
-    void time_record_correct_check();
-    // Find Min Departure Time from Queries
+    // Legacy BJ setup helper used by the cycle-aware workflow.
     void min_depar_time(vector<vector<int>> &Q);
-    int minDeparture; int minHour;
-    // Convert int Time into UTC Hour
-    int time_2_hour(int intTime);
-    // Convert Hour to Its Belonged Index
-    int hour_2_index(int hour);
-    // Split Time Flow Change into Time Slices
-    void split_2_time_slices(vector<map<float, vector<vector<int>>>> &route_timeFlowChange);
-    vector<vector<map<int, vector<vector<int>>>>> timeSlice; // RoadSegmentID: TimeSlice: TimeRecord
-    // Convert Node Constructed Route to Road Constructed Route
-    vector<int> route_node_2_route_road(vector<int> &routeNode);
-    // Generate New Data for Insertion
-    void data_generation(string route_file, string depar_file, string Pi_file, int newNum, int avg_length, bool cut);
-    string routeRoadPath = join_path(Base, "new_data_update/test_route");
-    string deparTimePath = join_path(Base, "new_data_update/test_depar");
-    string routeNodePath = join_path(Base, "new_data_update/test_Pi");
-    // Generate Data Same as Simulation Operation for Comparison
-    void data_generation_same_simulation(
-            string route_file, string depar_file, string Pi_file, vector<vector<int>> &query_data, vector<vector<int>> &route_data);
-    // Read Generated Route Data
-    void read_new_data(string routeRoadPath, string deparTimePath, string routeNodePath);
-    vector<vector<int>> Pi;
-    vector<pair<int, vector<int>>> routeRoadInput;
-    vector<int> departTimeList;
-    int routeDataSize;
-    // "ETA_result" Initialization
-    void ETA_initialization(bool simulation, bool print);
-
-    // Step 5: ROUTE DATA INSERTION OPERATIONS
-    // -----------------------------------------------------------------------------
-
-    // Insertion Operation (Main)
-    void update_operation_insertion(bool paralle, bool terminal, bool range, bool print);
-    vector<vector<map<int, vector<vector<int>>>>> timeSliceInsert;
-    //  Insertion Operation by Inserting New Route Data One by One
-    vector<int> one_route_update_insertion(pair<int, vector<int>> &newRoute, int inTime, bool parallel, bool terminal, bool range, bool print);
-    //  Insertion Operation for Different Road Has Different Operation
-    //  For a Road ID Constructed Route, Find Next Road ID
-    int find_next_roadID(vector<int> route, int roadSegmentID);
-    //  Check If Two Traffic Flows Are In Same Range
-    bool flow_same_range_check(int &ID1index, int &ID2index, int &flow1, int &flow2);
-    //  This Is Insertion Operation for The First Road of New Route
-    vector<pair<pair<int,int>, tuple<int, map<int, vector<vector<int>>>, vector<int>>>> update_operation_1st(
-            int &RoadSegmentID, int &inTime, pair<int, vector<int>> &newRoutePair, bool &parallel, bool &terminal, bool &range, bool print);
-    //  This Is Insertion Operation for The Further Road of New Route or Propagated Road
-    vector<pair<pair<int,int>, tuple<int, map<int, vector<vector<int>>>, vector<int>>>> updateOperationFurther(
-            pair<int,int> &RoadSegmentID, int &inTime, pair<int, vector<int>> &newRoutePair, pair<int, vector<int>> &routeProp,
-            map<int, vector<vector<int>>> &InsertPre, vector<int> &DeletionPre, bool &parallel, bool &terminal, bool &range, bool print);
-    // Insertion Operation Parallel
-    void update_operation_parallel(vector<pair<pair<int, vector<int>>, int>> &newDataMulti, bool &parallel, bool terminal,
-                                   bool &range, bool print, int &threadNum);
-    //  Split New Route Data into Groups
-    void multi_new_data_initial(void);
-    vector<pair<pair<int, vector<int>>, int>> newDataMulti;
-    //  Insertion Operation by Inserting New Route Data One by One (Parallel Version)
-    void one_route_parallel_update(vector<pair<pair<int, vector<int>>, int>> &multi_test,
-                                   int i, int j, vector<Semaphore*>& vLock, bool parallel, bool terminal, bool range, bool print);
-    vector<Semaphore*> vLock;
-    vector<int> affectedRoadParallel;
-
-    // Step 6: TRAVEL TIME ESTIMATION (ETA) UPDATE
-    // -----------------------------------------------------------------------------
-    void ETA_update();
-
-    // Step 7: ROUTE DATA DELETION OPERATIONS
-    // -----------------------------------------------------------------------------
-
-    // Generate New Data for Deletion
-    // Main Idea: Capturing Existing Route as New Deletion Data
-    void dele_data_generation(string route_file, string Pi_file, string route_index_file, int newNum);
-    string routeRoadPathD = join_path(Base, "new_data_update/deletion_routeNode");
-    string routeNodePathD = join_path(Base, "new_data_update/deletion_routeRoad");
-    string routeIndexpath = join_path(Base, "new_data_update/deletion_routeRoadIndex");
-    // Read Selected Deleted Route Data
-    void read_deletion_data(string routeRoadPath, string routeRoadIndex);
-    vector<pair<int, vector<int>>> routeRoadDelInput;
-    // Deletion Operation
-    void update_operation_deletion(bool parallel, bool terminal, bool range, bool print);
-    vector<vector<map<int, vector<vector<int>>>>> timeSliceDel;
-    vector<int> one_route_update_deletion(pair<int, vector<int>> delRoute, bool parallel, bool terminal, bool range, bool print);
-    vector<pair<pair<int,int>, tuple<int, map<int, vector<vector<int>>>, vector<int>>>> deletion_operation_1st(
-            int &RoadSegmentID, int &inTime, pair<int, vector<int>> &newRoutePair, bool &parallel, bool &terminal, bool &range, bool print);
-    //  This Is Deletion Operation for The Further Road of New Route or Propagated Road
-    vector<pair<pair<int,int>, tuple<int, map<int, vector<vector<int>>>, vector<int>>>> update_operation_deletion_further(
-            pair<int,int> &RoadSegmentID, int &inTime, pair<int, vector<int>> &newRoutePair, pair<int, vector<int>> &routeProp,
-            map<int, vector<vector<int>>> &InsertPre, vector<int> &DeletionPre, bool &parallel, bool &terminal, bool &range, bool print);
-    //  Split New Route Data into Groups
-    void multi_del_data_initial(void);
-    vector<pair<int, vector<int>>> delDataMulti;
-    //  Deletion Operation by Deleting Target Route Data One by One (Parallel Version)
-    void del_operation_parallel(vector<pair<int, vector<int>>> &delDataMulti,
-                                bool &parallel, bool terminal, bool &range,  bool print, int &threadNum);
-    //  Deletion Operation by Inserting New Route Data One by One (Parallel Version)
-    void one_route_parallel_update_del(vector<pair<int, vector<int>>> &multi_test,
-                                       int i, int j, vector<Semaphore*>& vLock, bool parallel, bool terminal, bool range, bool print);
-    vector<int> affectedRoadParallelDel;
-    vector<Semaphore*> vLockDel;
-    void stat();
+    int minDeparture = 0;
+    int minHour = 0;
 
     // Appendix
     // -----------------------------------------------------------------------------
@@ -1038,12 +868,6 @@ public:
         return temp;
     }
 
-    // Abundant Functions
-    // -----------------------------------------------------------------------------
-
-    //Classify Traffic Flow's Range
-    void flow_range_classification(float constant, int power, int maxTime);
-    vector<int> range;
 };
 
 

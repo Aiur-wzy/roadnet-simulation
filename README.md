@@ -24,13 +24,10 @@ The simulation code includes cycle-aware / signal-driven traffic logic. In SUMO 
   Legacy graph readers, query/route/time readers, SUMO `.net.xml` parser, graph construction, movement construction, lane-group construction, signal-program construction, and route conversion helpers.
 
 - `data_cleaning.cpp`  
-  Validation functions for old graph consistency and SUMO network, connection, signal-program, and route checks.
+  SUMO network, connection, signal-program, and route validation functions.
 
 - `simulation.cpp`  
-  Legacy simulation utilities, cycle-aware signal-driven simulation, ETA/evaluation helpers, and traffic prediction utilities.
-
-- `update.cpp` and related update/delete files (`deletion_operation.cpp`, `eta_update.cpp`)  
-  Dynamic update and legacy maintenance logic used by the older workflow.
+  Cycle-aware signal-driven simulation, travel-time prediction helpers, SUMO tripinfo evaluation, and cycle-aware total MSE evaluation.
 
 - `CMakeLists.txt`  
   Build configuration for the executable and thread/Boost linking.
@@ -51,7 +48,6 @@ The CMake target is currently named `Simulation_Prediction`. You can run it as `
 ```bash
 g++ -std=c++14 -O0 -g \
   main.cpp data_preparation.cpp simulation.cpp data_cleaning.cpp \
-  update.cpp deletion_operation.cpp eta_update.cpp \
   -o roadnet_sim -lpthread
 ```
 
@@ -190,7 +186,6 @@ Required legacy files:
 | `--query <path>` | Query file. | `<base>/query.txt` | Both route-data workflows |
 | `--route <path>` | Route file. | `<base>/route.txt` | Both route-data workflows |
 | `--time <path>` | Observed/ground-truth time file. | `<base>/time.txt` | Legacy evaluation |
-| `--time-no-wait <path>` | Optional no-wait time file used by related readers. | `<base>/time_no_wait.txt` | Legacy/helper |
 | `--read-num <n>` | Number of query/route/time records to read. In SUMO route mode, this limits valid vehicles when greater than zero. Values larger than file length read the full file. | `192484` | Both |
 | `--cut` | Cut route/query/time data before simulation. | `false` | Legacy |
 | `--avg-length <n>` | Average length used by the cut helpers. | `30` | Legacy |
@@ -271,7 +266,6 @@ Changing `DEFAULT_BASE_DIR`, or calling `Graph::set_base_path(baseDir)`, updates
 - `queryPath`
 - `route_path`
 - `time_path`
-- `time_path_no_wait`
 - `sumoNetPath`
 
 Example:
@@ -341,7 +335,6 @@ SUMO mode:
 [Config] Query: ./data/Manhattan_Data/query.txt
 [Config] Route: ./data/Manhattan_Data/route.txt
 [Config] Time: ./data/Manhattan_Data/time.txt
-[Config] Time no wait: ./data/Manhattan_Data/time_no_wait.txt
 [Config] Read num: 192484
 [Config] Cut: false
 [Config] Avg length: 30

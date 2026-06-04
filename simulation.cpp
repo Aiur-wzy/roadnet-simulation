@@ -21,171 +21,6 @@ string travelTimeModeToString(TravelTimeMode mode) {
     return "speed-net";
 }
 
-vector<int> Graph::Dij_vetex(int ID1, int ID2){
-
-    /*
-     * Description: Dijkstra’s algorithm to find the shortest path between two nodes.
-     *
-     * Parameters:
-     * int ID1 -> source node.
-     * int ID2 -> destination node.
-     *
-     * Return:
-     * int d -> the shortest path between ID1 and ID2.
-     */
-
-    vector<int> vPath;
-
-    vPath.clear();
-
-    if(ID1==ID2) return vPath;
-    benchmark::heap<2, int, int> pqueue(nodenum);
-    pqueue.update(ID1,0);
-
-    vector<bool> closed(nodenum, false);
-    vector<int> distance(nodenum, INF);
-    vector<int> vPrevious(nodenum, -1);
-    vector<int> vPreviousEdge(nodenum, -1);
-
-    distance[ID1]=0;
-    int topNodeID, topNodeDis;
-    int NNodeID,NWeigh;
-
-    int d=INF;//initialize d to infinite for the unreachable case
-
-    while(!pqueue.empty()){
-        pqueue.extract_min(topNodeID, topNodeDis);
-        if(topNodeID==ID2){
-            d=distance[ID2];
-            break;
-        }
-        closed[topNodeID]=true;
-
-        for(auto it=graphLength[topNodeID].begin();it!=graphLength[topNodeID].end();it++){
-            NNodeID=(*it).first;
-            NWeigh=(*it).second+topNodeDis;
-            if(!closed[NNodeID]){
-                if(distance[NNodeID]>NWeigh){
-                    distance[NNodeID]=NWeigh;
-                    pqueue.update(NNodeID, NWeigh);
-                    auto itr = nodeID2RoadID.find(make_pair(topNodeID, NNodeID));
-                    if(itr == nodeID2RoadID.end())
-                        cout << "No Road from " << topNodeID << " to " << NNodeID <<endl;
-                    else
-                    {
-                        vPreviousEdge[NNodeID] = (*itr).second;
-                    }
-                    vPrevious[NNodeID] = topNodeID;
-                }
-            }
-        }
-    }
-
-    vPath.push_back(ID2);
-    int p = vPrevious[ID2];
-    while(p != -1)
-    {
-        vPath.push_back(p);
-        p = vPrevious[p];
-    }
-
-    reverse(vPath.begin(), vPath.end());
-    // Print the shortest path
-    /*
-    for (int i = 0; i < vPath.size(); ++i){
-        cout << vPath[i] << " ";
-    }
-    cout << endl;
-    */
-    return vPath;
-}
-
-// flow -> travel time range -> travel time
-int Graph::flow2time_by_range(int &ID1index, int &ID2index, int &flow)
-{
-    // Find Range for Specific Time Range
-    vector<pair<int,int>> range = timeRange[ID1index][ID2index].second;
-    // Correctness Check
-    if (range.size() == 0)
-        cout << "Do not find travel time range or its size is zero." << endl;
-    // Variable Initialization
-    int bound, travelTime;
-    if(graphLength[ID1index][ID2index].second <= 20)
-        return range[0].second;
-    // Comparison
-    for (int j=1;j<range.size();j++){
-        bound = range[j].first;
-        travelTime = range[j-1].second;
-        if (flow < bound){
-            /*
-            // Print
-            cout << flow << " Travel time is: " << travelTime << endl;
-            */
-            if (travelTime < 0)
-                cout << "!!!!!Travel Time < 0" << endl;
-            return travelTime;
-        }
-    }
-    // Travel Time Equals to The Biggest One
-    travelTime = range[range.size()-1].second;
-    /*
-    // Print
-    cout << " Travel time is: " << travelTime << endl;
-    */
-    if (travelTime < 0)
-        cout << "!!!!!!Tavel Time < 0" << endl;
-    return travelTime;
-}
-
-// 读取CSV文件并返回一个 map，其中 key 是 edge_id，value 是 EdgeInfo 结构体
-void Graph::read_edge_feature_2_map(const string& filePath) {
-
-
-    ifstream file(filePath);
-    if (!file.is_open()) {
-        cerr << "Error: Could not open file " << filePath << endl;
-        return;
-    }
-
-    string line;
-    // Skip the first title row
-    getline(file, line);
-
-    while (getline(file, line)) {
-        stringstream ss(line);
-        string item;
-        vector<string> rowData;
-
-        // 分割每一行的数据，并存储到 rowData
-        while (getline(ss, item, ',')) {
-            rowData.push_back(item);
-        }
-        // 将 rowData 转换为适当的数据类型并存储到 map
-        int edge_id = stoi(rowData[0]);
-        int lane_num = static_cast<int>(round(stod(rowData[1])));  // 对 lane_num 进行四舍五入并转换为 int
-        float speed = round(stod(rowData[2]) * 100) / 100;   // 对 speed 进行四舍五入并转换为 int
-        float length = round(stod(rowData[3]) * 100) / 100;   // 对 length 进行四舍五入并转换为 int
-        string edge_str = rowData[4];
-
-        // cout << edge_id << " " << lane_num << " " << speed << " " << length << " " << edge_str << endl;
-
-        edge_id_to_features[edge_id] = {lane_num, speed, length, edge_str};
-    }
-
-    /*
-    // 打印读取的数据，验证结果
-    for (const auto& edge : edge_id_to_features) {
-        std::cout << "Edge ID: " << edge.first
-                  << ", Lane Num: " << edge.second.lane_num
-                  << ", Speed: " << edge.second.speed
-                  << ", Length: " << edge.second.length
-                  << ", Edge Str: " << edge.second.edge_str
-                  << std::endl;
-    }
-    */
-
-}
-
 // 函数用于读取CSV文件并构建map
 void Graph::readConnectionsToDirections(const string& filename) {
 
@@ -217,62 +52,6 @@ void Graph::readConnectionsToDirections(const string& filename) {
 }
 
 // 定义函数，返回给定边的下一边的方向
-char Graph::findNextEdgeDirection(int currentEdgeID, int route_id) {
-    char Turn = 'N';
-    for (int i = 0; i < routeRoadID[route_id].size(); ++i) {
-        if (routeRoadID[route_id][i] == currentEdgeID) {
-            // 检查当前边是否是路由中的最后一条边
-            if (i + 1 < routeRoadID[route_id].size()) {
-                int nextEdgeID = routeRoadID[route_id][i + 1];
-                auto it = connections_to_direction.find(make_pair(currentEdgeID, nextEdgeID));
-                if (it != connections_to_direction.end()) {
-                    Turn = it->second; // 将方向字符转换为字符串
-                } else {
-                    Turn = 'N'; // 在映射中找不到对应的方向
-                }
-                // cout << "edge_1 " << currentEdgeID << " and edge_2 " << nextEdgeID << "'s turn is: " << Turn << endl;
-            } else {
-                Turn = 'e'; // 当前边是路由中的最后一条边
-                // cout << "edge_1 " << currentEdgeID << " is: " << Turn << endl;
-            }
-            return Turn; // 一旦找到当前边，立即返回结果
-        }
-    }
-    cout << "Error. currentEdgeID is: " << currentEdgeID << endl;
-    return Turn; // 如果未找到当前边，返回"unknown"
-}
-
-set<char> Graph::processVehicleDirections(const std::vector<int>& vehicleIDs, int& currentEdgeID) {
-    set<char> Turn_Stat;
-    for (int vehicleID : vehicleIDs) {
-        // 假设我们可以通过 vehicleID 获取其当前边的 ID
-        char Turn = findNextEdgeDirection(currentEdgeID, vehicleID);
-        Turn_Stat.insert(Turn); // 将转向状态插入集合
-    }
-    return Turn_Stat;
-}
-
-bool sendDataToPython(int sock, int edge_id, const char& Turn, const set<char>& Turn_Stat, int flow) {
-    // 将数据序列化为字符串
-    std::stringstream ss;
-    ss << edge_id << "|"; // 分隔符为 '|'
-    ss << flow << "|";
-    ss << Turn << "|";
-    for (const auto& item : Turn_Stat) {
-        ss << item << ","; // 使用 ',' 分隔集合中的元素
-    }
-    ss << "|" << "END_OF_MESSAGE";
-
-    std::string data_to_send = ss.str();
-
-    // 发送序列化后的数据
-    if(send(sock, data_to_send.c_str(), data_to_send.size(), 0) < 0) {
-        std::cerr << "Failed to send data." << std::endl;
-        return false;
-    }
-    return true;
-}
-
 // 读取文件并构建词典的函数
 void Graph::buildDictionary(const std::string& filename) {
 
@@ -307,80 +86,6 @@ void Graph::buildDictionary(const std::string& filename) {
     }*/
 
     file.close();
-}
-
-// Estimate average travel time of ground truth
-float Graph::AVG_estimation(vector<vector<int>> routeData, vector<vector<int>> timeData) {
-    float totalTime = 0;
-    int routeNum = routeData.size();
-    for (int i = 0; i < timeData.size(); i++) {
-        int travelTime = 0;
-        for (int j = 1; j < timeData[i].size(); j++) {
-            travelTime += timeData[i][j];
-        }
-        // cout << travelTime << endl;
-        totalTime += travelTime;
-    }
-    int AVGTime = totalTime / routeNum;
-    cout << "ground truth travel time avg is: " << AVGTime << "s."<< endl;
-
-    return AVGTime;
-}
-
-// Estimate travel time MSE between simulated results and truth
-float Graph::MSE_estimation(vector<vector<int>> time, vector<vector<pair<int, float>>> ETA) {
-
-    float MSE_diff = 0;
-    float MAE_diff = 0;
-    float MAPE_diff = 0;
-    int timeSize = 0;
-
-    for (int i = 0; i < ETA.size(); i++) {
-
-        float time_data_diff = 0;
-        for (int j = 1; j < time[i].size(); j++) {
-            time_data_diff += time[i][j];
-        }
-
-        // float time_data_diff = time[i][time[i].size()-1] - time[i][0];
-        // float time_data_diff = time_no_wait[i];
-        float eta_diff = ETA[i][ETA[i].size() - 1].second - ETA[i][0].second;
-        float diff = time_data_diff - eta_diff;
-
-        // MAE
-        MAE_diff += abs(diff);
-
-        // MAPE
-        if (time_data_diff != 0) {  // To avoid division by zero
-            MAPE_diff += abs(diff) / time_data_diff;
-        }
-
-        // MSE
-        MSE_diff += diff * diff;
-
-        timeSize += 1;
-    }
-
-    // MAE_diff = abs(MAE_diff);
-    // MSE_diff += MAE_diff * MAE_diff;
-
-    // MAE
-    float MSE = MSE_diff / timeSize;
-    cout << "MSE is: " << abs(MSE) << endl;
-
-    // MAE
-    float MAE = MAE_diff / timeSize;
-    cout << "MAE is: " << abs(MAE) << endl;
-
-    // RMSE
-    float RMSE = sqrt(MSE_diff / timeSize);
-    cout << "RMSE is: " << abs(RMSE) << endl;
-
-    // MAPE
-    float MAPE = (MAPE_diff / timeSize) * 100;  // Convert to percentage
-    cout << "MAPE is: " << abs(MAPE) << "%" << endl;
-
-    return MSE;
 }
 
 float Graph::MSE_estimation_cycle_aware_total(
@@ -441,65 +146,6 @@ float Graph::MSE_estimation_cycle_aware_total(
     return static_cast<float>(mse);
 }
 
-void Graph::Traffic_Prediction(vector<vector<pair<int, float>>> ETA_result) {
-
-    // Initialization
-    vector<vector<pair<int, float>>> traffic_prediction_structure(ETA_result.size());
-    cout << "Number of route is: " << ETA_result.size() << endl;
-
-    // Filter traffic prediction data
-    for (int i = 0; i < ETA_result.size(); i++) {
-        int route_ID = i;
-
-        for (int j = 1; j < ETA_result[i].size(); j++) {
-            int node_1 = ETA_result[route_ID][j - 1].first;
-            float time_1 = ETA_result[route_ID][j - 1].second;
-
-            int node_2 = ETA_result[route_ID][j].first;
-            float time_2 = ETA_result[route_ID][j].second;
-
-            auto roadIt = nodeID2RoadID.find(make_pair(node_1, node_2));
-            if (roadIt == nodeID2RoadID.end()) {
-                cout << "Warning. Missing road mapping for node pair: " << node_1 << " " << node_2 << endl;
-                continue;
-            }
-            int edge_ID = roadIt->second;
-            float travel_time = time_2 - time_1;
-
-            traffic_prediction_structure[route_ID].push_back(make_pair(edge_ID, travel_time));
-        }
-    }
-
-    // Print
-    for (int i = 0; i < 1; i++) {
-        cout << "Route ID: " << i << ": ";
-
-        for (int j = 0; j < traffic_prediction_structure[i].size(); j++) {
-            int edge_ID = traffic_prediction_structure[i][j].first;
-            float travel_time = traffic_prediction_structure[i][j].second;
-            cout << "(" << edge_ID << ", " << travel_time << ")";
-        }
-        cout << endl;
-    }
-
-    // Write to file
-    ofstream outfile(join_path(Base, "traffic_prediction_structure_1.txt"));
-    if (outfile.is_open()) {
-        for (int i = 0; i < traffic_prediction_structure.size(); i++) {
-
-            for (int j = 0; j < traffic_prediction_structure[i].size(); j++) {
-                int edge_ID = traffic_prediction_structure[i][j].first;
-                float travel_time = traffic_prediction_structure[i][j].second;
-                outfile << edge_ID << " " << travel_time << " ";
-            }
-            outfile << endl;
-        }
-        outfile.close();
-        cout << "Data written to traffic_prediction_structure_1.txt" << endl;
-    } else {
-        cout << "Unable to open file for writing!" << endl;
-    }
-}
 
 
 namespace {
@@ -1687,14 +1333,6 @@ bool Graph::isMovementActive(int movementID, int t) {
     return state == SignalState::Green || state == SignalState::AlwaysOpen;
 }
 
-bool Graph::canDischarge(int movementID, int dischargeTime, int windowEnd) {
-    (void)windowEnd;
-    int frontVehicleID = -1;
-    int chosenLane = -1;
-    return getDischargeBlockReason(movementID, dischargeTime, frontVehicleID, chosenLane)
-        == DischargeBlockReason::None;
-}
-
 DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     DischargeResult result;
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return result;
@@ -1812,10 +1450,6 @@ bool Graph::isDispatchCandidateValid(const DispatchCandidate& c) {
     return getFrontVehicleForMovement(c.movementID) >= 0;
 }
 
-int Graph::computeEarliestDischargeTime(int movementID, int readyTime, int currentTime) {
-    return computeMovementAttemptTime(movementID, max(readyTime, currentTime));
-}
-
 int Graph::getMovementBufferID(int movementID) const {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return -1;
     const Movement &m = movements[movementID];
@@ -1895,11 +1529,6 @@ int Graph::nextGreenTimeForMovement(int movementID, int t) {
         delta = s.greenStart - local;
     }
     return t + max(0, delta);
-}
-
-bool Graph::hasReadyFrontVehicle(int movementID, int t) {
-    int vehicleID = getFrontVehicleForMovement(movementID);
-    return vehicleID >= 0 && vehicles[vehicleID].arrivalTime <= t;
 }
 
 DischargeBlockReason Graph::getDischargeBlockReason(int movementID, int t, int &frontVehicleID, int &chosenLane) {
@@ -2005,28 +1634,6 @@ int Graph::nextAvailableCapacityTime(int movementID, int t) {
         cur = ((cur / interval) + 1) * interval;
     }
     return cur;
-}
-
-bool Graph::hasDownstreamStorage(int roadID) {
-    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return false;
-    const RoadSegment &road = roads[roadID];
-    double vehicleLength = 5.0;
-    double gap = 1.0;
-    int capacity = road.storageCapacityVehicles;
-    if (capacity <= 0) {
-        capacity = static_cast<int>(floor(max(0.0, road.length) * max(1, road.laneNum) / (vehicleLength + gap)));
-    }
-    if (capacity <= 0) capacity = 1;
-
-    int waitingOnRoad = 0;
-    for (const auto &kv : road.movementIDToWaitingBufferID) {
-        int bufferID = kv.second;
-        if (bufferID >= 0 && bufferID < static_cast<int>(waitingBuffers.size())) {
-            waitingOnRoad += waitingBuffers[bufferID].vehicleCount();
-        }
-    }
-    int currentOccupancy = road.runningCount + waitingOnRoad;
-    return currentOccupancy < capacity;
 }
 
 int Graph::encodeTurnDirForModel(TurnDir turn) const {
@@ -2359,25 +1966,6 @@ int Graph::nextSignalChangeTime(int signalID, int afterTime) {
         }
     }
     return best;
-}
-
-SignalState Graph::signalStateAt(int signalID, int t) {
-    if (signalID < 0 || signalID >= static_cast<int>(signals.size())) return SignalState::Red;
-    int movementID = signals[signalID].movementID;
-    if (movementID >= 0 && movementID < static_cast<int>(movements.size())) {
-        return signalStateAtMovement(movementID, t);
-    }
-
-    // Legacy fallback for old BJ workflow controllers.
-    const SignalController &s = signals[signalID];
-    if (s.alwaysOpen) return SignalState::AlwaysOpen;
-    if (s.cycleLength <= 0) return SignalState::Red;
-    int local = (t - s.offset) % s.cycleLength;
-    if (local < 0) local += s.cycleLength;
-    if (s.greenStart <= s.greenEnd) {
-        return (local >= s.greenStart && local < s.greenEnd) ? SignalState::Green : SignalState::Red;
-    }
-    return (local >= s.greenStart || local < s.greenEnd) ? SignalState::Green : SignalState::Red;
 }
 
 bool Graph::allVehiclesFinished() const {

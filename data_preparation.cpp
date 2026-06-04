@@ -1626,69 +1626,24 @@ vector<vector<int>> Graph::read_time(string filename, int num, vector<vector<int
 }
 
 
-// Read time data with defined number
-tuple<vector<int>, int> Graph::read_time_no_wait(string filename, int num) {
-    // Variable Initialization
-    vector<int> T(num);
-    int input_num;
-    // Read Route Data
-    ifstream file_name(filename);
-    require_open(file_name, filename, "read_time_no_wait time-no-wait data");
-    // Count Number of Lines
-    int lines = CountLines(filename);
-    // if defined number is greater than time data size
-    // or smaller than 0, count defined number into lines
-    if (num > lines or num < 0) {
-        input_num = lines;
-    }else {
-        input_num = num;
-    }
-    // Read Data
-    int unique_route_id, route_avg_length, route_id, travel_time_no_wait;
-    file_name >> unique_route_id >> route_avg_length;
-
-    int check = 0;
-
-    for (int i = 0; i < input_num; i++) {
-        file_name >> route_id >> travel_time_no_wait;
-        T[i] = travel_time_no_wait;
-    }
-
-    // Close File
-    file_name.close();
-
-    return make_tuple(T, route_avg_length);
-}
-
-// Remove data with duplicate values
-void Graph::removeDuplicates()
+void Graph::min_depar_time(vector<vector<int>> &Q)
 {
-    vector<int> validIndices;
-    for (int i = 0; i < static_cast<int>(routeDataRaw.size()); ++i) {
-        unordered_set<int> seenElements;
-        bool isDuplicateFound = false;
-        for (int elem : routeDataRaw[i]) {
-            if (seenElements.find(elem) != seenElements.end()) {
-                isDuplicateFound = true;
-                break;
-            }
-            seenElements.insert(elem);
-        }
-        if (!isDuplicateFound) validIndices.push_back(i);
+    if (Q.empty() || Q[0].size() < 3) {
+        minDeparture = 0;
+        minHour = 0;
+        return;
     }
 
-    vector<vector<int>> newQueryDataRaw;
-    vector<vector<int>> newRouteDataRaw;
-    vector<vector<int>> newTimeDataRaw;
-    for (int idx : validIndices) {
-        if (idx < static_cast<int>(queryDataRaw.size())) newQueryDataRaw.push_back(queryDataRaw[idx]);
-        if (idx < static_cast<int>(routeDataRaw.size())) newRouteDataRaw.push_back(routeDataRaw[idx]);
-        if (idx < static_cast<int>(timeDataRaw.size())) newTimeDataRaw.push_back(timeDataRaw[idx]);
+    minDeparture = Q[0][2];
+    for (const auto &query : Q) {
+        if (query.size() >= 3) {
+            minDeparture = min(minDeparture, query[2]);
+        }
     }
-    queryDataRaw.swap(newQueryDataRaw);
-    routeDataRaw.swap(newRouteDataRaw);
-    timeDataRaw.swap(newTimeDataRaw);
-    check_size();
+
+    minHour = minDeparture / 3600;
+    cout << "The earliest departure time is: " << minDeparture << "s." << endl;
+    cout << "The earliest departure time is in hour: " << minHour << endl;
 }
 
 // Check if route data, query data, and time data size are same
@@ -1704,354 +1659,26 @@ void Graph::check_size(){
     }
 }
 
-// Split Route and Query Data as Average Length
-pair<vector<vector<int>>, vector<vector<int>>> Graph::data_length_modify(vector<vector<int>> &queryDataRaw, vector<vector<int>> &routeDataRaw, int avg_length)
-{
-    // Variable Initialization
-    vector<vector<int>> routeData;
-    routeData.resize(routeDataRaw.size());
-    for (int i=0;i<routeDataRaw.size();i++){
-        // Set Length as Raw Data Size
-        // In Case of Raw Data Original Size Is Smaller Than Average Length
-        routeData[i].resize(routeDataRaw[i].size());
-    }
-    vector<int> routeTemp;
-    // Go Through Route Data and Select Parts
-    for (int i=0;i<routeDataRaw.size();i++){
-        routeTemp.clear();
-
-        if (routeDataRaw[i].size() <= avg_length){
-            routeData[i] = routeDataRaw[i];
-        }
-        else{
-            // Set Size as Average Length
-            routeData[i].resize(avg_length);
-            vector<int>::const_iterator first1 = routeDataRaw[i].begin();
-            vector<int>::const_iterator last1  = routeDataRaw[i].begin() + avg_length;
-            vector<int> cut1_vector(first1, last1);
-            routeData[i] = cut1_vector;
-        }
-    }
-    // Variable Initialization
-    vector<vector<int>> queryData = queryDataRaw;
-    // Go Through Query Data and Modify Its Destination One
-    for (int i=0;i<queryData.size();i++){
-        queryData[i][1] = routeData[i][routeData[i].size()-1];
-    }
-    // Correctness Check
-    for (int i=0;i<routeData.size();i++){
-        if (routeData[i][0] != queryData[i][0])
-            cout << "Error! First nodes are not match." << endl;
-        if (routeData[i][routeData[i].size()-1] != queryData[i][1])
-            cout << "Error! Last nodes are not match." << endl;
-    }
-    /*
-    // Print
-    for (int i=0;i<routeData.size();i++)
-    {
-        cout << "query data are: " << queryData[i][0] << " " << queryData[i][1] << " " << queryData[i][2] << endl;
-        cout << "routeData[i] size: " << routeDataRaw[i].size() << endl;
-        cout << "route data are: ";
-        for (int j=0;j<routeData[i].size();j++)
-        {
-            cout << routeData[i][j] << " ";
-        }
-        cout << endl;
-    }
-    */
-    pair<vector<vector<int>>, vector<vector<int>>> dataCombine = make_pair(queryData, routeData);
-    cout << "Data Cut Done." << endl;
-    return dataCombine;
-}
-
-
 // Convert Route from "Node ID Pair" to "Road ID"
 void Graph::route_nodeID_2_roadID(vector<vector<int>> &routeData)
 {
-    // Variable Initialization
     routeRoadID.resize(routeData.size());
     int node01, node02, roadID;
-    // Route Data Transfer
-    for (int i=0;i<routeRoadID.size();i++){
-        if (routeData[i].size() <= 1)
-            continue;
-        // Resize Route Data
-        routeRoadID[i].resize(routeData[i].size()-1);
-        for (int j=0;j<routeRoadID[i].size();j++){
+    for (int i = 0; i < static_cast<int>(routeRoadID.size()); i++) {
+        if (routeData[i].size() <= 1) continue;
+        routeRoadID[i].resize(routeData[i].size() - 1);
+        for (int j = 0; j < static_cast<int>(routeRoadID[i].size()); j++) {
             node01 = routeData[i][j];
-            node02 = routeData[i][j+1];
-            // If Node Pairs Contained, Convert
-            auto roadIt = nodeID2RoadID.find(make_pair(node01,node02));
-            if (roadIt != nodeID2RoadID.end()){
+            node02 = routeData[i][j + 1];
+            auto roadIt = nodeID2RoadID.find(make_pair(node01, node02));
+            if (roadIt != nodeID2RoadID.end()) {
                 roadID = roadIt->second;
                 routeRoadID[i][j] = roadID;
-            }
-            else{
-                // If Node Pairs Are not Contained, Not Achieve Error,
-                // But Do not Consider How to Solve Them Yet.
-                // We Consider to Use "BJ" Data Instead of "BJ_NodeWeight" Now.
+            } else {
                 cout << "Warning. Unfounded node pairs are: " << node01 << " " << node02 << endl;
             }
         }
     }
-    /*
-    // Print Transfer Route Data
-    for (int i=0;i<routeRoadID.size();i++){
-        cout << "Route ID: " << i << endl;
-        for (int j=0;j<routeRoadID[i].size();j++){
-            cout << "Road Segment ID: " << routeRoadID[i][j] << " ";
-        }
-        cout << endl;
-    }
-    */
-}
-
-// Convert Route from "Node ID Pair" to "Road ID"
-void Graph::route_nodeID_2_roadID_single(vector<int> &routeData)
-{
-    // Variable Initialization
-    vector<int> route_roadID_single;
-    route_roadID_single.resize(routeData.size() - 1);
-    int node01, node02, roadID;
-
-    for (int i = 0; i < route_roadID_single.size(); ++i) {
-        node01 = routeData[i];
-        node02 = routeData[i + 1];
-        auto roadIt = nodeID2RoadID.find(make_pair(node01, node02));
-        if (roadIt != nodeID2RoadID.end()){
-            roadID = roadIt->second;
-            route_roadID_single[i] = roadID;
-        }
-        else{
-            cout << "Warning+ Unfounded node pairs are: " << node01 << " " << node02 << endl;
-        }
-    }
-    for (int i = 0; i < route_roadID_single.size(); ++i) {
-        cout << route_roadID_single[i] << " ";
-    }
-    cout << endl;
-}
-
-
-
-//Classify Traffic Flow's Range
-//Define a function to find "x" values when "y" equal to integer
-//"constant" and "power" are predefined parameters
-//e.g. y = 10 (min travel time) + 0.00375 (constant) * x ^ 2 (power)
-//"maxTime" is the max travel time we defined
-void Graph::flow_range_classification(float constant, int power, int maxTime)
-{
-    //Variable Initialization
-    float travelTime;
-    int rangeIndex = 0;
-    vector<int> rangeRaw; rangeRaw.resize(maxTime);
-
-    //Value of "x"
-    for (int x=0;travelTime<maxTime;x++){
-        if (abs(travelTime - constant * pow(x, power)) > 1)
-            break;
-
-        travelTime = constant * pow(x, power);
-        if (travelTime > (rangeIndex + 1)){
-            rangeIndex++;
-            rangeRaw[rangeIndex] = x;
-        }
-    }
-    //Cut rangeRaw
-    //By the limitation of max travel time
-    //"rangeRaw" size is bigger than what we defined
-    //modified "range" does not have any empty position
-    vector<int>::const_iterator first = rangeRaw.begin();
-    vector<int>::const_iterator last;
-    //Start from Second Position
-    //because the first value equal to 0 (0 flow with min travel time)
-    for (int i=1;i<rangeRaw.size();i++){
-        if (rangeRaw[i] == 0){
-            last = rangeRaw.begin() + i;
-            break;
-        }
-    }
-    //Cut
-    vector<int> rangeCut(first, last);
-    //"rangeCut" to Global Variable "range"
-    range = rangeCut;
-
-    //Print range
-    cout << "Travel Time || Flow to Change Travel Time" << endl;
-    for (int i=0;i<range.size();i++){
-        cout << i << ": " << range[i] << endl;
-    }
-
-}
-
-// Classify Each Road with A Unique Latency Function
-// E.g. roadID: <[0,20) -> v1>, <[20,40) -> v2>, ..., <[80,100) -> v5>
-// in simple:
-// E.g. roadID: <20,v1>, <40,v2>, ..., <100,v5>
-void Graph::classify_latency_function()
-{
-    // Initialize Variables Define Size
-    // vector<vector<pair<int,vector<pair<int,int>>>>>
-    // NodeID1: <NodeID2,<Flow1, TravelTime1>,...,<Flow5, TravelTime5>>
-    timeRange.clear();
-    timeRange.resize(nodenum);
-    for (int i=0;i<timeRange.size();i++){
-        timeRange[i].resize(graphLength[i].size());
-        // Define Five Travel Time Ranges for Each Road
-        for (int j=0;j<timeRange[i].size();j++){
-            timeRange[i][j].second.resize(6);
-            // timeRange[i][j].second.resize(1);
-        }
-    }
-    // Define Values
-    for (int i=0;i<timeRange.size();i++){
-        int ID1 = i;
-        for (int j=0;j<timeRange[i].size();j++){
-            // Initialization Before Each Loop
-            int ID2 = graphLength[i][j].first;
-            vector<pair<int,int>> roadRange;
-            roadRange.clear();
-            roadRange.resize(6);
-            // roadRange.clear();
-            // roadRange.resize(1);
-            int flow = 0;
-            auto minTimeIt = nodeID2minTime.find(make_pair(ID1, ID2));
-            auto roadIt = nodeID2RoadID.find(make_pair(ID1, ID2));
-            if (minTimeIt == nodeID2minTime.end() || roadIt == nodeID2RoadID.end()) {
-                cout << "Warning. Missing road/min-time mapping for node pair: " << ID1 << " " << ID2 << endl;
-                continue;
-            }
-            int minTravelTime = minTimeIt->second;
-            int roadID = roadIt->second;
-            // area = length * laneNum
-            // cap = area / 2
-            int length = roadInfor[roadID].length;
-            int laneNum = roadInfor[roadID].laneNum;
-            int cap = length * laneNum / 5;
-            int oneRange = cap / 5;
-            // For Some Short Road
-            if (oneRange <= 0){
-                oneRange = 1;
-            }
-            for (int k=0;k<roadRange.size();k++){
-                // Under This Setting
-                // All Roads Share Same Latency Function
-                /*flow += 20;
-                int travelTime = minTravelTime * (1 + sigma * pow(flow/varphi, beta));*/
-
-                // Under This Setting
-                // Each Road Has Unique Latency Function
-                // Based on Its Road Length & Number of Lan
-                // flow += oneRange;
-                int travelTime = minTravelTime * (1 + sigma * pow(flow/oneRange, beta));
-                roadRange[k] = make_pair(flow,travelTime);
-                flow += oneRange;
-            }
-            // Define Values
-            timeRange[i][j].first = ID2;
-            timeRange[i][j].second = roadRange;
-            flow += oneRange;
-        }
-    }
-
-    /*
-    // Print
-    for (int i=0;i<timeRange.size();i++){
-        int ID1 = i;
-        cout << ID1 << ": ";
-        for (int j=0;j<timeRange[i].size();j++){
-            int ID2 = timeRange[i][j].first;
-            cout << ID2 << " ";
-            vector<pair<int,int>> roadRange; roadRange.clear();
-            roadRange = timeRange[i][j].second;
-            for (int k=0;k<roadRange.size();k++){
-                int flow = roadRange[k].first;
-                int travelTime = roadRange[k].second;
-                cout << flow << " -> " << travelTime << " ";
-            }
-        }
-        cout << endl;
-    }
-    */
-}
-
-// Generate Hour Index and Its Related Minutes Index
-// Each Road Has 24 Hour Index and Each Hour Has 6 or 12 Index (10/5 minutes)
-// E.g. 3950s -> 1 Hour Index -> 1 Minutes Index (5 Minutes as Time Range)
-pair<int, int> Graph::time_to_base_index(int seconds, int minRange)
-{
-    // Define Time Belonged Hours and Minutes
-    int minute = seconds / 60;   // minutes
-    int hour = minute / 60;      // hour
-    // Define Hour Index
-    int hourIndex = hour;
-
-    // Define Minutes Index
-    int minRest = minute % 60;
-    int minIndex = minRest / minRange;
-    // Correctness Check
-    if (hourIndex > 24 or hourIndex < 0){
-        // cout << "Error! Hour index is greater than 24 or smaller than 0" << endl;
-        // cout << "Hour Index is " << hourIndex << " with its Minutes Index " << minIndex << endl;
-        hourIndex = 23;
-        minIndex = 0;
-    }
-    /*
-    // Print
-    cout << "Hour Index is " << hourIndex << " with its Minutes Index " << minIndex << endl;
-    */
-    return make_pair(hourIndex, minIndex);
-}
-
-// Define Flow Base
-void Graph::flow_base_ini(int minRange, int flowValue)
-{
-    // Variable Initialization
-    // ID1, ID2, Hour Index, Minutes Index
-    flowBaseList.clear();
-    // Flow Base Size Initialization
-    flowBaseList.resize(graphLength.size());
-    for (int i=0;i<flowBaseList.size();i++){    // ID1
-        flowBaseList[i].resize(graphLength[i].size());  // Number of Neighbours (ID2)
-        for (int j=0;j<graphLength[i].size();j++){
-            // Assign Values for ID2
-            flowBaseList[i][j].first = graphLength[i][j].first;     // ID2
-            // Define Size for Time Range Index -> 24 Indicates Hours
-            flowBaseList[i][j].second.resize(24);
-            // Define Size for Time Slices for Each Hour -> minRange
-            for (int k=0;k<flowBaseList[i][j].second.size();k++){
-                int minSize = 60 / minRange;
-                flowBaseList[i][j].second[k].resize(minSize);
-            }
-        }
-    }
-    // Assign Values
-    // Now Only Assign Them to A Specific Value
-    // Can Further Read and Assign Predicted Flow Data
-    for (int i=0;i<flowBaseList.size();i++){
-        for (int j=0;j<graphLength[i].size();j++){
-            for (int k=0;k<flowBaseList[i][j].second.size();k++){
-                for (int l=0;l<flowBaseList[i][j].second[k].size();l++){
-                    flowBaseList[i][j].second[k][l] = flowValue;
-                }
-            }
-        }
-    }
-    // Print
-    /* for (int i=0;i<flowBaseList.size();i++){
-        cout << "ID1 " << i << ": " << endl;
-        for (int j=0;j<graphLength[i].size();j++){
-            cout << " with ID2 " << graphLength[i][j].first << ": " << endl;
-            for (int k=0;k<flowBaseList[i][j].second.size();k++){
-                cout << " with hour index " << k << ": ";
-                for (int l=0;l<flowBaseList[i][j].second[k].size();l++){
-                    cout << flowBaseList[i][j].second[k][l] << " ";
-                }
-                cout << endl;
-            }
-        }
-        cout << endl;
-    } */
 }
 
 // Cut route data

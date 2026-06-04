@@ -22,7 +22,6 @@ struct RunConfig {
     string queryPath;
     string routePath;
     string timePath;
-    string timeNoWaitPath;
 
     TravelTimeMode travelTimeMode = TravelTimeMode::MIN_TIME;
     string travelTimeTablePath;
@@ -127,7 +126,7 @@ void print_usage(const char* programName) {
          << "  --query <path>         Query data path.\n"
          << "  --route <path>         Route data path.\n"
          << "  --time <path>          Time data path.\n"
-         << "  --time-no-wait <path>  Time-no-wait data path.\n\n"
+         << "\n"
          << "Travel-time prediction options:\n"
          << "  --travel-time-mode <speed-net|min-time|table|model|kinematic>\n"
          << "                         Single-road travel-time predictor (default: min-time).\n"
@@ -175,7 +174,6 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--query") cfg.queryPath = require_value(argc, argv, i, arg);
         else if (arg == "--route") cfg.routePath = require_value(argc, argv, i, arg);
         else if (arg == "--time") cfg.timePath = require_value(argc, argv, i, arg);
-        else if (arg == "--time-no-wait") cfg.timeNoWaitPath = require_value(argc, argv, i, arg);
         else if (arg == "--travel-time-mode") cfg.travelTimeMode = parseTravelTimeMode(require_value(argc, argv, i, arg));
         else if (arg == "--travel-time-table") cfg.travelTimeTablePath = require_value(argc, argv, i, arg);
         else if (arg == "--kinematic-congestion-alpha") {
@@ -215,7 +213,6 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     if (!cfg.queryPath.empty()) g.queryPath = cfg.queryPath;
     if (!cfg.routePath.empty()) g.route_path = cfg.routePath;
     if (!cfg.timePath.empty()) g.time_path = cfg.timePath;
-    if (!cfg.timeNoWaitPath.empty()) g.time_path_no_wait = cfg.timeNoWaitPath;
 
     if (cfg.sumoNetSetByCli) g.sumoNetPath = cfg.sumoNetPath;
     else if (cfg.baseDir.empty() && !cfg.envSumoNetPath.empty()) g.sumoNetPath = cfg.envSumoNetPath;
@@ -263,7 +260,6 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
     cout << "[Config] Query: " << g.queryPath << endl;
     cout << "[Config] Route: " << g.route_path << endl;
     cout << "[Config] Time: " << g.time_path << endl;
-    cout << "[Config] Time no wait: " << g.time_path_no_wait << endl;
     cout << "[Config] Read num: " << cfg.readNum << endl;
     cout << "[Config] Cut: " << cfg.cut << endl;
     cout << "[Config] Avg length: " << cfg.avgLength << endl;
