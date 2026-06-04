@@ -584,6 +584,9 @@ void Graph::read_sumo_tripinfo_xml(const string& tripinfoPath)
     cout << "[SUMO Truth] aligned simulated vehicles with truth: " << sumoTruthAligned.size() << endl;
 }
 
+// SUMO parser / static data preparation only.
+// Reads .net.xml roads, lanes, connections, junctions, and signal programs into
+// raw/intermediate graph fields consumed later by the runtime simulator.
 void Graph::read_sumo_net_xml(const string& netXmlPath)
 {
     ifstream in(netXmlPath.c_str());
@@ -795,6 +798,9 @@ void Graph::classify_node_types_from_sumo_junctions()
     }
 }
 
+// Static graph construction: SUMO <connection> entries become Movement objects.
+// These movements are the runtime dispatch units, but this function itself is not
+// part of the event simulation.
 void Graph::build_movements_from_sumo_connections()
 {
     movements.clear();
@@ -859,6 +865,8 @@ void Graph::build_movements_from_sumo_connections()
     cout << "[SUMO] movements: " << movements.size() << endl;
 }
 
+// Static graph construction: group SUMO connection lanes by movement so the
+// simulator can map movement-level queues onto lane-level storage.
 void Graph::build_lane_groups_from_sumo_connections()
 {
     laneGroups.clear();
@@ -946,6 +954,9 @@ void Graph::build_signal_programs_from_sumo_tllogic()
     cout << "[SUMO] movement signal controllers: " << signals.size() << endl;
 }
 
+// SUMO static graph assembly.
+// Prepares RoadSegment/Node/Movement/Signal/WaitingBuffer structures consumed by
+// cycle_aware_signal_driven_records; it does not run the event simulation.
 void Graph::build_new_graph_structures_from_sumo()
 {
     classify_node_types_from_sumo_junctions();
@@ -958,6 +969,8 @@ void Graph::build_new_graph_structures_from_sumo()
     validate_cycle_aware_graph();
 }
 
+// Signal helper used by dispatch logic: evaluates movement signal state at time t.
+// SignalEventPQ schedules phase transitions; this helper does not discharge vehicles.
 SignalState Graph::signalStateAtMovement(int movementID, int t)
 {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return SignalState::Red;
@@ -1023,6 +1036,9 @@ TurnDir Graph::parseTurnDir(char c)
     }
 }
 
+// Legacy BJ static graph assembly.
+// Builds the same structured road/node/movement/signal/waiting-buffer graph that
+// the core simulator consumes; this is preparation, not runtime dispatch.
 void Graph::build_new_graph_structures(vector<vector<int>>& routeDataForSimulation)
 {
     // 现行新算法预处理流水线：
@@ -1177,6 +1193,8 @@ void Graph::attach_min_travel_time_to_roads()
     }
 }
 
+// Legacy static graph construction: road-pair connections become Movement objects.
+// This prepares dispatch units for the core simulator but does not run dispatch.
 void Graph::build_movements_from_connections()
 {
     movements.clear();
@@ -1222,6 +1240,8 @@ void Graph::build_movements_from_connections()
     }
 }
 
+// Legacy compatibility path: synthesize lane groups when explicit SUMO lane
+// connection data is unavailable. Used only to feed core lane-storage structures.
 void Graph::build_default_lane_groups()
 {
     laneGroups.clear();
@@ -1266,6 +1286,7 @@ void Graph::build_default_lane_groups()
     }
 }
 
+// Static mapping step: attach each movement to the lane group that serves its turn.
 void Graph::attach_lane_groups_to_movements()
 {
     for (auto &movement : movements) {
@@ -1315,6 +1336,8 @@ void Graph::build_signal_controllers_assume_default()
     }
 }
 
+// Static queue construction: create one WaitingBuffer per movement/lane group and
+// store the movementID->bufferID mapping on the upstream RoadSegment.
 void Graph::build_waiting_buffers()
 {
     waitingBuffers.clear();
@@ -1347,6 +1370,8 @@ void Graph::build_waiting_buffers()
     }
 }
 
+// Route conversion step: transform road sequences into Movement sequences consumed
+// by VehicleLabel. Ambiguity handling here is data preparation, not dispatch policy.
 void Graph::route_roadID_2_movementID()
 {
     routeMovementID.clear();

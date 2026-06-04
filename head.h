@@ -286,6 +286,11 @@ struct VehicleType {
 };
 
 
+// Future model-extension interface:
+// Lightweight feature vector for model-based single-road travel-time prediction.
+// Current core features are road_length, turn_type, road_flow, lane_flow, and has_waiting;
+// extra is reserved for deliberate future advanced features. Do not confuse this
+// feature path with the legacy table-only RoadKey lookup key.
 struct BasicRoadModelFeatures {
     int time = 0;
     int vehicleID = -1;
@@ -346,6 +351,11 @@ struct NodeInfo {
     int intersectionID = -1;
 };
 
+// Core graph data structure: one physical road/edge in the simulation.
+// Static attributes describe geometry/capacity inputs (length, speedLimit, laneNum);
+// dynamic occupancy fields (roadFlow/laneFlow/laneCapacity/laneOccupiedLength) are
+// maintained online and are the single source of truth for flow features.
+// movementIDToWaitingBufferID links each outgoing movement to its real FIFO queue.
 struct RoadSegment {
     int roadID = -1;
     int fromNode = -1;
@@ -371,6 +381,8 @@ struct RoadSegment {
     unordered_map<int, int> movementIDToWaitingBufferID;
 };
 
+// Core graph data structure: a group of lanes that serve the same turn/movement.
+// This bridges movement-level waiting queues to lane-level road storage constraints.
 struct LaneGroup {
     int laneGroupID = -1;
     int roadID = -1;
@@ -383,6 +395,10 @@ struct LaneGroup {
     }
 };
 
+// Core dispatch unit: a legal transition from fromRoadID to toRoadID through an intersection.
+// Movement candidates, not vehicles, are ordered in the dispatch priority queue;
+// signal eligibility is bound by tlID/linkIndex or alwaysOpen. laneDischargeCapacity
+// limits per-slot discharge. This is not a vehicle; FIFO vehicle order stays in WaitingBuffer.
 struct Movement {
     int movementID = -1;
     int fromRoadID = -1;
@@ -401,6 +417,10 @@ struct Movement {
     char defaultConnectionState = 'O';
 };
 
+// Core queue state: the real FIFO queue for vehicles waiting to pass one movement.
+// Depending on the current design the queue is inserted by predicted arrival label,
+// but vehicles must only be removed here after a successful discharge. Failed
+// attempts must leave this queue unchanged.
 struct WaitingBuffer {
     int bufferID = -1;
     int roadID = -1;
@@ -444,6 +464,11 @@ struct Intersection {
     unordered_map<int, int> roundRobinPointerByToRoad;
 };
 
+// Runtime vehicle state for cycle-aware simulation.
+// routeRoadIDs/routeMovementIDs define the path; arrivalTime is the label time for
+// reaching the current waiting buffer. occupiedRoadID/occupiedLaneIndex connect this
+// vehicle to roadFlow/laneFlow accounting. Waiting fields carry vehicle-level model
+// features after signal waiting.
 struct VehicleLabel {
     int vehicleID = -1;
     int routeID = -1;
@@ -478,22 +503,34 @@ struct VehicleLabel {
     bool valid = true;
 };
 
+// Event stream 1/3: signal phase transitions.
+// Separate from DepartureEvent (vehicle entry) and DispatchCandidate (movement discharge attempt).
 struct SignalEvent {
     int time = 0;
     int signalID = -1;
 };
 
+// Event stream 2/3: vehicle departures into the simulated road network.
+// Separate from SignalEvent and movement-based DispatchCandidate.
 struct DepartureEvent {
     int time = 0;
     int vehicleID = -1;
 };
 
+// Event stream 3/3: movement-based dispatch attempt, not vehicle-based.
+// timeLabel is the next attempt time for movementID. version supports lazy
+// invalidation because std::priority_queue cannot update keys in place. Vehicle ID
+// is intentionally absent; the current WaitingBuffer front is read when popped.
 struct DispatchCandidate {
     int timeLabel = 0;
     int movementID = -1;
     int version = 0;
 };
 
+// Classification result for why a movement cannot discharge at candidate time.
+// Reasons map to different rescheduling actions: RedSignal -> next green,
+// Capacity -> next capacity slot, NotArrived -> front vehicle label,
+// DownstreamFull -> deactivate until downstream storage is freed.
 enum class DischargeBlockReason {
     None,
     EmptyBuffer,
@@ -504,6 +541,9 @@ enum class DischargeBlockReason {
     Invalid
 };
 
+// Output of a successful discharge.
+// releasedRoadID/releasedLaneIndex identify freed storage so upstream movements
+// blocked by downstream fullness can be reactivated.
 struct DischargeResult {
     int vehicleID = -1;
     int movementID = -1;

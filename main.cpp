@@ -149,6 +149,9 @@ void print_usage(const char* programName) {
          << "  USE_SUMO_NET=1 SUMO_NET_PATH=test.net.xml " << programName << "\n";
 }
 
+// Parse CLI/config: this only resolves runtime options and paths.
+// --travel-time-mode selects the single-road travel-time predictor, while
+// --lane-discharge-interval controls movement capacity slots in the simulator.
 RunConfig parse_args(int argc, char** argv) {
     RunConfig cfg;
 
@@ -204,6 +207,9 @@ RunConfig parse_args(int argc, char** argv) {
     return cfg;
 }
 
+// Apply parsed config to Graph without building data structures yet.
+// Travel-time settings affect predictRoadTravelTime; dispatch scheduling still uses
+// movement labels, signal state, FIFO buffers, and discharge capacity.
 void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     if (!cfg.baseDir.empty()) g.set_base_path(cfg.baseDir);
 
@@ -276,6 +282,7 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
 
 int main(int argc, char** argv) {
     try {
+        // Main workflow section 1: parse CLI/config.
         RunConfig cfg = parse_args(argc, argv);
         if (cfg.showHelp) {
             print_usage(argv[0]);
@@ -283,18 +290,22 @@ int main(int argc, char** argv) {
         }
 
         Graph g;
+        // Main workflow section 2: configure travel-time prediction and discharge interval.
         apply_config_to_graph(g, cfg);
         print_resolved_config(g, cfg);
 
+        // Main workflow section 3: select SUMO vs legacy BJ data-preparation workflow.
         if (cfg.useSumoNet) {
             cout << "\nSUMO Network Preparation Mode" << endl;
             cout << "-------------------------------------" << endl;
+            // Read/build road network: SUMO net.xml is converted into Road/Movement/Signal/Buffer structures.
             g.read_sumo_net_xml(g.sumoNetPath);
             g.build_new_graph_structures_from_sumo();
             g.validate_sumo_network();
             g.validate_sumo_connections();
             g.validate_sumo_signal_programs();
 
+            // --smoke-test prepares and validates SUMO structures, then exits before full simulation.
             if (cfg.smokeTest) {
                 print_sumo_sample_signal_states(g);
                 cout << "[SUMO] Smoke test complete." << endl;
@@ -307,10 +318,12 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
+            // Validate network/routes before running the runtime event simulation.
             g.read_sumo_route_xml(cfg.sumoRoutePath, cfg.readNum);
             g.route_roadID_2_movementID();
             g.validate_sumo_routes();
 
+            // Run cycle-aware simulation: movement dispatch is independent from travel-time-mode selection.
             cout << "\nStep: Cycle-Aware SUMO Simulation" << endl;
             cout << "-------------------------------------" << endl;
             vector<vector<pair<int, float>>> ETA =
@@ -332,6 +345,7 @@ int main(int argc, char** argv) {
                 cout << "[TravelTime] fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
             }
 
+            // Run evaluation/output after the SUMO simulation has produced ETA records.
             if (cfg.runEvaluation) {
                 if (!cfg.sumoTripinfoPath.empty()) {
                     g.read_sumo_tripinfo_xml(cfg.sumoTripinfoPath);
@@ -351,6 +365,7 @@ int main(int argc, char** argv) {
         cout << "-------------------------------------" << endl;
         cout << "Data Cleaning Done." << endl;
 
+        // Legacy BJ workflow: read/build static graph inputs consumed by the same core simulator.
         cout << "\nStep 2: Data Preparation" << endl;
         cout << "-------------------------------------" << endl;
 
@@ -390,6 +405,7 @@ int main(int argc, char** argv) {
         cout << "\nStep 3: Build Cycle-Aware Graph" << endl;
         cout << "-------------------------------------" << endl;
 
+        // Build structured road/node/movement/signal/waiting-buffer graph for legacy BJ data.
         g.build_new_graph_structures(routeData);
 
         cout << "Cycle-aware graph build done." << endl;
@@ -405,6 +421,7 @@ int main(int argc, char** argv) {
         cout << "\nStep 4: Cycle-Aware Signal-Driven Simulation" << endl;
         cout << "-------------------------------------" << endl;
 
+        // Run cycle-aware simulation over the prepared legacy graph.
         vector<vector<pair<int, float>>> ETA =
                 g.cycle_aware_signal_driven_records(queryData, g.routeRoadID);
 
@@ -423,6 +440,7 @@ int main(int argc, char** argv) {
             cout << "[TravelTime] fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
         }
 
+        // Run evaluation/output for legacy BJ data.
         if (cfg.runEvaluation) {
             cout << "\nStep 5: Evaluation" << endl;
             cout << "-------------------------------------" << endl;
