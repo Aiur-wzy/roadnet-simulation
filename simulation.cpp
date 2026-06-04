@@ -744,6 +744,8 @@ void Graph::initializeRoadLaneStorage() {
     }
 }
 
+// Lane-level storage selector, not signal logic: choose an allowed downstream lane
+// with available count/length capacity, preferring the least occupied lane.
 int Graph::chooseLeastOccupiedAvailableLane(int roadID, const vector<int>& candidateLanes, int vehicleID) const {
     if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return -1;
     const RoadSegment& road = roads[roadID];
@@ -777,6 +779,9 @@ int Graph::chooseLeastOccupiedAvailableLane(int roadID, const vector<int>& candi
     return bestLane;
 }
 
+// Flow accounting entry point: reserve increments roadFlow/laneFlow and occupied length.
+// Failed discharge paths must not call this; it is the single source of truth for
+// online road/lane flow features together with releaseLaneOccupancy.
 void Graph::reserveLaneOccupancy(int vehicleID, int roadID, int laneIndex) {
     if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return;
     if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return;
@@ -805,6 +810,9 @@ void Graph::reserveLaneOccupancy(int vehicleID, int roadID, int laneIndex) {
     vehicle.occupiedLength = occupiedLength;
 }
 
+// Flow accounting entry point: release decrements roadFlow/laneFlow and occupied length.
+// Defensive warnings/checks here protect against invalid release or double-reserve
+// without changing the dispatch rule itself.
 void Graph::releaseLaneOccupancy(int vehicleID) {
     if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return;
     VehicleLabel& vehicle = vehicles[vehicleID];
@@ -825,6 +833,9 @@ void Graph::releaseLaneOccupancy(int vehicleID) {
     vehicle.occupiedLength = 0.0;
 }
 
+// Lane-level downstream storage check, not signal eligibility.
+// Uses movement toRoad lanes and, when available, the next movement's from lanes so
+// vehicles do not enter full or incompatible downstream lane storage.
 bool Graph::hasDownstreamLaneStorage(int movementID, int vehicleID, int &chosenLane) {
     chosenLane = -1;
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return false;
@@ -932,10 +943,15 @@ bool Graph::validateRoadLaneFlows() const {
     return ok;
 }
 
+// Core cycle-aware signal-driven algorithm:
+// 1) initialize vehicles and event queues;
+// 2) advance time through signal/departure windows;
+// 3) inside each stable signal window, dispatch movement candidates from the PQ;
+// 4) keep real vehicle FIFO order in WaitingBuffer;
+// 5) preserve movementTimeLabel across windows so discharge interval constraints survive.
 vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
         vector<vector<int>> &Q, vector<vector<int>> &routeRoadIDInput) {
-    // 新算法核心：事件驱动（signal change）+ 候选放行队列（dispatchPQ）+ 缓冲区排队
-    // 每个信号事件触发一个 [currentTime, nextTime) 放行窗口，窗口内反复选择可放行候选车辆。
+    // Initialization: clear per-run runtime state; static graph structures stay intact.
     vehicles.clear();
     ETA_result_cycle_aware.clear();
     finishedVehicleCount = 0;
@@ -950,6 +966,7 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
     while (!dispatchPQ.empty()) dispatchPQ.pop();
     delayedDepartureLogged.clear();
 
+    // Static route/movement setup for this run.
     this->routeRoadID = routeRoadIDInput;
     route_roadID_2_movementID();
     initializeMovementLaneDischargeCapacity();
@@ -961,12 +978,14 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
         for (const auto &q : Q) simStartTime = min(simStartTime, q[2]);
     }
 
+    // Event queue setup: departures and signal phase changes are independent streams.
     initialize_cycle_aware_vehicles(Q, routeRoadIDInput);
     initialize_signal_event_queue(simStartTime);
 
     int currentTime = simStartTime;
     int idleWindows = 0;
     const int maxIdleWindows = max(1000, static_cast<int>(vehicles.size()) * 10000);
+    // Main event loop: advance from one departure/signal boundary to the next.
     while (!allVehiclesFinished()) {
         int nextTime = INF;
         if (!signalEventPQ.empty()) nextTime = min(nextTime, signalEventPQ.top().time);
@@ -986,6 +1005,7 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
 
         if (nextTime < currentTime) nextTime = currentTime;
         if (currentTime < nextTime) {
+            // Process departures, then rebuild/process the movement-dispatch window while signal state is stable.
             process_departures_until(currentTime, nextTime);
             process_discharge_window(currentTime, nextTime);
         }
@@ -993,6 +1013,7 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
         currentTime = nextTime;
         process_departures_until(currentTime, currentTime + 1);
 
+        // Handle signal changes at the boundary after the just-closed dispatch window.
         while (!signalEventPQ.empty() && signalEventPQ.top().time == currentTime) {
             SignalEvent e = signalEventPQ.top();
             signalEventPQ.pop();
@@ -1003,10 +1024,14 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
             }
         }
     }
+    // Final ETA/flow consistency recording path.
     validateRoadLaneFlows();
     return ETA_result_cycle_aware;
 }
 
+// Initialization step: convert routeRoadID/routeMovementID into runtime VehicleLabel state.
+// Invalid route/movement/buffer mappings are marked and skipped from normal evaluation;
+// valid vehicles start as NotDeparted and enter through DepartureEvent processing.
 void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vector<int>>& routeRoadIDInput) {
     vehicles.clear();
     vehicles.resize(routeRoadIDInput.size());
@@ -1097,6 +1122,8 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
     }
 }
 
+// Event queue setup: schedule signal phase-change events only.
+// Vehicle discharge attempts are handled by DispatchCandidate, not this queue.
 void Graph::initialize_signal_event_queue(int simStartTime) {
     // 为每个受控信号注册“下一次状态切换”事件。
     while (!signalEventPQ.empty()) signalEventPQ.pop();
@@ -1109,6 +1136,9 @@ void Graph::initialize_signal_event_queue(int simStartTime) {
     }
 }
 
+// Heap hygiene for a new stable signal window.
+// Rebuilds active movement candidates without resetting persistent movement labels
+// or usedMovementDischargeCapacity; downstream-blocked movements remain inactive.
 void Graph::rebuildActiveDispatchPQ(int currentTime, int windowEnd) {
     (void)windowEnd;
     // Rebuild only the heap contents; persistent movement labels/capacity history remain intact.
@@ -1121,6 +1151,8 @@ void Graph::rebuildActiveDispatchPQ(int currentTime, int windowEnd) {
     for (const auto &m : movements) {
         int movementID = m.movementID;
         if (movementID < 0 || movementID >= static_cast<int>(movements.size())) continue;
+        // Defensive guard: a stale candidate may remain after downstream-full
+        // deactivation. It must not retry until storage is freed.
         if (movementBlockedByDownstream[movementID]) continue;
         int frontVehicleID = getFrontVehicleForMovement(movementID);
         if (frontVehicleID < 0) continue;
@@ -1193,15 +1225,22 @@ bool Graph::departVehicle(int vehicleID, int departTime) {
     return true;
 }
 
+// Core movement-dispatch window.
+// Pop movement candidates, read the current FIFO front only after pop, compute the
+// actual attempt time, classify blocks, and mutate queues/flows only on success.
 void Graph::process_discharge_window(int windowStart, int windowEnd) {
     (void)windowStart;
     rebuildActiveDispatchPQ(windowStart, windowEnd);
 
+    // Core loop: the heap orders movements by next attempt time; it does not
+    // store a vehicle ID because the FIFO front can change between pushes.
     while (!dispatchPQ.empty()) {
         DispatchCandidate c = dispatchPQ.top();
         if (c.timeLabel >= windowEnd) break;
         dispatchPQ.pop();
 
+        // Defensive guard, not the main dispatch rule:
+        // lazy invalidation may leave stale movement labels in the PQ.
         if (!isDispatchCandidateValid(c)) continue;
         int movementID = c.movementID;
         movementInDispatchPQ[movementID] = false;
@@ -1209,21 +1248,30 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
         if (movementBlockedByDownstream[movementID]) continue;
 
         int bufferID = getMovementBufferID(movementID);
+        // Defensive guard: buffer mapping may be absent, or another discharge in
+        // this window may already have emptied the real FIFO queue.
         if (bufferID < 0 || waitingBuffers[bufferID].vehicleQueue.empty()) continue;
 
+        // Read the current FIFO front only after popping the movement candidate.
         int vehicleID = waitingBuffers[bufferID].vehicleQueue.front();
+        // Defensive guard: skip corrupted vehicle ids without changing FIFO order.
         if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) continue;
+        // Actual attempt time respects persistent movement label, front vehicle
+        // arrival label, and the popped candidate label.
         int t = max(max(movementTimeLabel[movementID], vehicles[vehicleID].arrivalTime), c.timeLabel);
 
         if (t >= windowEnd) {
+            // Boundary guard: keep the candidate for a future stable signal window.
             scheduleMovementCandidate(movementID, t);
             continue;
         }
 
         int frontVehicleID = -1;
         int chosenLane = -1;
+        // Classify the block reason first; rescheduling policy is handled below.
         DischargeBlockReason reason = getDischargeBlockReason(movementID, t, frontVehicleID, chosenLane);
 
+        // Red signal: jump directly to next green instead of retrying every second.
         if (reason == DischargeBlockReason::RedSignal) {
             int nextT = nextGreenTimeForMovement(movementID, t);
             if (nextT < INF) {
@@ -1233,6 +1281,7 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
             continue;
         }
 
+        // Capacity exhausted: move to the next discharge-capacity slot.
         if (reason == DischargeBlockReason::Capacity) {
             int nextT = nextAvailableCapacityTime(movementID, t);
             movementTimeLabel[movementID] = max(movementTimeLabel[movementID], nextT);
@@ -1240,6 +1289,7 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
             continue;
         }
 
+        // Front vehicle has not reached the waiting-buffer label time yet.
         if (reason == DischargeBlockReason::NotArrived) {
             int nextT = (frontVehicleID >= 0 && frontVehicleID < static_cast<int>(vehicles.size()))
                 ? vehicles[frontVehicleID].arrivalTime
@@ -1249,6 +1299,7 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
             continue;
         }
 
+        // Downstream lane storage is full: deactivate until a vehicle releases that road.
         if (reason == DischargeBlockReason::DownstreamFull) {
             deactivateMovementForDownstreamBlock(movementID);
             continue;
@@ -1256,10 +1307,12 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
 
         if (reason != DischargeBlockReason::None) continue;
 
+        // Success path only: dischargeOneVehicle may pop FIFO and update road/lane flow.
         int oldLabel = movementTimeLabel[movementID];
         int fifoBefore = waitingBuffers[bufferID].vehicleQueue.empty() ? -1 : waitingBuffers[bufferID].vehicleQueue.front();
         DischargeResult result = dischargeOneVehicle(movementID, t);
         if (result.vehicleID < 0) {
+            // Defensive sanity check: failed discharge must not mutate FIFO order.
             if (fifoBefore >= 0 && !waitingBuffers[bufferID].vehicleQueue.empty()
                     && waitingBuffers[bufferID].vehicleQueue.front() != fifoBefore) {
                 cout << "[Dispatch Sanity Warning] failed discharge changed FIFO movement=" << movementID << endl;
@@ -1285,18 +1338,21 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
                  << " toRoad=" << result.toRoadID << endl;
         }
 
+        // Same movement may still have a FIFO front; schedule its next capacity-safe attempt.
         if (!waitingBuffers[bufferID].vehicleQueue.empty()) {
             int nextFront = waitingBuffers[bufferID].vehicleQueue.front();
             int nextT = max(movementTimeLabel[movementID], vehicles[nextFront].arrivalTime);
             scheduleMovementCandidate(movementID, computeMovementAttemptTime(movementID, nextT));
         }
 
+        // Vehicle entered a downstream road and will next wait on its next movement.
         if (!result.finished && result.nextMovementID >= 0) {
             int nextT = max(movementTimeLabel[result.nextMovementID], result.newArrivalTime);
             scheduleMovementCandidate(result.nextMovementID,
                                       computeMovementAttemptTime(result.nextMovementID, nextT));
         }
 
+        // Released upstream storage can unblock movements that were deactivated by DownstreamFull.
         reactivateMovementsBlockedByRoad(result.releasedRoadID, t);
     }
 }
@@ -1333,8 +1389,14 @@ bool Graph::isMovementActive(int movementID, int t) {
     return state == SignalState::Green || state == SignalState::AlwaysOpen;
 }
 
+// Successful-discharge state transition.
+// This is the only place that pops the real WaitingBuffer. It captures released
+// road/lane storage, updates waiting features, moves flow accounting, predicts the
+// downstream arrival label, and returns data for follow-up scheduling/reactivation.
 DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     DischargeResult result;
+    // Defensive checks: invalid movement/buffer/no storage means no state mutation. Failed
+    // discharge attempts must not pop WaitingBuffer or update flow/capacity.
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return result;
     const Movement &m = movements[movementID];
     int bufferID = getMovementBufferID(movementID);
@@ -1347,9 +1409,13 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     if (!hasDownstreamLaneStorage(movementID, vehicleID, chosenLane)) return result;
 
     VehicleLabel &v = vehicles[vehicleID];
+    // Capture released storage before releasing occupancy so blocked upstream
+    // movements can be reactivated after this successful discharge.
     result.releasedRoadID = v.occupiedRoadID;
     result.releasedLaneIndex = v.occupiedLaneIndex;
 
+    // Feature update section: has_waiting describes signal-buffer waiting before
+    // predicting travel time on the downstream road.
     const int waitingDuration = max(0, dischargeTime - v.arrivalTime);
     v.lastWaitingDuration = waitingDuration;
     v.lastDischargeHadWaiting = waitingDuration > 0;
@@ -1366,7 +1432,10 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
              << endl;
     }
 
+    // Core state mutation section: successful discharge is the only path that pops
+    // the real FIFO queue and consumes movement capacity.
     b.vehicleQueue.pop_front();
+    // Flow accounting section: leave old road/lane before entering downstream storage.
     releaseLaneOccupancy(vehicleID);
     consumeDischargeCapacity(movementID, dischargeTime);
 
@@ -1383,6 +1452,7 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     // The model turn_type for an entered road is the movement that led into that road.
     // A future model can add next-movement features without changing this call shape.
     if (v.roadIndex >= static_cast<int>(v.routeRoadIDs.size()) - 1) {
+        // ETA update section: final road prediction completes the route.
         v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
         result.newArrivalTime = v.arrivalTime;
         v.currentMovementID = -1;
@@ -1400,13 +1470,16 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
             v.currentMovementID = nextMovementID;
             v.currentBufferID = nextBufferID;
             v.state = VehicleState::WaitingAtIntersection;
+            // Choose/reserve downstream lane storage before computing the next arrival label.
             reserveLaneOccupancy(vehicleID, m.toRoadID, chosenLane);
+            // ETA update section for the next waiting buffer.
             v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
             result.newArrivalTime = v.arrivalTime;
             insertVehicleToBufferOrdered(nextBufferID, vehicleID);
             result.nextMovementID = nextMovementID;
             result.nextBufferID = nextBufferID;
         } else {
+            // Defensive boundary check: route references a missing next waiting buffer.
             v.valid = false;
             invalidVehicleCount++;
             v.state = VehicleState::Finished;
@@ -1415,6 +1488,7 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
             finishedVehicleCount++;
         }
     } else {
+        // Defensive boundary check: road/movement route indices are inconsistent.
         v.valid = false;
         invalidVehicleCount++;
         v.state = VehicleState::Finished;
@@ -1434,6 +1508,7 @@ void Graph::pushCandidateIfPossible(int movementID, int currentTime, int windowE
     scheduleMovementCandidate(movementID, t);
 }
 
+// Defensive stale-item guard for lazy PQ invalidation; not part of the dispatch priority rule.
 bool Graph::isDispatchCandidateValid(const DispatchCandidate& c) {
     if (c.movementID < 0 || c.movementID >= static_cast<int>(movements.size())) return false;
     if (movementPQVersion.size() != movements.size()) return false;
@@ -1474,6 +1549,8 @@ int Graph::getFrontVehicleForMovement(int movementID) const {
     return vehicleID;
 }
 
+// Compute the earliest useful retry time by combining movement label, front-vehicle
+// arrival, next green, and next capacity slot.
 int Graph::computeMovementAttemptTime(int movementID, int lowerBoundTime) {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return INF;
     if (movementTimeLabel.size() != movements.size()) movementTimeLabel.assign(movements.size(), 0);
@@ -1487,6 +1564,8 @@ int Graph::computeMovementAttemptTime(int movementID, int lowerBoundTime) {
     return t;
 }
 
+// Signal-state helper: jump to next green rather than repeatedly retrying each second.
+// SignalEventPQ handles phase transitions; dispatchPQ handles movement discharge attempts.
 int Graph::nextGreenTimeForMovement(int movementID, int t) {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return INF;
     if (isMovementActive(movementID, t)) return t;
@@ -1531,22 +1610,34 @@ int Graph::nextGreenTimeForMovement(int movementID, int t) {
     return t + max(0, delta);
 }
 
+// Pure decision/classification helper: no FIFO or road-flow mutation here.
+// Separates can/cannot-discharge checks from the rescheduling action chosen by
+// process_discharge_window.
 DischargeBlockReason Graph::getDischargeBlockReason(int movementID, int t, int &frontVehicleID, int &chosenLane) {
     frontVehicleID = -1;
     chosenLane = -1;
+    // Invalid: defensive boundary check, no candidate can be evaluated.
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return DischargeBlockReason::Invalid;
     int bufferID = getMovementBufferID(movementID);
     if (bufferID < 0) return DischargeBlockReason::Invalid;
+    // EmptyBuffer: robustness check; no movement candidate is possible now.
     if (waitingBuffers[bufferID].vehicleQueue.empty()) return DischargeBlockReason::EmptyBuffer;
     frontVehicleID = getFrontVehicleForMovement(movementID);
     if (frontVehicleID < 0) return DischargeBlockReason::Invalid;
+    // NotArrived: the FIFO front has not reached its waiting-buffer label time.
     if (vehicles[frontVehicleID].arrivalTime > t) return DischargeBlockReason::NotArrived;
+    // RedSignal: signal state blocks this movement at time t.
     if (!isMovementActive(movementID, t)) return DischargeBlockReason::RedSignal;
+    // Capacity: this movement's per-slot discharge capacity is exhausted.
     if (!hasDischargeCapacity(movementID, t)) return DischargeBlockReason::Capacity;
+    // DownstreamFull: lane storage prevents entering the next road.
     if (!hasDownstreamLaneStorage(movementID, frontVehicleID, chosenLane)) return DischargeBlockReason::DownstreamFull;
     return DischargeBlockReason::None;
 }
 
+// Movement-based scheduler: update movementTimeLabel and push a candidate label.
+// version implements lazy invalidation for std::priority_queue. No vehicle is bound
+// here and no WaitingBuffer is mutated.
 void Graph::scheduleMovementCandidate(int movementID, int time) {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return;
     if (time >= INF) return;
@@ -1611,6 +1702,8 @@ void Graph::reactivateMovementsBlockedByRoad(int freedRoadID, int currentTime) {
     }
 }
 
+// Per-movement per-slot discharge capacity check. Capacity usage persists across
+// signal windows through usedMovementDischargeCapacity.
 bool Graph::hasDischargeCapacity(int movementID, int t) {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return false;
     int interval = max(1, defaultDischargeInterval);
@@ -1620,6 +1713,7 @@ bool Graph::hasDischargeCapacity(int movementID, int t) {
     return used < cap;
 }
 
+// Capacity accounting for a successful discharge in this movement/time slot.
 void Graph::consumeDischargeCapacity(int movementID, int t) {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return;
     int interval = max(1, defaultDischargeInterval);
@@ -1627,6 +1721,7 @@ void Graph::consumeDischargeCapacity(int movementID, int t) {
     usedMovementDischargeCapacity[make_tuple(movementID, slot)]++;
 }
 
+// Capacity rescheduling helper: advance to the next slot that still has capacity.
 int Graph::nextAvailableCapacityTime(int movementID, int t) {
     int interval = max(1, defaultDischargeInterval);
     int cur = t;
@@ -1647,6 +1742,9 @@ int Graph::encodeTurnDirForModel(TurnDir turn) const {
     return 0;
 }
 
+// Future model-extension boundary: construct the intentionally basic feature vector
+// used by TABLE/MODEL/KINEMATIC travel-time predictors. Avoid adding advanced graph
+// neighbor features here unless intentionally extending the model contract.
 BasicRoadModelFeatures Graph::buildBasicRoadModelFeatures(
         int roadID,
         int vehicleID,
@@ -1721,6 +1819,9 @@ BasicRoadModelFeatures Graph::buildBasicRoadModelFeatures(
     return features;
 }
 
+// Single-road travel-time prediction selector.
+// --travel-time-mode affects only this road-time estimate, not movement dispatch
+// scheduling, signal handling, FIFO order, or capacity rules.
 int Graph::predictRoadTravelTime(
         int roadID,
         int vehicleID,
@@ -1850,6 +1951,8 @@ int Graph::predictRoadTravelTimeKinematic(int roadID, int vehicleID) const {
     return predictRoadTravelTimeKinematic(buildBasicRoadModelFeatures(roadID, vehicleID, -1, 0, -1));
 }
 
+// Future MODEL extension stub/fallback boundary.
+// Currently only exposes/logs BasicRoadModelFeatures; no external predictor is wired.
 bool Graph::queryExternalTravelTimeModel(const BasicRoadModelFeatures& features, double& predictedTime) {
     predictedTime = -1.0;
     if (verboseTravelTimePrediction) {
@@ -1890,6 +1993,8 @@ int Graph::predictRoadTravelTimeModel(int roadID, int vehicleID) {
     return predictRoadTravelTimeModel(buildBasicRoadModelFeatures(roadID, vehicleID, -1, 0, -1));
 }
 
+// Debug/export path only: writes captured BasicRoadModelFeatures snapshots.
+// This is not part of the core simulation semantics.
 void Graph::exportBasicFeatureSnapshots(const string& path) const {
     ofstream out(path);
     if (!out.is_open()) {
@@ -1942,6 +2047,8 @@ void Graph::handle_signal_change_event(const SignalEvent& e) {
     signals[e.signalID].currentState = signalStateAtMovement(movementID, e.time);
 }
 
+// Signal helper: find the next phase boundary for SignalEvent scheduling.
+// SignalEventPQ controls phase transitions; dispatchPQ controls vehicle discharge attempts.
 int Graph::nextSignalChangeTime(int signalID, int afterTime) {
     if (signalID < 0 || signalID >= static_cast<int>(signals.size())) return INF;
     const SignalController &s = signals[signalID];
