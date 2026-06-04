@@ -9,7 +9,6 @@ find_package(Boost QUIET COMPONENTS filesystem thread system)
 
 add_executable(Simulation_Prediction
         main.cpp head.h data_preparation.cpp simulation.cpp data_cleaning.cpp
-        update.cpp deletion_operation.cpp eta_update.cpp
 )
 
 if (Boost_FOUND)
