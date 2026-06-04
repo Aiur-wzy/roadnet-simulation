@@ -318,6 +318,11 @@ struct BasicRoadModelFeatures {
     int lane_capacity = 0;
     double lane_occupied_length = 0.0;
 
+    // Vehicle-level waiting state carried into the road being predicted.
+    // 0/1 integer encoding is kept to match Python model feature columns.
+    int has_waiting = 0;
+    int waiting_duration = 0;
+
     unordered_map<string, double> extra;
 };
 
@@ -461,6 +466,13 @@ struct VehicleLabel {
     int roadIndex = 0;
     int currentRoadID = -1;
     int arrivalTime = 0;
+
+    // Waiting state from the most recent movement discharge. These values describe
+    // whether the vehicle waited before entering its current road, so downstream
+    // travel-time prediction can use them as vehicle-level model inputs.
+    bool hasWaitingBeforeCurrentRoad = false;
+    bool lastDischargeHadWaiting = false;
+    int lastWaitingDuration = 0;
 
     int currentMovementID = -1;
     int currentBufferID = -1;

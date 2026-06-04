@@ -1409,6 +1409,12 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
         int departTime = (i < static_cast<int>(Q.size()) && Q[i].size() > 2) ? Q[i][2] : 0;
         v.currentRoadID = v.routeRoadIDs[0];
         v.arrivalTime = departTime;
+        // First-road entry is an outside-system departure, not a signal-buffer
+        // discharge. Delayed departure retries due to initial storage limits are
+        // therefore not counted as vehicle-level signal waiting for has_waiting.
+        v.hasWaitingBeforeCurrentRoad = false;
+        v.lastDischargeHadWaiting = false;
+        v.lastWaitingDuration = 0;
 
         if (v.currentRoadID < 0 || v.currentRoadID >= static_cast<int>(roads.size())) {
             mark_invalid(v);
@@ -1522,6 +1528,11 @@ bool Graph::departVehicle(int vehicleID, int departTime) {
     }
 
     reserveLaneOccupancy(vehicleID, firstRoad, chosenLane);
+    // Keep first-road has_waiting at 0: this prediction represents departure from
+    // outside the modeled network, not discharge from a signal waiting buffer.
+    v.hasWaitingBeforeCurrentRoad = false;
+    v.lastDischargeHadWaiting = false;
+    v.lastWaitingDuration = 0;
     v.arrivalTime = departTime + predictRoadTravelTime(firstRoad, vehicleID, firstMovement, departTime, chosenLane);
 
     if (v.routeRoadIDs.size() == 1) {
@@ -1700,6 +1711,22 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     VehicleLabel &v = vehicles[vehicleID];
     result.releasedRoadID = v.occupiedRoadID;
     result.releasedLaneIndex = v.occupiedLaneIndex;
+
+    const int waitingDuration = max(0, dischargeTime - v.arrivalTime);
+    v.lastWaitingDuration = waitingDuration;
+    v.lastDischargeHadWaiting = waitingDuration > 0;
+    v.hasWaitingBeforeCurrentRoad = v.lastDischargeHadWaiting;
+
+    if (verboseTravelTimePrediction) {
+        cout << "[TravelTime] waiting feature"
+             << " vehicleID=" << vehicleID
+             << " movementID=" << movementID
+             << " dischargeTime=" << dischargeTime
+             << " arrivalTime=" << v.arrivalTime
+             << " waitingDuration=" << waitingDuration
+             << " has_waiting=" << (v.lastDischargeHadWaiting ? 1 : 0)
+             << endl;
+    }
 
     b.vehicleQueue.pop_front();
     releaseLaneOccupancy(vehicleID);
@@ -2025,6 +2052,15 @@ BasicRoadModelFeatures Graph::buildBasicRoadModelFeatures(
     features.roadID = roadID;
     features.movementID = movementID;
 
+    if (vehicleID >= 0 && vehicleID < static_cast<int>(vehicles.size())) {
+        const VehicleLabel& vehicle = vehicles[vehicleID];
+        features.has_waiting = vehicle.lastDischargeHadWaiting ? 1 : 0;
+        features.waiting_duration = vehicle.lastWaitingDuration;
+    } else {
+        features.has_waiting = 0;
+        features.waiting_duration = 0;
+    }
+
     if (roadID < 0 || roadID >= static_cast<int>(roads.size())) {
         const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
         features.vehicle_length = vt.length;
@@ -2219,6 +2255,8 @@ bool Graph::queryExternalTravelTimeModel(const BasicRoadModelFeatures& features,
              << " speed_limit=" << features.speed_limit
              << " lane_capacity=" << features.lane_capacity
              << " lane_occupied_length=" << features.lane_occupied_length
+             << " has_waiting=" << features.has_waiting
+             << " waiting_duration=" << features.waiting_duration
              << endl;
     }
     // TODO: future implementation. This can later use socket / Python service / embedded model.
@@ -2253,7 +2291,8 @@ void Graph::exportBasicFeatureSnapshots(const string& path) const {
     }
     out << "time,vehicleID,roadID,movementID,laneIndex,"
         << "road_length,turn_type,road_flow,lane_flow,"
-        << "lane_num,speed_limit,vehicle_length,vehicle_min_gap,lane_capacity,lane_occupied_length\n";
+        << "lane_num,speed_limit,vehicle_length,vehicle_min_gap,lane_capacity,lane_occupied_length,"
+        << "has_waiting,waiting_duration\n";
     for (const auto& f : basicFeatureSnapshots) {
         out << f.time << ','
             << f.vehicleID << ','
@@ -2269,7 +2308,9 @@ void Graph::exportBasicFeatureSnapshots(const string& path) const {
             << f.vehicle_length << ','
             << f.vehicle_min_gap << ','
             << f.lane_capacity << ','
-            << f.lane_occupied_length << '\n';
+            << f.lane_occupied_length << ','
+            << f.has_waiting << ','
+            << f.waiting_duration << '\n';
     }
 }
 
