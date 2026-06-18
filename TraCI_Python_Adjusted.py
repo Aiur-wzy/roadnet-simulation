@@ -168,6 +168,8 @@ class CamsConfig:
     stop_speed_threshold: float
     queue_speed_threshold: float
     downstream_block_occupancy_threshold: float
+    training_output: str
+    low_speed_threshold: float
 
 
 @dataclass
@@ -177,6 +179,7 @@ class NetworkInfo:
     edge_lanes: Dict[str, List[str]]
     lane_lengths: Dict[str, float]
     connection_dirs: Dict[Tuple[str, str], str]
+    edge_speed_limits: Dict[str, float]
 
 
 @dataclass
@@ -199,6 +202,7 @@ class VehicleSnapshot:
     available_storage_meter: float
     turn_direction: str
     vehicle_length: float
+    vehicle_min_gap: float
 
 
 @dataclass
@@ -224,10 +228,13 @@ class VehicleMovementEvent:
     edge_enter_time: float
     turn_direction: str
     vehicle_length: float
+    vehicle_min_gap: float
     signal_state_at_arrival: Optional[str] = None
     waiting_region_enter_time: Optional[float] = None
     pass_stopline_time: Optional[float] = None
     downstream_enter_time: Optional[float] = None
+    driving_time: float = 0.0
+    low_speed_time: float = 0.0
     red_wait_time: float = 0.0
     green_queue_wait_time: float = 0.0
     downstream_block_wait_time: float = 0.0
@@ -238,6 +245,19 @@ class VehicleMovementEvent:
     downstream_occupancy_at_arrival: Optional[float] = None
     available_storage_meter_at_arrival: Optional[float] = None
     last_update_time: Optional[float] = None
+    sampled_time: Optional[float] = None
+    road_length: Optional[float] = None
+    lane_index: Optional[int] = None
+    lane_num: Optional[int] = None
+    speed_limit: Optional[float] = None
+    road_flow: Optional[int] = None
+    lane_flow: Optional[int] = None
+    lane_capacity: Optional[float] = None
+    lane_occupied_length: Optional[float] = None
+    incoming_from_edge: str = ""
+    incoming_turn_type: int = 0
+    previous_has_waiting: int = 0
+    previous_waiting_duration: float = 0.0
 
 
 @dataclass
@@ -332,6 +352,17 @@ def parse_args() -> CamsConfig:
         default=85.0,
         help="Downstream lane occupancy percentage above which storage is treated as blocked.",
     )
+    parser.add_argument(
+        "--training-output",
+        default="cams_model_training_data.csv",
+        help="Output CSV for CAMS road-level model training rows.",
+    )
+    parser.add_argument(
+        "--low-speed-threshold",
+        type=float,
+        default=2.0,
+        help="Speed <= this value and > stop threshold is counted as low-speed time, in m/s.",
+    )
     args = parser.parse_args()
     return CamsConfig(
         sumo_config=args.sumo_config,
@@ -344,6 +375,8 @@ def parse_args() -> CamsConfig:
         stop_speed_threshold=args.stop_speed_threshold,
         queue_speed_threshold=args.queue_speed_threshold,
         downstream_block_occupancy_threshold=args.downstream_block_occupancy_threshold,
+        training_output=args.training_output,
+        low_speed_threshold=args.low_speed_threshold,
     )
 
 
@@ -355,16 +388,20 @@ def parse_network_info(file_path: str) -> NetworkInfo:
     edge_lanes: Dict[str, List[str]] = {}
     lane_lengths: Dict[str, float] = {}
     connection_dirs: Dict[Tuple[str, str], str] = {}
+    edge_speed_limits: Dict[str, float] = {}
 
     for edge in root.findall("edge"):
         if "function" in edge.attrib:
             continue
         edge_id = edge.attrib["id"]
         edge_lanes[edge_id] = []
+        lane_speeds: List[float] = []
         for lane in edge.findall("lane"):
             lane_id = lane.attrib["id"]
             edge_lanes[edge_id].append(lane_id)
             lane_lengths[lane_id] = float(lane.attrib.get("length", 0.0))
+            lane_speeds.append(float(lane.attrib.get("speed", 0.0)))
+        edge_speed_limits[edge_id] = sum(lane_speeds) / len(lane_speeds) if lane_speeds else 0.0
 
     for connection in root.findall("connection"):
         from_edge = connection.attrib.get("from")
@@ -377,8 +414,91 @@ def parse_network_info(file_path: str) -> NetworkInfo:
         edge_lanes=edge_lanes,
         lane_lengths=lane_lengths,
         connection_dirs=connection_dirs,
+        edge_speed_limits=edge_speed_limits,
     )
 
+
+
+def encode_turn_direction(direction: str) -> int:
+    """Encode SUMO connection directions for BasicRoadModelFeatures."""
+
+    if direction in {"l", "L"}:
+        return 1
+    if direction == "s":
+        return 2
+    if direction in {"r", "R"}:
+        return 3
+    if direction == "t":
+        return 4
+    return 0
+
+
+def lane_index_from_id(lane_id: str) -> Optional[int]:
+    """Return the numeric SUMO lane suffix, if present."""
+
+    try:
+        return int(lane_id.rsplit("_", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def compute_flow_snapshot(network_info: NetworkInfo) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, float]]:
+    """Count vehicles and occupied length on each normal edge/lane."""
+
+    road_flow: Dict[str, int] = {}
+    lane_flow: Dict[str, int] = {}
+    lane_occupied_length: Dict[str, float] = {}
+    for vehicle_id in traci.vehicle.getIDList():
+        road_id = traci.vehicle.getRoadID(vehicle_id)
+        if road_id.startswith(":"):
+            continue
+        lane_id = traci.vehicle.getLaneID(vehicle_id)
+        vehicle_length = traci.vehicle.getLength(vehicle_id)
+        try:
+            min_gap = traci.vehicle.getMinGap(vehicle_id)
+        except Exception:
+            min_gap = 2.5
+        road_flow[road_id] = road_flow.get(road_id, 0) + 1
+        lane_flow[lane_id] = lane_flow.get(lane_id, 0) + 1
+        lane_occupied_length[lane_id] = lane_occupied_length.get(lane_id, 0.0) + vehicle_length + min_gap
+    return road_flow, lane_flow, lane_occupied_length
+
+
+def sample_training_features(
+    event: VehicleMovementEvent,
+    snapshot: VehicleSnapshot,
+    network_info: NetworkInfo,
+    previous_release_waiting: Dict[str, Tuple[int, float]],
+) -> None:
+    """Sample road-model features immediately when an event starts."""
+
+    road_flow, lane_flow, lane_occupied_length = compute_flow_snapshot(network_info)
+    lanes = network_info.edge_lanes.get(snapshot.from_edge, [])
+    selected_lane = snapshot.lane_id if snapshot.lane_id in lanes else (lanes[0] if lanes else snapshot.lane_id)
+    selected_lane_flow = lane_flow.get(selected_lane)
+    if selected_lane_flow is None and lanes:
+        selected_lane_flow = max((lane_flow.get(lane, 0) for lane in lanes), default=0)
+    lane_length = network_info.lane_lengths.get(selected_lane, 0.0)
+    min_gap = snapshot.vehicle_min_gap or 2.5
+    occupied_length = lane_occupied_length.get(selected_lane, 0.0)
+    has_waiting, waiting_duration = previous_release_waiting.pop(snapshot.vehicle_id, (0, 0.0))
+
+    event.sampled_time = event.edge_enter_time
+    event.road_length = lane_length
+    event.lane_index = lane_index_from_id(selected_lane)
+    event.lane_num = len(lanes)
+    event.speed_limit = network_info.edge_speed_limits.get(snapshot.from_edge, 0.0)
+    event.road_flow = road_flow.get(snapshot.from_edge, 0)
+    event.lane_flow = selected_lane_flow or 0
+    event.lane_capacity = lane_length / max(snapshot.vehicle_length + min_gap, 0.1) if lane_length > 0 else 0.0
+    event.lane_occupied_length = occupied_length
+    event.vehicle_min_gap = min_gap
+    event.incoming_from_edge = snapshot.route_edges[snapshot.route_index - 1] if snapshot.route_index > 0 else ""
+    event.incoming_turn_type = encode_turn_direction(
+        network_info.connection_dirs.get((event.incoming_from_edge, snapshot.from_edge), "unknown")
+    )
+    event.previous_has_waiting = has_waiting
+    event.previous_waiting_duration = waiting_duration
 
 def is_green_state(signal_state: str) -> bool:
     """Return True when a SUMO signal state allows this movement to go."""
@@ -467,6 +587,7 @@ def get_vehicle_snapshot(
         available_storage_meter=available_storage_meter,
         turn_direction=network_info.connection_dirs.get((from_edge, to_edge), "unknown"),
         vehicle_length=traci.vehicle.getLength(vehicle_id),
+        vehicle_min_gap=traci.vehicle.getMinGap(vehicle_id),
     )
 
 
@@ -521,10 +642,15 @@ def compute_queue_rank_at_arrival(
     return rank
 
 
-def make_vehicle_event(snapshot: VehicleSnapshot, current_time: float) -> VehicleMovementEvent:
+def make_vehicle_event(
+    snapshot: VehicleSnapshot,
+    current_time: float,
+    network_info: NetworkInfo,
+    previous_release_waiting: Dict[str, Tuple[int, float]],
+) -> VehicleMovementEvent:
     """Create a new vehicle-movement event when a vehicle enters an edge."""
 
-    return VehicleMovementEvent(
+    event = VehicleMovementEvent(
         vehicle_id=snapshot.vehicle_id,
         route_id=snapshot.route_id,
         route_edges=snapshot.route_edges,
@@ -537,8 +663,11 @@ def make_vehicle_event(snapshot: VehicleSnapshot, current_time: float) -> Vehicl
         edge_enter_time=current_time,
         turn_direction=snapshot.turn_direction,
         vehicle_length=snapshot.vehicle_length,
+        vehicle_min_gap=snapshot.vehicle_min_gap,
         last_update_time=current_time,
     )
+    sample_training_features(event, snapshot, network_info, previous_release_waiting)
+    return event
 
 
 def update_waiting_region_entry(
@@ -578,9 +707,9 @@ def accumulate_waiting_time(
     config: CamsConfig,
     current_time: float,
 ) -> None:
-    """Accumulate red, green-queue, and downstream-block waiting times."""
+    """Accumulate road driving/low-speed/waiting time before the stop line."""
 
-    if event.waiting_region_enter_time is None or event.pass_stopline_time is not None:
+    if event.pass_stopline_time is not None:
         event.last_update_time = current_time
         return
 
@@ -591,12 +720,11 @@ def accumulate_waiting_time(
     if delta == 0.0:
         return
 
-    is_stopped = snapshot.speed <= config.stop_speed_threshold
-    is_waiting = is_stopped or snapshot.speed <= config.queue_speed_threshold
-    if not is_waiting:
-        return
-
-    if is_red_or_yellow_state(snapshot.signal_state):
+    if snapshot.speed > config.low_speed_threshold:
+        event.driving_time += delta
+    elif snapshot.speed > config.stop_speed_threshold:
+        event.low_speed_time += delta
+    elif is_red_or_yellow_state(snapshot.signal_state):
         event.red_wait_time += delta
     elif (
         is_green_state(snapshot.signal_state)
@@ -703,7 +831,7 @@ def write_vehicle_events(
         "waiting_region_enter_time",
         "pass_stopline_time",
         "downstream_enter_time",
-        "running_time",
+        "time_to_waiting_region",
         "signal_wait_time",
         "red_wait_time",
         "green_queue_wait_time",
@@ -727,7 +855,7 @@ def write_vehicle_events(
             if event.pass_cycle_id is not None:
                 cycle = cycle_lookup.get((event.tls_id, event.link_index, event.pass_cycle_id))
 
-            running_time = event.waiting_region_enter_time - event.edge_enter_time
+            time_to_waiting_region = event.waiting_region_enter_time - event.edge_enter_time
             signal_wait_time = event.pass_stopline_time - event.waiting_region_enter_time
             writer.writerow(
                 {
@@ -744,7 +872,7 @@ def write_vehicle_events(
                     "waiting_region_enter_time": round(event.waiting_region_enter_time, 2),
                     "pass_stopline_time": round(event.pass_stopline_time, 2),
                     "downstream_enter_time": round(event.downstream_enter_time, 2),
-                    "running_time": round(running_time, 2),
+                    "time_to_waiting_region": round(time_to_waiting_region, 2),
                     "signal_wait_time": round(signal_wait_time, 2),
                     "red_wait_time": round(event.red_wait_time, 2),
                     "green_queue_wait_time": round(event.green_queue_wait_time, 2),
@@ -762,6 +890,69 @@ def write_vehicle_events(
                 }
             )
 
+
+
+def write_training_rows(output_path: str, completed_events: List[VehicleMovementEvent]) -> None:
+    """Write CAMS BasicRoadModelFeatures-compatible training rows."""
+
+    fieldnames = [
+        "time", "vehicleID", "roadID", "movementID", "laneIndex",
+        "road_length", "turn_type", "road_flow", "lane_flow", "lane_num",
+        "speed_limit", "vehicle_length", "vehicle_min_gap", "lane_capacity",
+        "lane_occupied_length", "has_waiting", "waiting_duration",
+        "travel_time_label", "edge_enter_time", "pass_stopline_time",
+        "downstream_enter_time", "driving_time", "low_speed_time",
+        "red_light_waiting_time", "green_queue_wait_time",
+        "downstream_block_wait_time", "total_before_stopline_time",
+        "waiting_region_enter_time", "incoming_from_edge", "current_edge",
+        "outgoing_to_edge", "tls_id", "link_index",
+    ]
+    with open(output_path, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for event in completed_events:
+            travel_time_label = event.driving_time + event.low_speed_time
+            if travel_time_label <= 0 or not event.road_length or event.road_length <= 0 or not event.from_edge:
+                continue
+            pass_stopline_time = event.pass_stopline_time if event.pass_stopline_time is not None else event.downstream_enter_time
+            if pass_stopline_time is None:
+                continue
+            total_before_stopline_time = pass_stopline_time - event.edge_enter_time
+            writer.writerow({
+                "time": round(event.sampled_time if event.sampled_time is not None else event.edge_enter_time, 2),
+                "vehicleID": event.vehicle_id,
+                "roadID": event.from_edge,
+                "movementID": f"{event.tls_id}:{event.link_index}",
+                "laneIndex": event.lane_index if event.lane_index is not None else "",
+                "road_length": round(event.road_length, 4),
+                "turn_type": event.incoming_turn_type,
+                "road_flow": event.road_flow if event.road_flow is not None else 0,
+                "lane_flow": event.lane_flow if event.lane_flow is not None else 0,
+                "lane_num": event.lane_num if event.lane_num is not None else 0,
+                "speed_limit": round(event.speed_limit or 0.0, 4),
+                "vehicle_length": round(event.vehicle_length, 4),
+                "vehicle_min_gap": round(event.vehicle_min_gap, 4),
+                "lane_capacity": round(event.lane_capacity or 0.0, 4),
+                "lane_occupied_length": round(event.lane_occupied_length or 0.0, 4),
+                "has_waiting": event.previous_has_waiting,
+                "waiting_duration": round(event.previous_waiting_duration, 4),
+                "travel_time_label": round(travel_time_label, 4),
+                "edge_enter_time": round(event.edge_enter_time, 2),
+                "pass_stopline_time": round(pass_stopline_time, 2),
+                "downstream_enter_time": round(event.downstream_enter_time, 2) if event.downstream_enter_time is not None else "",
+                "driving_time": round(event.driving_time, 4),
+                "low_speed_time": round(event.low_speed_time, 4),
+                "red_light_waiting_time": round(event.red_wait_time, 4),
+                "green_queue_wait_time": round(event.green_queue_wait_time, 4),
+                "downstream_block_wait_time": round(event.downstream_block_wait_time, 4),
+                "total_before_stopline_time": round(total_before_stopline_time, 4),
+                "waiting_region_enter_time": round(event.waiting_region_enter_time, 2) if event.waiting_region_enter_time is not None else "",
+                "incoming_from_edge": event.incoming_from_edge,
+                "current_edge": event.from_edge,
+                "outgoing_to_edge": event.to_edge,
+                "tls_id": event.tls_id,
+                "link_index": event.link_index,
+            })
 
 def write_cycle_summaries(output_path: str, completed_cycles: List[MovementCycleSummary]) -> None:
     """Write movement-level green-window summaries to CSV."""
@@ -828,6 +1019,7 @@ def main():
     previous_green_states: Dict[MovementKey, bool] = {}
     cycle_counters: Dict[MovementKey, int] = {}
     previous_vehicle_edges: Dict[str, str] = {}
+    previous_release_waiting: Dict[str, Tuple[int, float]] = {}
 
     # Compact compatibility table: one row per completed signalized movement.
     # It is intentionally smaller than the old table; the detailed CAMS fields
@@ -859,7 +1051,10 @@ def main():
             # avoids losing the last edge when a vehicle reaches its destination.
             for vehicle_id in list(active_events.keys()):
                 if vehicle_id not in vehicle_ids:
-                    finalize_event(active_events.pop(vehicle_id), current_time, completed_events)
+                    event = active_events.pop(vehicle_id)
+                    release_waiting_duration = event.red_wait_time + event.green_queue_wait_time + event.downstream_block_wait_time
+                    previous_release_waiting[vehicle_id] = (1 if release_waiting_duration > 0 else 0, release_waiting_duration)
+                    finalize_event(event, current_time, completed_events)
 
             snapshots: Dict[str, VehicleSnapshot] = {}
             for vehicle_id in vehicle_ids:
@@ -908,6 +1103,8 @@ def main():
                                 active_cycle.discharged_in_green += 1
                                 event.pass_cycle_id = active_cycle.cycle_id
                         event.downstream_enter_time = current_time
+                        release_waiting_duration = event.red_wait_time + event.green_queue_wait_time + event.downstream_block_wait_time
+                        previous_release_waiting[vehicle_id] = (1 if release_waiting_duration > 0 else 0, release_waiting_duration)
                         finalize_event(active_events.pop(vehicle_id), current_time, completed_events)
 
                         signal_wait_time = (
@@ -935,7 +1132,7 @@ def main():
 
             for vehicle_id, snapshot in snapshots.items():
                 if vehicle_id not in active_events:
-                    active_events[vehicle_id] = make_vehicle_event(snapshot, current_time)
+                    active_events[vehicle_id] = make_vehicle_event(snapshot, current_time, network_info, previous_release_waiting)
 
                 event = active_events[vehicle_id]
                 update_waiting_region_entry(
@@ -979,9 +1176,11 @@ def main():
     }
     write_vehicle_events(config.vehicle_event_output, completed_events, cycle_lookup)
     write_cycle_summaries(config.cycle_summary_output, completed_cycles)
+    write_training_rows(config.training_output, completed_events)
 
     print(f"vehicle movement events written to: {config.vehicle_event_output}")
     print(f"movement cycle summaries written to: {config.cycle_summary_output}")
+    print(f"training data written to: {config.training_output}")
     print(f"legacy edge summary written to: {config.legacy_edge_output}")
     print("simulation done")
 
