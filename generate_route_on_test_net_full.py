@@ -1,4 +1,5 @@
 import argparse
+import csv
 import random
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -65,6 +66,100 @@ ROUTE_OPTIONS = {
     "SOUTHWEST_IN": EXPANDED_ROUTES[33:41], # Routes starting from E18 / E17
 }
 
+
+ALL_CONGESTION_SCENARIOS = [
+    {
+        "scenario_name": "free_all",
+        "start_time": 0,
+        "end_time": 1200,
+        "route_option": "ALL",
+        "mode": "uniform",
+        "num_departures": 5,
+    },
+    {
+        "scenario_name": "light_all_seed1",
+        "start_time": 1500,
+        "end_time": 2700,
+        "route_option": "ALL",
+        "mode": "poisson",
+        "num_departures": 15,
+        "seed": 1,
+    },
+    {
+        "scenario_name": "light_all_seed2",
+        "start_time": 3000,
+        "end_time": 4200,
+        "route_option": "ALL",
+        "mode": "poisson",
+        "num_departures": 15,
+        "seed": 2,
+    },
+    {
+        "scenario_name": "medium_core",
+        "start_time": 4500,
+        "end_time": 5700,
+        "route_option": "CORE",
+        "mode": "period",
+        "period": 20,
+    },
+    {
+        "scenario_name": "heavy_all",
+        "start_time": 6000,
+        "end_time": 7200,
+        "route_option": "ALL",
+        "mode": "period",
+        "period": 15,
+    },
+    {
+        "scenario_name": "oversat_all",
+        "start_time": 7500,
+        "end_time": 8700,
+        "route_option": "ALL",
+        "mode": "period",
+        "period": 10,
+    },
+    {
+        "scenario_name": "west_bottleneck",
+        "start_time": 9000,
+        "end_time": 9900,
+        "route_option": "WEST_IN",
+        "mode": "period",
+        "period": 8,
+    },
+    {
+        "scenario_name": "north_bottleneck",
+        "start_time": 10200,
+        "end_time": 11100,
+        "route_option": "NORTH_IN",
+        "mode": "period",
+        "period": 8,
+    },
+    {
+        "scenario_name": "east_bottleneck",
+        "start_time": 11400,
+        "end_time": 12300,
+        "route_option": "EAST_IN",
+        "mode": "period",
+        "period": 8,
+    },
+    {
+        "scenario_name": "south_bottleneck",
+        "start_time": 12600,
+        "end_time": 13500,
+        "route_option": "SOUTH_IN",
+        "mode": "period",
+        "period": 8,
+    },
+    {
+        "scenario_name": "southwest_bottleneck",
+        "start_time": 13800,
+        "end_time": 14700,
+        "route_option": "SOUTHWEST_IN",
+        "mode": "period",
+        "period": 8,
+    },
+]
+
 # Also allow selecting one route by its route id.
 for route_id, route_edges in EXPANDED_ROUTES:
     ROUTE_OPTIONS[route_id] = [(route_id, route_edges)]
@@ -115,6 +210,144 @@ def generate_by_period(start_time: float, end_time: float, period: float):
         departures.append(t)
         t += period
     return departures
+
+
+def generate_departures_for_scenario(scenario):
+    mode = scenario["mode"]
+    start_time = scenario["start_time"]
+    end_time = scenario["end_time"]
+
+    if end_time < start_time:
+        raise ValueError(
+            f"Scenario {scenario['scenario_name']} end_time must be >= start_time."
+        )
+
+    if mode == "uniform":
+        return generate_uniform_departures(
+            scenario.get("num_departures", 0), start_time, end_time
+        )
+    if mode == "poisson":
+        return generate_poisson_departures(
+            scenario.get("num_departures", 0),
+            start_time,
+            end_time,
+            scenario.get("seed", 42),
+        )
+    if mode == "period":
+        return generate_by_period(start_time, end_time, scenario["period"])
+
+    raise ValueError(f"Unsupported scenario mode: {mode}")
+
+
+def build_all_congestion_routes_xml(
+    scenarios,
+    vehicle_type_id="car",
+    depart_lane="best",
+    depart_speed="max",
+    depart_pos="base",
+):
+    root = ET.Element("routes")
+
+    ET.SubElement(
+        root,
+        "vType",
+        id=vehicle_type_id,
+        accel="2.6",
+        decel="4.5",
+        sigma="0.5",
+        length="5.0",
+        minGap="2.5",
+        maxSpeed="13.89",
+        guiShape="passenger",
+    )
+
+    for route_id, route_edges in EXPANDED_ROUTES:
+        ET.SubElement(root, "route", id=route_id, edges=route_edges)
+
+    vehicles = []
+    manifest_rows = []
+    scenario_counts = {}
+
+    for scenario in scenarios:
+        scenario_name = scenario["scenario_name"]
+        route_option = scenario["route_option"]
+        selected_routes = ROUTE_OPTIONS[route_option]
+        departures = generate_departures_for_scenario(scenario)
+        scenario_counts[scenario_name] = len(departures) * len(selected_routes)
+
+        vehicle_idx = 1
+        for depart in departures:
+            for route_id, _ in selected_routes:
+                vehicles.append(
+                    {
+                        "depart": depart,
+                        "scenario_name": scenario_name,
+                        "vehicle_id": f"{scenario_name}_veh_{vehicle_idx:06d}",
+                        "route_id": route_id,
+                    }
+                )
+                vehicle_idx += 1
+
+        manifest_rows.append(
+            {
+                "scenario_name": scenario_name,
+                "start_time": scenario["start_time"],
+                "end_time": scenario["end_time"],
+                "route_option": route_option,
+                "mode": scenario["mode"],
+                "num_departures": scenario.get("num_departures", ""),
+                "period": scenario.get("period", ""),
+                "seed": scenario.get("seed", ""),
+                "selected_route_count": len(selected_routes),
+                "vehicle_count": scenario_counts[scenario_name],
+                "first_depart": f"{departures[0]:.2f}" if departures else "",
+                "last_depart": f"{departures[-1]:.2f}" if departures else "",
+            }
+        )
+
+    vehicles.sort(
+        key=lambda vehicle: (
+            vehicle["depart"],
+            vehicle["scenario_name"],
+            vehicle["vehicle_id"],
+        )
+    )
+
+    for vehicle in vehicles:
+        ET.SubElement(
+            root,
+            "vehicle",
+            id=vehicle["vehicle_id"],
+            type=vehicle_type_id,
+            route=vehicle["route_id"],
+            depart=f"{vehicle['depart']:.2f}",
+            departLane=depart_lane,
+            departSpeed=depart_speed,
+            departPos=depart_pos,
+        )
+
+    return root, manifest_rows, scenario_counts, vehicles
+
+
+def write_manifest(manifest_output, manifest_rows):
+    fieldnames = [
+        "scenario_name",
+        "start_time",
+        "end_time",
+        "route_option",
+        "mode",
+        "num_departures",
+        "period",
+        "seed",
+        "selected_route_count",
+        "vehicle_count",
+        "first_depart",
+        "last_depart",
+    ]
+    with open(manifest_output, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(manifest_rows)
 
 
 def build_routes_xml(
@@ -168,6 +401,18 @@ def main():
     )
     parser.add_argument("--output", type=str, default="expanded_routes.rou.xml")
     parser.add_argument(
+        "--profile",
+        type=str,
+        choices=["all-congestion"],
+        help="Generate a staged route file containing all congestion scenarios.",
+    )
+    parser.add_argument(
+        "--manifest-output",
+        type=str,
+        default="all_congestion_manifest.csv",
+        help="Manifest CSV path for --profile all-congestion.",
+    )
+    parser.add_argument(
         "--num-vehicles",
         type=int,
         default=20,
@@ -200,6 +445,29 @@ def main():
     parser.add_argument("--depart-pos", type=str, default="base")
 
     args = parser.parse_args()
+
+    if args.profile == "all-congestion":
+        root, manifest_rows, scenario_counts, vehicles = build_all_congestion_routes_xml(
+            ALL_CONGESTION_SCENARIOS,
+            depart_lane=args.depart_lane,
+            depart_speed=args.depart_speed,
+            depart_pos=args.depart_pos,
+        )
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(prettify_xml(root))
+        write_manifest(args.manifest_output, manifest_rows)
+
+        print(f"Route file written to: {args.output}")
+        print(f"Manifest file written to: {args.manifest_output}")
+        print(f"Number of scenarios: {len(ALL_CONGESTION_SCENARIOS)}")
+        print(f"Total vehicles: {len(vehicles)}")
+        if vehicles:
+            print(f"First depart: {vehicles[0]['depart']:.2f}")
+            print(f"Last depart:  {vehicles[-1]['depart']:.2f}")
+        print("Vehicle count per scenario:")
+        for scenario_name, vehicle_count in scenario_counts.items():
+            print(f"  {scenario_name}: {vehicle_count}")
+        return
 
     if args.end_time < args.start_time:
         raise ValueError("end-time must be >= start-time.")
