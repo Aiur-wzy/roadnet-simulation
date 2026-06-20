@@ -202,6 +202,7 @@ class VehicleSnapshot:
     downstream_occupancy: float
     available_storage_meter: float
     turn_direction: str
+    turn_type: int
     vehicle_length: float
     vehicle_min_gap: float
 
@@ -259,6 +260,9 @@ class VehicleMovementEvent:
     lane_capacity: Optional[float] = None
     lane_occupied_length: Optional[float] = None
     incoming_from_edge: str = ""
+    # Main model feature: downstream outgoing movement from current edge/from_edge
+    # to outgoing_to_edge/to_edge. Incoming movement is kept separately below.
+    turn_type: int = 0
     incoming_turn_type: int = 0
     previous_has_waiting: int = 0
     previous_waiting_duration: float = 0.0
@@ -472,7 +476,11 @@ def parse_network_info(file_path: str) -> NetworkInfo:
 
 
 def encode_turn_direction(direction: str) -> int:
-    """Encode SUMO connection directions for BasicRoadModelFeatures."""
+    """Encode SUMO connection directions for BasicRoadModelFeatures.
+
+    For model-training rows, turn_type is the SUMO connection direction from
+    current_edge/from_edge to outgoing_to_edge/to_edge.
+    """
 
     if direction in {"l", "L"}:
         return 1
@@ -549,6 +557,7 @@ def sample_training_features(
     event.lane_capacity = lane_length / max(snapshot.vehicle_length + min_gap, 0.1) if lane_length > 0 else 0.0
     event.lane_occupied_length = occupied_length
     event.vehicle_min_gap = min_gap
+    event.turn_type = encode_turn_direction(event.turn_direction)
     event.incoming_from_edge = snapshot.route_edges[snapshot.route_index - 1] if snapshot.route_index > 0 else ""
     event.incoming_turn_type = encode_turn_direction(
         network_info.connection_dirs.get((event.incoming_from_edge, snapshot.from_edge), "unknown")
@@ -642,6 +651,7 @@ def get_vehicle_snapshot(
         downstream_occupancy=downstream_occupancy,
         available_storage_meter=available_storage_meter,
         turn_direction=network_info.connection_dirs.get((from_edge, to_edge), "unknown"),
+        turn_type=encode_turn_direction(network_info.connection_dirs.get((from_edge, to_edge), "unknown")),
         vehicle_length=traci.vehicle.getLength(vehicle_id),
         vehicle_min_gap=traci.vehicle.getMinGap(vehicle_id),
     )
@@ -719,6 +729,7 @@ def make_vehicle_event(
         link_index=snapshot.link_index,
         edge_enter_time=current_time,
         turn_direction=snapshot.turn_direction,
+        turn_type=snapshot.turn_type,
         vehicle_length=snapshot.vehicle_length,
         vehicle_min_gap=snapshot.vehicle_min_gap,
         last_update_time=current_time,
@@ -1005,7 +1016,7 @@ def write_lightweight_training_rows(output_path: str, completed_events: List[Veh
                 "entry_is_low_speed": event.entry_is_low_speed,
                 "entry_is_stopped": event.entry_is_stopped,
                 "Turn": event.turn_direction,
-                "turn_type": encode_turn_direction(event.turn_direction),
+                "turn_type": event.turn_type,
                 "Wait_Time": round(wait_time, 4),
                 "Travel_Time": round(travel_time, 4),
                 "Delay_Time": round(delay_time, 4),
@@ -1015,11 +1026,16 @@ def write_lightweight_training_rows(output_path: str, completed_events: List[Veh
             })
 
 def write_training_rows(output_path: str, completed_events: List[VehicleMovementEvent]) -> None:
-    """Write CAMS BasicRoadModelFeatures-compatible training rows."""
+    """Write CAMS BasicRoadModelFeatures-compatible training rows.
+
+    The main turn_type feature is the downstream outgoing movement from
+    current_edge/from_edge to outgoing_to_edge/to_edge. incoming_turn_type is
+    retained only as an explicit previous-edge debugging/future-feature column.
+    """
 
     fieldnames = [
         "time", "vehicleID", "roadID", "movementID", "laneIndex",
-        "road_length", "turn_type", "road_flow", "lane_flow", "lane_num",
+        "road_length", "turn_direction", "turn_type", "incoming_turn_type", "road_flow", "lane_flow", "lane_num",
         "speed_limit", "vehicle_length", "vehicle_min_gap", "lane_capacity",
         "lane_occupied_length", "has_waiting", "waiting_duration",
         "travel_time_label", "edge_enter_time", "pass_stopline_time",
@@ -1047,7 +1063,9 @@ def write_training_rows(output_path: str, completed_events: List[VehicleMovement
                 "movementID": f"{event.tls_id}:{event.link_index}",
                 "laneIndex": event.lane_index if event.lane_index is not None else "",
                 "road_length": round(event.road_length, 4),
-                "turn_type": event.incoming_turn_type,
+                "turn_direction": event.turn_direction,
+                "turn_type": event.turn_type,
+                "incoming_turn_type": event.incoming_turn_type,
                 "road_flow": event.road_flow if event.road_flow is not None else 0,
                 "lane_flow": event.lane_flow if event.lane_flow is not None else 0,
                 "lane_num": event.lane_num if event.lane_num is not None else 0,
