@@ -971,12 +971,21 @@ def write_lightweight_training_rows(output_path: str, completed_events: List[Veh
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         for event in completed_events:
-            if event.downstream_enter_time is None:
-                continue
             wait_time = event.red_wait_time
             delay_time = event.green_queue_wait_time + event.downstream_block_wait_time
             low_speed_time = event.low_speed_time
             travel_time = event.driving_time
+            travel_time_label = travel_time + low_speed_time
+
+            if travel_time_label <= 0:
+                continue
+            if not event.road_length or event.road_length <= 0:
+                continue
+            if not event.from_edge:
+                continue
+            if event.downstream_enter_time is None:
+                continue
+
             writer.writerow({
                 "Vehicle_ID": event.vehicle_id,
                 "Edge_ID": event.from_edge,
@@ -1002,7 +1011,7 @@ def write_lightweight_training_rows(output_path: str, completed_events: List[Veh
                 "Delay_Time": round(delay_time, 4),
                 "LowSpee_Time": round(low_speed_time, 4),
                 "Wait_Sum": round(wait_time + delay_time + low_speed_time, 4),
-                "travel_time_label": round(travel_time + low_speed_time, 4),
+                "travel_time_label": round(travel_time_label, 4),
             })
 
 def write_training_rows(output_path: str, completed_events: List[VehicleMovementEvent]) -> None:
@@ -1117,6 +1126,13 @@ def main():
     """
 
     config = parse_args()
+    want_legacy = "legacy" in config.outputs
+    want_training = "training" in config.outputs
+    want_events = "events" in config.outputs
+    want_cycles = "cycles" in config.outputs
+    need_cycle_debug = want_events or want_cycles
+    need_waiting_region_debug = want_events or want_cycles
+
     network_info = parse_network_info(config.net_file)
     traci.start([config.sumo_binary, "-c", config.sumo_config])
 
@@ -1158,22 +1174,25 @@ def main():
             if snapshot is not None:
                 snapshots[vehicle_id] = snapshot
 
-        queue_counts = compute_queue_counts(snapshots, config)
+        if need_cycle_debug:
+            queue_counts = compute_queue_counts(snapshots, config)
 
-        # Update signal-cycle states before vehicle discharge is counted.
-        # A green wave is movement-specific: same traffic light, but a
-        # different link_index means a different controlled movement.
-        update_cycle_states(
-            snapshots=snapshots,
-            active_events=active_events,
-            queue_counts=queue_counts,
-            previous_green_states=previous_green_states,
-            cycle_counters=cycle_counters,
-            active_cycles=active_cycles,
-            completed_cycles=completed_cycles,
-            config=config,
-            current_time=current_time,
-        )
+            # Update signal-cycle states before vehicle discharge is counted.
+            # A green wave is movement-specific: same traffic light, but a
+            # different link_index means a different controlled movement.
+            update_cycle_states(
+                snapshots=snapshots,
+                active_events=active_events,
+                queue_counts=queue_counts,
+                previous_green_states=previous_green_states,
+                cycle_counters=cycle_counters,
+                active_cycles=active_cycles,
+                completed_cycles=completed_cycles,
+                config=config,
+                current_time=current_time,
+            )
+        else:
+            queue_counts = {}
 
         for vehicle_id in vehicle_ids:
             current_edge = traci.vehicle.getRoadID(vehicle_id)
@@ -1187,17 +1206,19 @@ def main():
                 event = active_events[vehicle_id]
                 if current_edge.startswith(":") and event.pass_stopline_time is None:
                     event.pass_stopline_time = current_time
-                    active_cycle = active_cycles.get((event.tls_id, event.link_index))
-                    if active_cycle is not None:
-                        active_cycle.discharged_in_green += 1
-                        event.pass_cycle_id = active_cycle.cycle_id
-                elif current_edge == event.to_edge:
-                    if event.pass_stopline_time is None:
-                        event.pass_stopline_time = current_time
+                    if need_cycle_debug:
                         active_cycle = active_cycles.get((event.tls_id, event.link_index))
                         if active_cycle is not None:
                             active_cycle.discharged_in_green += 1
                             event.pass_cycle_id = active_cycle.cycle_id
+                elif current_edge == event.to_edge:
+                    if event.pass_stopline_time is None:
+                        event.pass_stopline_time = current_time
+                        if need_cycle_debug:
+                            active_cycle = active_cycles.get((event.tls_id, event.link_index))
+                            if active_cycle is not None:
+                                active_cycle.discharged_in_green += 1
+                                event.pass_cycle_id = active_cycle.cycle_id
                     event.downstream_enter_time = current_time
                     release_waiting_duration = event.red_wait_time + event.green_queue_wait_time + event.downstream_block_wait_time
                     previous_release_waiting[vehicle_id] = (1 if release_waiting_duration > 0 else 0, release_waiting_duration)
@@ -1211,14 +1232,15 @@ def main():
                 active_events[vehicle_id] = make_vehicle_event(snapshot, current_time, network_info, previous_release_waiting, config)
 
             event = active_events[vehicle_id]
-            update_waiting_region_entry(
-                event=event,
-                snapshot=snapshot,
-                snapshots=snapshots,
-                active_cycles=active_cycles,
-                config=config,
-                current_time=current_time,
-            )
+            if need_waiting_region_debug:
+                update_waiting_region_entry(
+                    event=event,
+                    snapshot=snapshot,
+                    snapshots=snapshots,
+                    active_cycles=active_cycles,
+                    config=config,
+                    current_time=current_time,
+                )
             accumulate_waiting_time(
                 event=event,
                 snapshot=snapshot,
@@ -1226,39 +1248,42 @@ def main():
                 current_time=current_time,
             )
 
-            active_cycle = active_cycles.get((event.tls_id, event.link_index))
-            if (
-                active_cycle is not None
-                and event.waiting_region_enter_time is not None
-                and event.pass_stopline_time is None
-                and snapshot.downstream_occupancy >= config.downstream_block_occupancy_threshold
-                and is_green_state(snapshot.signal_state)
-            ):
-                active_cycle.downstream_blocked_vehicle_ids.add(vehicle_id)
+            if need_cycle_debug:
+                active_cycle = active_cycles.get((event.tls_id, event.link_index))
+                if (
+                    active_cycle is not None
+                    and event.waiting_region_enter_time is not None
+                    and event.pass_stopline_time is None
+                    and snapshot.downstream_occupancy >= config.downstream_block_occupancy_threshold
+                    and is_green_state(snapshot.signal_state)
+                ):
+                    active_cycle.downstream_blocked_vehicle_ids.add(vehicle_id)
     current_time = traci.simulation.getTime()
     for event in list(active_events.values()):
         finalize_event(event, current_time, completed_events)
 
-    for cycle in list(active_cycles.values()):
-        cycle.green_end_time = current_time
-        completed_cycles.append(cycle)
+    if need_cycle_debug:
+        for cycle in list(active_cycles.values()):
+            cycle.green_end_time = current_time
+            completed_cycles.append(cycle)
 
     traci.close()
 
-    cycle_lookup = {
-        (cycle.tls_id, cycle.link_index, cycle.cycle_id): cycle
-        for cycle in completed_cycles
-    }
-    if "events" in config.outputs:
+    cycle_lookup = {}
+    if want_events:
+        cycle_lookup = {
+            (cycle.tls_id, cycle.link_index, cycle.cycle_id): cycle
+            for cycle in completed_cycles
+        }
         write_vehicle_events(config.vehicle_event_output, completed_events, cycle_lookup)
         print(f"vehicle movement events written to: {config.vehicle_event_output}")
-    if "cycles" in config.outputs:
+    if want_cycles:
         write_cycle_summaries(config.cycle_summary_output, completed_cycles)
         print(f"movement cycle summaries written to: {config.cycle_summary_output}")
-    if "training" in config.outputs:
+    if want_training:
         write_training_rows(config.training_output, completed_events)
         print(f"training data written to: {config.training_output}")
-    if "legacy" in config.outputs:
+    if want_legacy:
         write_lightweight_training_rows(config.legacy_edge_output, completed_events)
         print(f"lightweight training data written to: {config.legacy_edge_output}")
     print("simulation done")
