@@ -125,6 +125,73 @@ for route_id, route_edges in EXPANDED_ROUTES:
     ROUTE_OPTIONS[route_id] = [(route_id, route_edges)]
 
 
+def build_vehicle_type_attributes(vehicle_type_id: str, lane_change_mode: str) -> dict:
+    attributes = {
+        "id": vehicle_type_id,
+        "accel": "2.6",
+        "decel": "4.5",
+        "sigma": "0.5",
+        "length": "5.0",
+        "minGap": "2.5",
+        "maxSpeed": "13.89",
+        "guiShape": "passenger",
+    }
+
+    if lane_change_mode == "no-change":
+        attributes.update(
+            {
+                "lcStrategic": "0",
+                "lcCooperative": "0",
+                "lcSpeedGain": "0",
+                "lcKeepRight": "0",
+                "lcSublane": "0",
+            }
+        )
+    elif lane_change_mode == "change":
+        attributes.update(
+            {
+                "lcStrategic": "1",
+                "lcCooperative": "1",
+                "lcSpeedGain": "1",
+                "lcKeepRight": "1",
+                "lcSublane": "1",
+            }
+        )
+    else:
+        raise ValueError(f"Unsupported lane_change_mode: {lane_change_mode}")
+
+    return attributes
+
+
+def build_vehicle_attributes(
+    lane_change_mode: str,
+    *,
+    vehicle_id: str,
+    vehicle_type_id: str,
+    route_id: str,
+    depart: float,
+    depart_lane: str,
+    depart_speed: str,
+    depart_pos: str,
+) -> dict:
+    attributes = {
+        "id": vehicle_id,
+        "type": vehicle_type_id,
+        "route": route_id,
+        "depart": f"{depart:.2f}",
+        "departLane": depart_lane,
+        "departSpeed": depart_speed,
+        "departPos": depart_pos,
+    }
+
+    if lane_change_mode == "no-change":
+        # Write laneChangeMode on each vehicle rather than the vType so this remains
+        # compatible with SUMO versions that do not accept laneChangeMode on <vType>.
+        attributes["laneChangeMode"] = "512"
+
+    return attributes
+
+
 def prettify_xml(elem: ET.Element) -> str:
     rough_string = ET.tostring(elem, encoding="utf-8")
     reparsed = minidom.parseString(rough_string)
@@ -205,24 +272,14 @@ def build_all_congestion_routes_xml(
     depart_lane="best",
     depart_speed="max",
     depart_pos="base",
+    lane_change_mode="no-change",
 ):
     root = ET.Element("routes")
 
     ET.SubElement(
         root,
         "vType",
-        id=vehicle_type_id,
-        accel="2.6",
-        decel="4.5",
-        sigma="0.5",
-        length="5.0",
-        minGap="2.5",
-        maxSpeed="13.89",
-        guiShape="passenger",
-        lcStrategic="1",
-        lcCooperative="0",
-        lcSpeedGain="0",
-        lcKeepRight="0",
+        **build_vehicle_type_attributes(vehicle_type_id, lane_change_mode),
     )
 
     for route_id, route_edges in EXPANDED_ROUTES:
@@ -281,13 +338,16 @@ def build_all_congestion_routes_xml(
         ET.SubElement(
             root,
             "vehicle",
-            id=vehicle["vehicle_id"],
-            type=vehicle_type_id,
-            route=vehicle["route_id"],
-            depart=f"{vehicle['depart']:.2f}",
-            departLane=depart_lane,
-            departSpeed=depart_speed,
-            departPos=depart_pos,
+            **build_vehicle_attributes(
+                lane_change_mode,
+                vehicle_id=vehicle["vehicle_id"],
+                vehicle_type_id=vehicle_type_id,
+                route_id=vehicle["route_id"],
+                depart=vehicle["depart"],
+                depart_lane=depart_lane,
+                depart_speed=depart_speed,
+                depart_pos=depart_pos,
+            ),
         )
 
     return root, manifest_rows, scenario_counts, vehicles
@@ -321,42 +381,34 @@ def build_routes_xml(
     depart_lane="best",
     depart_speed="max",
     depart_pos="base",
+    lane_change_mode="no-change",
 ):
     root = ET.Element("routes")
 
     ET.SubElement(
         root,
         "vType",
-        id=vehicle_type_id,
-        accel="2.6",
-        decel="4.5",
-        sigma="0.5",
-        length="5.0",
-        minGap="2.5",
-        maxSpeed="13.89",
-        guiShape="passenger",
-        lcStrategic="1",
-        lcCooperative="0",
-        lcSpeedGain="0",
-        lcKeepRight="0",
+        **build_vehicle_type_attributes(vehicle_type_id, lane_change_mode),
     )
 
     for route_id, route_edges in routes:
         ET.SubElement(root, "route", id=route_id, edges=route_edges)
-
     vehicle_idx = 0
     for depart in departures:
         for route_id, _ in routes:
             ET.SubElement(
                 root,
                 "vehicle",
-                id=f"veh_{vehicle_idx}",
-                type=vehicle_type_id,
-                route=route_id,
-                depart=f"{depart:.2f}",
-                departLane=depart_lane,
-                departSpeed=depart_speed,
-                departPos=depart_pos,
+                **build_vehicle_attributes(
+                    lane_change_mode,
+                    vehicle_id=f"veh_{vehicle_idx}",
+                    vehicle_type_id=vehicle_type_id,
+                    route_id=route_id,
+                    depart=depart,
+                    depart_lane=depart_lane,
+                    depart_speed=depart_speed,
+                    depart_pos=depart_pos,
+                ),
             )
             vehicle_idx += 1
 
@@ -408,6 +460,13 @@ def main():
         default="CORE",
         help="Choose a route group such as ORIGINAL, CORE, ALL, WEST_IN, NORTH_IN, EAST_IN, SOUTH_IN, SOUTHWEST_IN, or one specific route id.",
     )
+    parser.add_argument(
+        "--lane-change-mode",
+        type=str,
+        choices=["no-change", "change"],
+        default="no-change",
+        help="Control whether generated vehicles actively change lanes.",
+    )
     parser.add_argument("--depart-lane", type=str, default="best")
     parser.add_argument("--depart-speed", type=str, default="max")
     parser.add_argument("--depart-pos", type=str, default="base")
@@ -420,6 +479,7 @@ def main():
             depart_lane=args.depart_lane,
             depart_speed=args.depart_speed,
             depart_pos=args.depart_pos,
+            lane_change_mode=args.lane_change_mode,
         )
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(prettify_xml(root))
@@ -427,6 +487,7 @@ def main():
 
         print(f"Route file written to: {args.output}")
         print(f"Manifest file written to: {args.manifest_output}")
+        print(f"Lane change mode: {args.lane_change_mode}")
         print(f"Number of scenarios: {len(ALL_CONGESTION_SCENARIOS)}")
         print(f"Total vehicles: {len(vehicles)}")
         if vehicles:
@@ -454,12 +515,14 @@ def main():
         depart_lane=args.depart_lane,
         depart_speed=args.depart_speed,
         depart_pos=args.depart_pos,
+        lane_change_mode=args.lane_change_mode,
     )
 
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(prettify_xml(root))
 
     print(f"Route file written to: {args.output}")
+    print(f"Lane change mode: {args.lane_change_mode}")
     print(f"Route option: {args.route_option}")
     print(f"Number of selected routes: {len(selected_routes)}")
     print(f"Number of departure times: {len(departures)}")
