@@ -117,47 +117,7 @@ ALL_CONGESTION_SCENARIOS = [
         "route_option": "ALL",
         "mode": "period",
         "period": 10,
-    },
-    {
-        "scenario_name": "west_bottleneck",
-        "start_time": 90000,
-        "end_time": 99000,
-        "route_option": "WEST_IN",
-        "mode": "period",
-        "period": 8,
-    },
-    {
-        "scenario_name": "north_bottleneck",
-        "start_time": 102000,
-        "end_time": 111000,
-        "route_option": "NORTH_IN",
-        "mode": "period",
-        "period": 8,
-    },
-    {
-        "scenario_name": "east_bottleneck",
-        "start_time": 114000,
-        "end_time": 123000,
-        "route_option": "EAST_IN",
-        "mode": "period",
-        "period": 8,
-    },
-    {
-        "scenario_name": "south_bottleneck",
-        "start_time": 126000,
-        "end_time": 135000,
-        "route_option": "SOUTH_IN",
-        "mode": "period",
-        "period": 8,
-    },
-    {
-        "scenario_name": "southwest_bottleneck",
-        "start_time": 138000,
-        "end_time": 147000,
-        "route_option": "SOUTHWEST_IN",
-        "mode": "period",
-        "period": 8,
-    },
+    }
 ]
 
 # Also allow selecting one route by its route id.
