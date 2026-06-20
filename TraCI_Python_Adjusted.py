@@ -170,6 +170,7 @@ class CamsConfig:
     downstream_block_occupancy_threshold: float
     training_output: str
     low_speed_threshold: float
+    outputs: Set[str]
 
 
 @dataclass
@@ -252,6 +253,9 @@ class VehicleMovementEvent:
     speed_limit: Optional[float] = None
     road_flow: Optional[int] = None
     lane_flow: Optional[int] = None
+    entry_speed: Optional[float] = None
+    entry_is_low_speed: int = 0
+    entry_is_stopped: int = 0
     lane_capacity: Optional[float] = None
     lane_occupied_length: Optional[float] = None
     incoming_from_edge: str = ""
@@ -300,11 +304,47 @@ class MovementCycleSummary:
         return len(self.downstream_blocked_vehicle_ids)
 
 
+
+def normalize_outputs(outputs_arg: str) -> Set[str]:
+    """Normalize and validate the comma-separated CSV output selection."""
+
+    valid_outputs = {"legacy", "training", "events", "cycles", "all", "none"}
+    requested = {item.strip().lower() for item in outputs_arg.split(",") if item.strip()}
+    if not requested:
+        raise argparse.ArgumentTypeError("--outputs must contain at least one output name")
+
+    invalid = sorted(requested - valid_outputs)
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unsupported output(s): {', '.join(invalid)}. "
+            f"Choose from: {', '.join(sorted(valid_outputs))}"
+        )
+    if "none" in requested and len(requested) > 1:
+        raise argparse.ArgumentTypeError("--outputs none cannot be combined with other output names")
+    if "none" in requested:
+        return set()
+    if "all" in requested:
+        return {"legacy", "training", "events", "cycles"}
+    return requested
+
 def parse_args() -> CamsConfig:
     """Parse command-line parameters for CAMS data extraction."""
 
     parser = argparse.ArgumentParser(
-        description="Collect signal-aware SUMO ground truth for CAMS validation."
+        description="Collect signal-aware SUMO ground truth for CAMS validation.",
+        epilog=(
+            "Examples:\n"
+            "  # Lightweight training table only\n"
+            "  python3 TraCI_Python_Adjusted.py --sumo-config full.sumocfg "
+            "--net-file test_fixed.net.xml --sumo-binary sumo --outputs legacy\n"
+            "  # Lightweight table + full training table\n"
+            "  python3 TraCI_Python_Adjusted.py --sumo-config full.sumocfg "
+            "--net-file test_fixed.net.xml --sumo-binary sumo --outputs legacy,training\n"
+            "  # All debug outputs\n"
+            "  python3 TraCI_Python_Adjusted.py --sumo-config full.sumocfg "
+            "--net-file test_fixed.net.xml --sumo-binary sumo --outputs all"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--sumo-config", default="map.sumo.cfg", help="SUMO cfg file.")
     parser.add_argument("--net-file", default="test.net.xml", help="SUMO network file.")
@@ -312,17 +352,17 @@ def parse_args() -> CamsConfig:
     parser.add_argument(
         "--vehicle-event-output",
         default="cams_vehicle_movement_events.csv",
-        help="Output CSV for vehicle-movement ground-truth events.",
+        help="Debug/validation CSV for vehicle-movement ground-truth events (enabled by --outputs events/all).",
     )
     parser.add_argument(
         "--cycle-summary-output",
         default="cams_movement_cycle_summary.csv",
-        help="Output CSV for movement-level green-window summaries.",
+        help="Debug/validation CSV for movement-level green-window summaries (enabled by --outputs cycles/all).",
     )
     parser.add_argument(
         "--legacy-edge-output",
         default="TraCI_output_adjusted.csv",
-        help="Compatibility output containing a compact vehicle-edge summary.",
+        help="Lightweight model-training input CSV (enabled by --outputs legacy/all).",
     )
     parser.add_argument(
         "--waiting-region-length",
@@ -355,13 +395,24 @@ def parse_args() -> CamsConfig:
     parser.add_argument(
         "--training-output",
         default="cams_model_training_data.csv",
-        help="Output CSV for CAMS road-level model training rows.",
+        help="Fuller debug/training-compatible CSV (enabled by --outputs training/all).",
     )
     parser.add_argument(
         "--low-speed-threshold",
         type=float,
         default=2.0,
         help="Speed <= this value and > stop threshold is counted as low-speed time, in m/s.",
+    )
+    parser.add_argument(
+        "--outputs",
+        default="legacy",
+        type=normalize_outputs,
+        help=(
+            "Comma-separated CSV outputs to write. Supported values: legacy "
+            "(TraCI_output_adjusted.csv lightweight training input), training "
+            "(cams_model_training_data.csv full debug/training-compatible output), "
+            "events, cycles, all, none. Default: legacy."
+        ),
     )
     args = parser.parse_args()
     return CamsConfig(
@@ -377,6 +428,7 @@ def parse_args() -> CamsConfig:
         downstream_block_occupancy_threshold=args.downstream_block_occupancy_threshold,
         training_output=args.training_output,
         low_speed_threshold=args.low_speed_threshold,
+        outputs=args.outputs,
     )
 
 
@@ -469,6 +521,7 @@ def sample_training_features(
     snapshot: VehicleSnapshot,
     network_info: NetworkInfo,
     previous_release_waiting: Dict[str, Tuple[int, float]],
+    config: CamsConfig,
 ) -> None:
     """Sample road-model features immediately when an event starts."""
 
@@ -490,6 +543,9 @@ def sample_training_features(
     event.speed_limit = network_info.edge_speed_limits.get(snapshot.from_edge, 0.0)
     event.road_flow = road_flow.get(snapshot.from_edge, 0)
     event.lane_flow = selected_lane_flow or 0
+    event.entry_speed = snapshot.speed
+    event.entry_is_low_speed = int(config.stop_speed_threshold < snapshot.speed <= config.low_speed_threshold)
+    event.entry_is_stopped = int(snapshot.speed <= config.stop_speed_threshold)
     event.lane_capacity = lane_length / max(snapshot.vehicle_length + min_gap, 0.1) if lane_length > 0 else 0.0
     event.lane_occupied_length = occupied_length
     event.vehicle_min_gap = min_gap
@@ -647,6 +703,7 @@ def make_vehicle_event(
     current_time: float,
     network_info: NetworkInfo,
     previous_release_waiting: Dict[str, Tuple[int, float]],
+    config: CamsConfig,
 ) -> VehicleMovementEvent:
     """Create a new vehicle-movement event when a vehicle enters an edge."""
 
@@ -666,7 +723,7 @@ def make_vehicle_event(
         vehicle_min_gap=snapshot.vehicle_min_gap,
         last_update_time=current_time,
     )
-    sample_training_features(event, snapshot, network_info, previous_release_waiting)
+    sample_training_features(event, snapshot, network_info, previous_release_waiting, config)
     return event
 
 
@@ -892,6 +949,62 @@ def write_vehicle_events(
 
 
 
+def write_lightweight_training_rows(output_path: str, completed_events: List[VehicleMovementEvent]) -> None:
+    """Write TraCI_output_adjusted.csv as the lightweight model-training input.
+
+    This table intentionally contains only the columns required by the model
+    training script. Keep fuller debug/training-compatible columns in
+    cams_model_training_data.csv, and use the movement/cycle CSVs for
+    debugging and validation.
+    """
+
+    fieldnames = [
+        "Vehicle_ID", "Edge_ID", "Route_Index", "To_Edge", "TLS_ID", "Link_Index",
+        "Time", "Edge_Enter_Time", "Edge_Leave_Time",
+        "E_Length", "Speed_Net", "Lanes_Net",
+        "Driving_Num", "lane_flow", "entry_speed", "entry_is_low_speed", "entry_is_stopped",
+        "Turn", "turn_type",
+        "Wait_Time", "Travel_Time", "Delay_Time", "LowSpee_Time", "Wait_Sum",
+        "travel_time_label",
+    ]
+    with open(output_path, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for event in completed_events:
+            if event.downstream_enter_time is None:
+                continue
+            wait_time = event.red_wait_time
+            delay_time = event.green_queue_wait_time + event.downstream_block_wait_time
+            low_speed_time = event.low_speed_time
+            travel_time = event.driving_time
+            writer.writerow({
+                "Vehicle_ID": event.vehicle_id,
+                "Edge_ID": event.from_edge,
+                "Route_Index": event.route_index,
+                "To_Edge": event.to_edge,
+                "TLS_ID": event.tls_id,
+                "Link_Index": event.link_index,
+                "Time": round(event.edge_enter_time, 2),
+                "Edge_Enter_Time": round(event.edge_enter_time, 2),
+                "Edge_Leave_Time": round(event.downstream_enter_time, 2),
+                "E_Length": round(event.road_length or 0.0, 4),
+                "Speed_Net": round(event.speed_limit or 0.0, 4),
+                "Lanes_Net": event.lane_num if event.lane_num is not None else 0,
+                "Driving_Num": event.road_flow if event.road_flow is not None else 0,
+                "lane_flow": event.lane_flow if event.lane_flow is not None else 0,
+                "entry_speed": round(event.entry_speed or 0.0, 4),
+                "entry_is_low_speed": event.entry_is_low_speed,
+                "entry_is_stopped": event.entry_is_stopped,
+                "Turn": event.turn_direction,
+                "turn_type": encode_turn_direction(event.turn_direction),
+                "Wait_Time": round(wait_time, 4),
+                "Travel_Time": round(travel_time, 4),
+                "Delay_Time": round(delay_time, 4),
+                "LowSpee_Time": round(low_speed_time, 4),
+                "Wait_Sum": round(wait_time + delay_time + low_speed_time, 4),
+                "travel_time_label": round(travel_time + low_speed_time, 4),
+            })
+
 def write_training_rows(output_path: str, completed_events: List[VehicleMovementEvent]) -> None:
     """Write CAMS BasicRoadModelFeatures-compatible training rows."""
 
@@ -1021,145 +1134,107 @@ def main():
     previous_vehicle_edges: Dict[str, str] = {}
     previous_release_waiting: Dict[str, Tuple[int, float]] = {}
 
-    # Compact compatibility table: one row per completed signalized movement.
-    # It is intentionally smaller than the old table; the detailed CAMS fields
-    # are stored in cams_vehicle_movement_events.csv.
-    legacy_fieldnames = [
-        "Vehicle_ID",
-        "Edge_ID",
-        "Route_Index",
-        "To_Edge",
-        "TLS_ID",
-        "Link_Index",
-        "Edge_Enter_Time",
-        "Edge_Leave_Time",
-        "Travel_Time",
-        "Signal_Wait_Time",
-        "Cycles_Waited",
-    ]
+    # CSV outputs are selected by --outputs. TraCI_output_adjusted.csv is the
+    # lightweight model-training input, cams_model_training_data.csv is the
+    # fuller debug/training-compatible output, and movement/cycle files are
+    # debugging and validation outputs.
+    while traci.simulation.getMinExpectedNumber() > 0:
+        traci.simulationStep()
+        current_time = traci.simulation.getTime()
+        vehicle_ids = set(traci.vehicle.getIDList())
 
-    with open(config.legacy_edge_output, mode="w", newline="", encoding="utf-8") as legacy_file:
-        legacy_writer = csv.DictWriter(legacy_file, fieldnames=legacy_fieldnames)
-        legacy_writer.writeheader()
+        # First, close events whose vehicles have left the simulation. This
+        # avoids losing the last edge when a vehicle reaches its destination.
+        for vehicle_id in list(active_events.keys()):
+            if vehicle_id not in vehicle_ids:
+                event = active_events.pop(vehicle_id)
+                release_waiting_duration = event.red_wait_time + event.green_queue_wait_time + event.downstream_block_wait_time
+                previous_release_waiting[vehicle_id] = (1 if release_waiting_duration > 0 else 0, release_waiting_duration)
+                finalize_event(event, current_time, completed_events)
 
-        while traci.simulation.getMinExpectedNumber() > 0:
-            traci.simulationStep()
-            current_time = traci.simulation.getTime()
-            vehicle_ids = set(traci.vehicle.getIDList())
+        snapshots: Dict[str, VehicleSnapshot] = {}
+        for vehicle_id in vehicle_ids:
+            snapshot = get_vehicle_snapshot(vehicle_id, network_info)
+            if snapshot is not None:
+                snapshots[vehicle_id] = snapshot
 
-            # First, close events whose vehicles have left the simulation. This
-            # avoids losing the last edge when a vehicle reaches its destination.
-            for vehicle_id in list(active_events.keys()):
-                if vehicle_id not in vehicle_ids:
-                    event = active_events.pop(vehicle_id)
-                    release_waiting_duration = event.red_wait_time + event.green_queue_wait_time + event.downstream_block_wait_time
-                    previous_release_waiting[vehicle_id] = (1 if release_waiting_duration > 0 else 0, release_waiting_duration)
-                    finalize_event(event, current_time, completed_events)
+        queue_counts = compute_queue_counts(snapshots, config)
 
-            snapshots: Dict[str, VehicleSnapshot] = {}
-            for vehicle_id in vehicle_ids:
-                snapshot = get_vehicle_snapshot(vehicle_id, network_info)
-                if snapshot is not None:
-                    snapshots[vehicle_id] = snapshot
+        # Update signal-cycle states before vehicle discharge is counted.
+        # A green wave is movement-specific: same traffic light, but a
+        # different link_index means a different controlled movement.
+        update_cycle_states(
+            snapshots=snapshots,
+            active_events=active_events,
+            queue_counts=queue_counts,
+            previous_green_states=previous_green_states,
+            cycle_counters=cycle_counters,
+            active_cycles=active_cycles,
+            completed_cycles=completed_cycles,
+            config=config,
+            current_time=current_time,
+        )
 
-            queue_counts = compute_queue_counts(snapshots, config)
+        for vehicle_id in vehicle_ids:
+            current_edge = traci.vehicle.getRoadID(vehicle_id)
+            previous_edge = previous_vehicle_edges.get(vehicle_id)
 
-            # Update signal-cycle states before vehicle discharge is counted.
-            # A green wave is movement-specific: same traffic light, but a
-            # different link_index means a different controlled movement.
-            update_cycle_states(
-                snapshots=snapshots,
-                active_events=active_events,
-                queue_counts=queue_counts,
-                previous_green_states=previous_green_states,
-                cycle_counters=cycle_counters,
-                active_cycles=active_cycles,
-                completed_cycles=completed_cycles,
-                config=config,
-                current_time=current_time,
-            )
-
-            for vehicle_id in vehicle_ids:
-                current_edge = traci.vehicle.getRoadID(vehicle_id)
-                previous_edge = previous_vehicle_edges.get(vehicle_id)
-
-                # If the vehicle has moved from from_edge to an internal lane
-                # such as :J21_12_0, it has crossed the stop line. If it moved
-                # directly to to_edge, both stop-line passing and downstream
-                # entry happen at this simulation step.
-                if vehicle_id in active_events and previous_edge != current_edge:
-                    event = active_events[vehicle_id]
-                    if current_edge.startswith(":") and event.pass_stopline_time is None:
+            # If the vehicle has moved from from_edge to an internal lane
+            # such as :J21_12_0, it has crossed the stop line. If it moved
+            # directly to to_edge, both stop-line passing and downstream
+            # entry happen at this simulation step.
+            if vehicle_id in active_events and previous_edge != current_edge:
+                event = active_events[vehicle_id]
+                if current_edge.startswith(":") and event.pass_stopline_time is None:
+                    event.pass_stopline_time = current_time
+                    active_cycle = active_cycles.get((event.tls_id, event.link_index))
+                    if active_cycle is not None:
+                        active_cycle.discharged_in_green += 1
+                        event.pass_cycle_id = active_cycle.cycle_id
+                elif current_edge == event.to_edge:
+                    if event.pass_stopline_time is None:
                         event.pass_stopline_time = current_time
                         active_cycle = active_cycles.get((event.tls_id, event.link_index))
                         if active_cycle is not None:
                             active_cycle.discharged_in_green += 1
                             event.pass_cycle_id = active_cycle.cycle_id
-                    elif current_edge == event.to_edge:
-                        if event.pass_stopline_time is None:
-                            event.pass_stopline_time = current_time
-                            active_cycle = active_cycles.get((event.tls_id, event.link_index))
-                            if active_cycle is not None:
-                                active_cycle.discharged_in_green += 1
-                                event.pass_cycle_id = active_cycle.cycle_id
-                        event.downstream_enter_time = current_time
-                        release_waiting_duration = event.red_wait_time + event.green_queue_wait_time + event.downstream_block_wait_time
-                        previous_release_waiting[vehicle_id] = (1 if release_waiting_duration > 0 else 0, release_waiting_duration)
-                        finalize_event(active_events.pop(vehicle_id), current_time, completed_events)
+                    event.downstream_enter_time = current_time
+                    release_waiting_duration = event.red_wait_time + event.green_queue_wait_time + event.downstream_block_wait_time
+                    previous_release_waiting[vehicle_id] = (1 if release_waiting_duration > 0 else 0, release_waiting_duration)
+                    finalize_event(active_events.pop(vehicle_id), current_time, completed_events)
 
-                        signal_wait_time = (
-                            event.pass_stopline_time - event.waiting_region_enter_time
-                            if event.waiting_region_enter_time is not None
-                            else 0.0
-                        )
-                        legacy_writer.writerow(
-                            {
-                                "Vehicle_ID": event.vehicle_id,
-                                "Edge_ID": event.from_edge,
-                                "Route_Index": event.route_index,
-                                "To_Edge": event.to_edge,
-                                "TLS_ID": event.tls_id,
-                                "Link_Index": event.link_index,
-                                "Edge_Enter_Time": round(event.edge_enter_time, 2),
-                                "Edge_Leave_Time": round(event.downstream_enter_time, 2),
-                                "Travel_Time": round(event.downstream_enter_time - event.edge_enter_time, 2),
-                                "Signal_Wait_Time": round(signal_wait_time, 2),
-                                "Cycles_Waited": event.cycles_waited,
-                            }
-                        )
 
-                previous_vehicle_edges[vehicle_id] = current_edge
+            previous_vehicle_edges[vehicle_id] = current_edge
 
-            for vehicle_id, snapshot in snapshots.items():
-                if vehicle_id not in active_events:
-                    active_events[vehicle_id] = make_vehicle_event(snapshot, current_time, network_info, previous_release_waiting)
+        for vehicle_id, snapshot in snapshots.items():
+            if vehicle_id not in active_events:
+                active_events[vehicle_id] = make_vehicle_event(snapshot, current_time, network_info, previous_release_waiting, config)
 
-                event = active_events[vehicle_id]
-                update_waiting_region_entry(
-                    event=event,
-                    snapshot=snapshot,
-                    snapshots=snapshots,
-                    active_cycles=active_cycles,
-                    config=config,
-                    current_time=current_time,
-                )
-                accumulate_waiting_time(
-                    event=event,
-                    snapshot=snapshot,
-                    config=config,
-                    current_time=current_time,
-                )
+            event = active_events[vehicle_id]
+            update_waiting_region_entry(
+                event=event,
+                snapshot=snapshot,
+                snapshots=snapshots,
+                active_cycles=active_cycles,
+                config=config,
+                current_time=current_time,
+            )
+            accumulate_waiting_time(
+                event=event,
+                snapshot=snapshot,
+                config=config,
+                current_time=current_time,
+            )
 
-                active_cycle = active_cycles.get((event.tls_id, event.link_index))
-                if (
-                    active_cycle is not None
-                    and event.waiting_region_enter_time is not None
-                    and event.pass_stopline_time is None
-                    and snapshot.downstream_occupancy >= config.downstream_block_occupancy_threshold
-                    and is_green_state(snapshot.signal_state)
-                ):
-                    active_cycle.downstream_blocked_vehicle_ids.add(vehicle_id)
-
+            active_cycle = active_cycles.get((event.tls_id, event.link_index))
+            if (
+                active_cycle is not None
+                and event.waiting_region_enter_time is not None
+                and event.pass_stopline_time is None
+                and snapshot.downstream_occupancy >= config.downstream_block_occupancy_threshold
+                and is_green_state(snapshot.signal_state)
+            ):
+                active_cycle.downstream_blocked_vehicle_ids.add(vehicle_id)
     current_time = traci.simulation.getTime()
     for event in list(active_events.values()):
         finalize_event(event, current_time, completed_events)
@@ -1174,14 +1249,18 @@ def main():
         (cycle.tls_id, cycle.link_index, cycle.cycle_id): cycle
         for cycle in completed_cycles
     }
-    write_vehicle_events(config.vehicle_event_output, completed_events, cycle_lookup)
-    write_cycle_summaries(config.cycle_summary_output, completed_cycles)
-    write_training_rows(config.training_output, completed_events)
-
-    print(f"vehicle movement events written to: {config.vehicle_event_output}")
-    print(f"movement cycle summaries written to: {config.cycle_summary_output}")
-    print(f"training data written to: {config.training_output}")
-    print(f"legacy edge summary written to: {config.legacy_edge_output}")
+    if "events" in config.outputs:
+        write_vehicle_events(config.vehicle_event_output, completed_events, cycle_lookup)
+        print(f"vehicle movement events written to: {config.vehicle_event_output}")
+    if "cycles" in config.outputs:
+        write_cycle_summaries(config.cycle_summary_output, completed_cycles)
+        print(f"movement cycle summaries written to: {config.cycle_summary_output}")
+    if "training" in config.outputs:
+        write_training_rows(config.training_output, completed_events)
+        print(f"training data written to: {config.training_output}")
+    if "legacy" in config.outputs:
+        write_lightweight_training_rows(config.legacy_edge_output, completed_events)
+        print(f"lightweight training data written to: {config.legacy_edge_output}")
     print("simulation done")
 
 if __name__ == '__main__':
