@@ -117,7 +117,7 @@ ALL_CONGESTION_SCENARIOS = [
         "route_option": "ALL",
         "mode": "period",
         "period": 10,
-    }
+    },
 ]
 
 # Also allow selecting one route by its route id.
@@ -219,6 +219,10 @@ def build_all_congestion_routes_xml(
         minGap="2.5",
         maxSpeed="13.89",
         guiShape="passenger",
+        lcStrategic="1",
+        lcCooperative="0",
+        lcSpeedGain="0",
+        lcKeepRight="0",
     )
 
     for route_id, route_edges in EXPANDED_ROUTES:
@@ -331,6 +335,10 @@ def build_routes_xml(
         minGap="2.5",
         maxSpeed="13.89",
         guiShape="passenger",
+        lcStrategic="1",
+        lcCooperative="0",
+        lcSpeedGain="0",
+        lcKeepRight="0",
     )
 
     for route_id, route_edges in routes:
