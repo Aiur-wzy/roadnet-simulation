@@ -140,7 +140,7 @@ def build_vehicle_type_attributes(vehicle_type_id: str, lane_change_mode: str) -
     if lane_change_mode == "no-change":
         attributes.update(
             {
-                "lcStrategic": "0",
+                "lcStrategic": "1",
                 "lcCooperative": "0",
                 "lcSpeedGain": "0",
                 "lcKeepRight": "0",
@@ -187,7 +187,10 @@ def build_vehicle_attributes(
     if lane_change_mode == "no-change":
         # Write laneChangeMode on each vehicle rather than the vType so this remains
         # compatible with SUMO versions that do not accept laneChangeMode on <vType>.
-        attributes["laneChangeMode"] = "512"
+        # 513 = 512 + 1: keep SUMO safety-gap enforcement while allowing
+        # strategic lane changes required to follow the route, and disable
+        # non-essential autonomous lane changes.
+        attributes["laneChangeMode"] = "513"
 
     return attributes
 
@@ -465,7 +468,7 @@ def main():
         type=str,
         choices=["no-change", "change"],
         default="no-change",
-        help="Control whether generated vehicles actively change lanes.",
+        help="Control lane changes: no-change = allow route-required lane changes only; change = enable all lane-changing behaviors.",
     )
     parser.add_argument("--depart-lane", type=str, default="best")
     parser.add_argument("--depart-speed", type=str, default="max")
