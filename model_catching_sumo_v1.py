@@ -24,13 +24,10 @@ Default usage:
         --max_road_flow 200
 
 Important:
-- turn_type is encoded with sklearn LabelEncoder, exactly like the training
-  script. A mapping file is exported so the simulator can use the same integer
-  codes.
-- lane_flow is computed as road_flow / Lanes_Net in the training script. The
-  default catching mode therefore derives lane_flow from unique lane counts in
-  the training CSV. Use --lane_flow_mode independent only if your simulator
-  passes lane_flow as an independently discretized lookup dimension.
+- turn_type is read directly from the numeric CSV column using the fixed
+  SUMO/C++ encoding.
+- lane_flow is read directly from the CSV and enumerated as an independent
+  selected-lane vehicle count constrained to lane_flow <= road_flow.
 """
 
 import argparse
@@ -41,7 +38,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 from autogluon.tabular import TabularPredictor
 
 warnings.filterwarnings("ignore", message="load_learner` uses Python's insecure pickle module")
@@ -65,64 +61,58 @@ def positive_float(value):
     return out
 
 
+SLIM_COLS = FEATURE_COLS + ["travel_time_label"]
+TURN_TYPE_MAP = {"l": 1, "L": 1, "s": 2, "r": 3, "R": 3, "t": 4}
+
+
+def _encode_legacy_turn(value) -> int:
+    if pd.isna(value):
+        return 0
+    return TURN_TYPE_MAP.get(str(value), 0)
+
+
 def load_training_like_frame(csv_path):
-    """
-    Rebuild the same base feature frame used by model_training_sumo_v1.py.
+    """Load the same slim base feature frame used by model_training_sumo_v1.py."""
+    columns = set(pd.read_csv(csv_path, nrows=0).columns)
+    if set(SLIM_COLS).issubset(columns):
+        print("[INFO] detected slim/full CAMS training schema for catching")
+        df = pd.read_csv(csv_path, usecols=SLIM_COLS)
+    else:
+        legacy_required = {"E_Length", "Driving_Num", "Turn", "Travel_Time", "LowSpee_Time", "lane_flow"}
+        missing = sorted(legacy_required - columns)
+        if missing:
+            raise ValueError(f"Missing required slim columns in {csv_path}: {SLIM_COLS}; legacy fallback missing: {missing}")
+        print("[WARN] detected older legacy TraCI schema; using compatibility conversion")
+        usecols = [c for c in legacy_required | {"turn_type", "has_waiting", "Wait_Time", "travel_time_label"} if c in columns]
+        raw = pd.read_csv(csv_path, usecols=usecols)
+        df = pd.DataFrame()
+        df["has_waiting"] = raw["has_waiting"] if "has_waiting" in raw.columns else ((raw["Wait_Time"].fillna(0).astype(float) > 0).astype(int) if "Wait_Time" in raw.columns else 0)
+        df["road_length"] = raw["E_Length"].astype(float)
+        df["turn_type"] = raw["turn_type"] if "turn_type" in raw.columns else raw["Turn"].map(_encode_legacy_turn)
+        df["road_flow"] = raw["Driving_Num"].astype(float)
+        df["lane_flow"] = raw["lane_flow"].astype(float)
+        df["travel_time_label"] = raw["travel_time_label"] if "travel_time_label" in raw.columns else raw["Travel_Time"].fillna(0).astype(float) + raw["LowSpee_Time"].fillna(0).astype(float)
 
-    This intentionally mirrors the training logic:
-      road_length = E_Length
-      road_flow = Driving_Num
-      lane_flow = road_flow / Lanes_Net
-      turn_type = LabelEncoder(Turn)
-      has_waiting = Wait_Time > 0
-      label = Travel_Time + Delay_Time + LowSpee_Time
-      q99 outlier removal on label
-    """
-    raw = pd.read_csv(csv_path)
+    df = df.dropna(subset=SLIM_COLS).copy()
+    df["has_waiting"] = df["has_waiting"].fillna(0).astype(int).astype("category")
+    df["road_length"] = df["road_length"].astype(float)
+    df["turn_type"] = df["turn_type"].fillna(0).astype(int)
+    df["road_flow"] = df["road_flow"].fillna(0).astype(float)
+    df["lane_flow"] = df["lane_flow"].fillna(0).astype(float)
+    df[LABEL_COL] = df["travel_time_label"].astype(float)
 
-    must = [
-        "Edge_ID",
-        "Time",
-        "E_Length",
-        "Turn",
-        "Driving_Num",
-        "Wait_Time",
-        "Travel_Time",
-        "Delay_Time",
-        "LowSpee_Time",
-        "Lanes_Net",
-    ]
-    missing = [c for c in must if c not in raw.columns]
-    if missing:
-        raise ValueError(f"Missing required columns in {csv_path}: {missing}")
-
-    df = raw.dropna(subset=["Edge_ID", "Time", "E_Length", "Turn", "Driving_Num", "Lanes_Net"]).copy()
-
-    df["road_length"] = df["E_Length"].astype(float)
-    df["road_flow"] = df["Driving_Num"].astype(float)
-    df["lane_count"] = df["Lanes_Net"].astype(float)
-    df["lane_flow"] = df["road_flow"] / (df["lane_count"] + EPS)
-
-    le = LabelEncoder()
-    df["turn_type"] = le.fit_transform(df["Turn"].astype(str))
-    turn_mapping = {str(cls): int(code) for code, cls in enumerate(le.classes_)}
-
-    df["Wait_Time"] = df["Wait_Time"].fillna(0).astype(float)
-    df["Travel_Time"] = df["Travel_Time"].fillna(0).astype(float)
-    df["Delay_Time"] = df["Delay_Time"].fillna(0).astype(float)
-    df["LowSpee_Time"] = df["LowSpee_Time"].fillna(0).astype(float)
-
-    df["has_waiting"] = (df["Wait_Time"] > 0).astype("category")
-    df[LABEL_COL] = df["Travel_Time"] + df["Delay_Time"] + df["LowSpee_Time"]
-
-    if (df[LABEL_COL] < 0).any():
-        raise ValueError(f"{LABEL_COL} has negative values; please check the input CSV.")
+    invalid = (df[LABEL_COL] <= 0) | (df["road_length"] <= 0) | (df["road_flow"] < 0) | (df["lane_flow"] < 0)
+    if invalid.any():
+        print(f"[INFO] dropped invalid rows before catching enumeration: {int(invalid.sum())}")
+        df = df.loc[~invalid].copy()
 
     q99 = df[LABEL_COL].quantile(0.99)
+    before = len(df)
     df = df[df[LABEL_COL] <= q99].reset_index(drop=True)
+    print(f"[INFO] q99 threshold: {q99}; rows removed: {before - len(df)}")
 
-    return df, turn_mapping
-
+    turn_mapping = {"unknown/end/missing": 0, "l/L": 1, "s": 2, "r/R": 3, "t": 4}
+    return df[FEATURE_COLS + [LABEL_COL]], turn_mapping
 
 def float_range(start, stop, step, precision):
     """Inclusive floating-point range with stable rounding."""
@@ -174,9 +164,7 @@ def iter_cases(
     road_lengths,
     turn_types,
     road_flow_values,
-    lane_counts,
     lane_flow_values,
-    lane_flow_mode,
     precision,
 ):
     has_waiting_values = [False, True]
@@ -185,17 +173,7 @@ def iter_cases(
         for turn_type in turn_types:
             for has_waiting in has_waiting_values:
                 for road_flow in road_flow_values:
-                    if lane_flow_mode == "derived":
-                        current_lane_flows = sorted(
-                            {
-                                round(float(road_flow) / (float(lc) + EPS), precision)
-                                for lc in lane_counts
-                                if float(lc) > 0
-                            }
-                        )
-                    else:
-                        current_lane_flows = lane_flow_values
-
+                    current_lane_flows = [lf for lf in lane_flow_values if float(lf) <= float(road_flow)]
                     for lane_flow in current_lane_flows:
                         yield {
                             "has_waiting": bool(has_waiting),
@@ -248,37 +226,29 @@ def build_cache_table(args):
 
     road_lengths = sorted(float(x) for x in df["road_length"].dropna().unique())
     turn_types = sorted(int(x) for x in df["turn_type"].dropna().unique())
-    lane_counts = sorted(float(x) for x in df["lane_count"].dropna().unique() if float(x) > 0)
-
     if args.max_road_flow is None:
         max_road_flow = int(math.ceil(float(df["road_flow"].max())))
     else:
         max_road_flow = args.max_road_flow
     road_flow_values = list(range(0, max_road_flow + 1, args.road_flow_step))
 
-    if args.lane_flow_mode == "independent":
-        max_lane_flow = args.max_lane_flow
-        if max_lane_flow is None:
-            max_lane_flow = float(max_road_flow)
-        lane_flow_values = float_range(0.0, float(max_lane_flow), args.lane_flow_step, args.precision)
-    else:
-        lane_flow_values = []
+    max_lane_flow = args.max_lane_flow
+    if max_lane_flow is None:
+        max_lane_flow = float(max_road_flow)
+    lane_flow_values = float_range(0.0, float(max_lane_flow), args.lane_flow_step, args.precision)
 
     print("[INFO] table dimensions:")
     print(f"       road_length values = {len(road_lengths)}")
     print(f"       turn_type values   = {turn_types}")
     print(f"       has_waiting values = [false, true]")
     print(f"       road_flow values   = 0..{max_road_flow} step {args.road_flow_step}")
-    if args.lane_flow_mode == "derived":
-        print(f"       lane_flow mode     = derived from lane counts {lane_counts}")
-    else:
-        print(f"       lane_flow mode     = independent, 0..{args.max_lane_flow or max_road_flow} step {args.lane_flow_step}")
+    print(f"       lane_flow mode     = independent selected-lane count, 0..min({args.max_lane_flow or max_road_flow}, road_flow) step {args.lane_flow_step}")
 
     predictor = TabularPredictor.load(args.model_path)
     predictor_features = get_predictor_features(predictor)
     validate_model_features(predictor_features)
     predictor_features = [c for c in FEATURE_COLS if c in predictor_features]
-    output_columns = predictor_features + [LABEL_COL]
+    output_columns = FEATURE_COLS + [LABEL_COL]
 
     txt_path = Path(args.output_txt)
     csv_path = Path(args.output_csv) if args.output_csv else None
@@ -291,9 +261,7 @@ def build_cache_table(args):
         road_lengths=road_lengths,
         turn_types=turn_types,
         road_flow_values=road_flow_values,
-        lane_counts=lane_counts,
         lane_flow_values=lane_flow_values,
-        lane_flow_mode=args.lane_flow_mode,
         precision=args.precision,
     )
 
@@ -309,7 +277,7 @@ def build_cache_table(args):
         if args.clip_min is not None:
             preds = preds.clip(lower=float(args.clip_min))
 
-        out_df = cases_df[predictor_features].copy()
+        out_df = cases_df[FEATURE_COLS].copy()
         out_df[LABEL_COL] = preds.to_numpy()
 
         append_txt_rows(txt_path, out_df, output_columns)
@@ -337,16 +305,10 @@ def build_argparser():
     p.add_argument("--max_road_flow", type=int, default=200, help="Maximum road_flow to enumerate; use -1 to infer from CSV max")
     p.add_argument("--road_flow_step", type=positive_int, default=1, help="road_flow enumeration step")
 
-    p.add_argument(
-        "--lane_flow_mode",
-        choices=["derived", "independent"],
-        default="derived",
-        help="derived: lane_flow=road_flow/Lanes_Net; independent: enumerate lane_flow directly",
-    )
-    p.add_argument("--max_lane_flow", type=float, default=None, help="Maximum lane_flow for independent mode; default=max_road_flow")
+    p.add_argument("--max_lane_flow", type=float, default=None, help="Maximum selected-lane lane_flow to enumerate; default=max_road_flow")
     p.add_argument("--lane_flow_step", type=positive_float, default=1.0, help="lane_flow step for independent mode")
 
-    p.add_argument("--precision", type=int, default=6, help="Decimal precision for derived lane_flow values")
+    p.add_argument("--precision", type=int, default=6, help="Decimal precision for lane_flow values")
     p.add_argument("--chunk_size", type=positive_int, default=200000, help="Prediction batch size")
     p.add_argument("--clip_min", type=float, default=0.0, help="Clip predicted travel_time_no_waiting lower bound; set to nan to disable")
     return p

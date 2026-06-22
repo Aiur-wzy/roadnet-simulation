@@ -413,7 +413,7 @@ def parse_args() -> CamsConfig:
         type=normalize_outputs,
         help=(
             "Comma-separated CSV outputs to write. Supported values: legacy "
-            "(TraCI_output_adjusted.csv lightweight training input), training "
+            "(TraCI_output_adjusted.csv slim model-training table), training "
             "(cams_model_training_data.csv full debug/training-compatible output), "
             "events, cycles, all, none. Default: legacy."
         ),
@@ -960,70 +960,45 @@ def write_vehicle_events(
 
 
 
-def write_lightweight_training_rows(output_path: str, completed_events: List[VehicleMovementEvent]) -> None:
-    """Write TraCI_output_adjusted.csv as the lightweight model-training input.
+def write_lightweight_training_rows(output_path: str, completed_events: List[VehicleMovementEvent]) -> int:
+    """Write TraCI_output_adjusted.csv as the slim model-training table.
 
-    This table intentionally contains only the columns required by the model
-    training script. Keep fuller debug/training-compatible columns in
-    cams_model_training_data.csv, and use the movement/cycle CSVs for
-    debugging and validation.
+    This is a minimal projection of the same VehicleMovementEvent feature and
+    label semantics used by write_training_rows(). Keep fuller debug/training
+    columns in cams_model_training_data.csv, and use the movement/cycle CSVs
+    for debugging and validation.
     """
 
     fieldnames = [
-        "Vehicle_ID", "Edge_ID", "Route_Index", "To_Edge", "TLS_ID", "Link_Index",
-        "Time", "Edge_Enter_Time", "Edge_Leave_Time",
-        "E_Length", "Speed_Net", "Lanes_Net",
-        "Driving_Num", "lane_flow", "entry_speed", "entry_is_low_speed", "entry_is_stopped",
-        "Turn", "turn_type",
-        "Wait_Time", "Travel_Time", "Delay_Time", "LowSpee_Time", "Wait_Sum",
+        "has_waiting",
+        "road_length",
+        "turn_type",
+        "road_flow",
+        "lane_flow",
         "travel_time_label",
     ]
+    row_count = 0
     with open(output_path, mode="w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         for event in completed_events:
-            wait_time = event.red_wait_time
-            delay_time = event.green_queue_wait_time + event.downstream_block_wait_time
-            low_speed_time = event.low_speed_time
-            travel_time = event.driving_time
-            travel_time_label = travel_time + low_speed_time
-
-            if travel_time_label <= 0:
+            travel_time_label = event.driving_time + event.low_speed_time
+            if travel_time_label <= 0 or not event.road_length or event.road_length <= 0 or not event.from_edge:
                 continue
-            if not event.road_length or event.road_length <= 0:
-                continue
-            if not event.from_edge:
-                continue
-            if event.downstream_enter_time is None:
+            pass_stopline_time = event.pass_stopline_time if event.pass_stopline_time is not None else event.downstream_enter_time
+            if pass_stopline_time is None:
                 continue
 
             writer.writerow({
-                "Vehicle_ID": event.vehicle_id,
-                "Edge_ID": event.from_edge,
-                "Route_Index": event.route_index,
-                "To_Edge": event.to_edge,
-                "TLS_ID": event.tls_id,
-                "Link_Index": event.link_index,
-                "Time": round(event.edge_enter_time, 2),
-                "Edge_Enter_Time": round(event.edge_enter_time, 2),
-                "Edge_Leave_Time": round(event.downstream_enter_time, 2),
-                "E_Length": round(event.road_length or 0.0, 4),
-                "Speed_Net": round(event.speed_limit or 0.0, 4),
-                "Lanes_Net": event.lane_num if event.lane_num is not None else 0,
-                "Driving_Num": event.road_flow if event.road_flow is not None else 0,
-                "lane_flow": event.lane_flow if event.lane_flow is not None else 0,
-                "entry_speed": round(event.entry_speed or 0.0, 4),
-                "entry_is_low_speed": event.entry_is_low_speed,
-                "entry_is_stopped": event.entry_is_stopped,
-                "Turn": event.turn_direction,
+                "has_waiting": event.previous_has_waiting,
+                "road_length": round(event.road_length, 4),
                 "turn_type": event.turn_type,
-                "Wait_Time": round(wait_time, 4),
-                "Travel_Time": round(travel_time, 4),
-                "Delay_Time": round(delay_time, 4),
-                "LowSpee_Time": round(low_speed_time, 4),
-                "Wait_Sum": round(wait_time + delay_time + low_speed_time, 4),
+                "road_flow": event.road_flow if event.road_flow is not None else 0,
+                "lane_flow": event.lane_flow if event.lane_flow is not None else 0,
                 "travel_time_label": round(travel_time_label, 4),
             })
+            row_count += 1
+    return row_count
 
 def write_training_rows(output_path: str, completed_events: List[VehicleMovementEvent]) -> None:
     """Write CAMS BasicRoadModelFeatures-compatible training rows.
@@ -1140,7 +1115,7 @@ def main():
 
     The output focuses on the minimum fields needed by CAMS:
     vehicle movement events, signal-cycle discharge summaries, and a compact
-    legacy edge summary for quick sanity checks.
+    slim model-training table for large-scale training.
     """
 
     config = parse_args()
@@ -1169,7 +1144,7 @@ def main():
     previous_release_waiting: Dict[str, Tuple[int, float]] = {}
 
     # CSV outputs are selected by --outputs. TraCI_output_adjusted.csv is the
-    # lightweight model-training input, cams_model_training_data.csv is the
+    # slim model-training table, cams_model_training_data.csv is the
     # fuller debug/training-compatible output, and movement/cycle files are
     # debugging and validation outputs.
     while traci.simulation.getMinExpectedNumber() > 0:
@@ -1302,8 +1277,10 @@ def main():
         write_training_rows(config.training_output, completed_events)
         print(f"training data written to: {config.training_output}")
     if want_legacy:
-        write_lightweight_training_rows(config.legacy_edge_output, completed_events)
+        row_count = write_lightweight_training_rows(config.legacy_edge_output, completed_events)
         print(f"lightweight training data written to: {config.legacy_edge_output}")
+        print("lightweight training columns: has_waiting,road_length,turn_type,road_flow,lane_flow,travel_time_label")
+        print(f"lightweight training rows: {row_count}")
     print("simulation done")
 
 if __name__ == '__main__':
