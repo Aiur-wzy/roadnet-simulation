@@ -53,39 +53,96 @@ void Graph::readConnectionsToDirections(const string& filename) {
 
 // 定义函数，返回给定边的下一边的方向
 // 读取文件并构建词典的函数
+static long long quantizeRoadLength(double roadLength) {
+    return static_cast<long long>(std::llround(roadLength * 10000.0));
+}
+
+static long long quantizeLaneFlow(double laneFlow) {
+    return static_cast<long long>(std::llround(laneFlow * 1000000.0));
+}
+
+static bool isSumoV1TravelTimeHeader(const string& line) {
+    stringstream ss(line);
+    vector<string> cols;
+    string col;
+    while (ss >> col) cols.push_back(col);
+    if (cols.size() < 6) return false;
+    return cols[0] == "has_waiting" &&
+           cols[1] == "road_length" &&
+           cols[2] == "turn_type" &&
+           cols[3] == "road_flow" &&
+           cols[4] == "lane_flow" &&
+           cols[5] == "travel_time_no_waiting";
+}
+
+static bool parseHasWaitingValue(const string& value, int& hasWaiting) {
+    string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (normalized == "true" || normalized == "1") {
+        hasWaiting = 1;
+        return true;
+    }
+    if (normalized == "false" || normalized == "0") {
+        hasWaiting = 0;
+        return true;
+    }
+    return false;
+}
+
+// 读取文件并构建词典的函数
 void Graph::buildDictionary(const std::string& filename) {
 
     dictionary.clear();
+    sumoV1TravelTimeTable.clear();
+    travelTimeTableFormat = TravelTimeTableFormat::LEGACY;
+
     std::ifstream file(filename);
     if (!file.is_open()) {
         std::cerr << "Failed to open file: " << filename << std::endl;
         return;
     }
 
-    RoadKey key;
-    double travel_time_predict;
-
-    while (file >> key.lane_num >> key.speed_limit >> key.edge_length >> key.driving_number >> key.delay_time >> key.lowSpee_time >> key.wait_time >> key.ratio >> key.length_square >> travel_time_predict) {
-
-        dictionary[key] = travel_time_predict;
-        //cout << "key.edge_str:" << key.edge_str << "." << endl;
-
-        // std::cout << "Read In" << std::endl;
-        /* cout << " " << key.lane_num << " " << key.speed_limit << " " << key.edge_length << " ";
-        cout << key.driving_number << " " << key.delay_time << " " << key.lowSpee_time << " " << key.wait_time << endl; */
+    string firstLine;
+    if (!getline(file, firstLine)) {
+        return;
     }
 
-    /*// 整个 list check 一下
-    RoadKey queryKey = {"162041588#1", 2, 11, 56, 1, 0, 0, 0};  // 这是我们想要查找的键
+    if (isSumoV1TravelTimeHeader(firstLine)) {
+        travelTimeTableFormat = TravelTimeTableFormat::SUMO_V1;
+        string hasWaitingRaw;
+        double roadLength = 0.0;
+        int turnType = 0;
+        int roadFlow = 0;
+        double laneFlow = 0.0;
+        double travelTimeNoWaiting = 0.0;
 
-    // 查找是否能在词典中找到对应的数据
-    if (dictionary.find(queryKey) != dictionary.end()) {
-        std::cout << "Found key! The value is: " << dictionary[queryKey] << std::endl;
-    } else {
-        std::cout << "Key not found!" << std::endl;
-    }*/
+        while (file >> hasWaitingRaw >> roadLength >> turnType >> roadFlow >> laneFlow >> travelTimeNoWaiting) {
+            int hasWaiting = 0;
+            if (!parseHasWaitingValue(hasWaitingRaw, hasWaiting)) {
+                continue;
+            }
+            SumoV1TravelTimeKey key{};
+            key.has_waiting = hasWaiting;
+            key.road_length_q = quantizeRoadLength(roadLength);
+            key.turn_type = turnType;
+            key.road_flow = roadFlow;
+            key.lane_flow_q = quantizeLaneFlow(laneFlow);
+            sumoV1TravelTimeTable[key] = travelTimeNoWaiting;
+        }
+        return;
+    }
 
-    file.close();
+    RoadKey key;
+    double travel_time_predict;
+    stringstream firstRow(firstLine);
+    if (firstRow >> key.lane_num >> key.speed_limit >> key.edge_length >> key.driving_number >> key.delay_time >> key.lowSpee_time >> key.wait_time >> key.ratio >> key.length_square >> travel_time_predict) {
+        dictionary[key] = travel_time_predict;
+    }
+
+    while (file >> key.lane_num >> key.speed_limit >> key.edge_length >> key.driving_number >> key.delay_time >> key.lowSpee_time >> key.wait_time >> key.ratio >> key.length_square >> travel_time_predict) {
+        dictionary[key] = travel_time_predict;
+    }
 }
 
 float Graph::MSE_estimation_cycle_aware_total(
@@ -1894,8 +1951,55 @@ RoadKey Graph::buildRoadKeyForPrediction(int roadID, int vehicleID) const {
     return buildRoadKeyForPrediction(buildBasicRoadModelFeatures(roadID, vehicleID, -1, 0, -1));
 }
 
+SumoV1TravelTimeKey Graph::buildSumoV1TravelTimeKeyForPrediction(const BasicRoadModelFeatures& features) const {
+    SumoV1TravelTimeKey key{};
+    key.has_waiting = features.has_waiting ? 1 : 0;
+    key.road_length_q = quantizeRoadLength(features.road_length);
+    key.turn_type = features.turn_type;
+    key.road_flow = max(0, features.road_flow);
+
+    double lane_flow_for_model = features.lane_num > 0
+        ? static_cast<double>(features.road_flow) / static_cast<double>(features.lane_num)
+        : static_cast<double>(features.lane_flow);
+    key.lane_flow_q = quantizeLaneFlow(lane_flow_for_model);
+    return key;
+}
+
 int Graph::predictRoadTravelTimeTable(const BasicRoadModelFeatures& features) {
     if (features.roadID < 0 || features.roadID >= static_cast<int>(roads.size())) return 1;
+
+    if (travelTimeTableFormat == TravelTimeTableFormat::SUMO_V1) {
+        SumoV1TravelTimeKey key = buildSumoV1TravelTimeKeyForPrediction(features);
+        auto it = sumoV1TravelTimeTable.find(key);
+        if (it != sumoV1TravelTimeTable.end()) {
+            ++travelTimeTableHit;
+            return std::max(1, static_cast<int>(std::round(it->second)));
+        }
+
+        ++travelTimeTableMiss;
+        if (verboseTravelTimePrediction) {
+            double lane_flow_for_model = features.lane_num > 0
+                ? static_cast<double>(features.road_flow) / static_cast<double>(features.lane_num)
+                : static_cast<double>(features.lane_flow);
+            cout << "[TravelTime] SUMO_V1 TABLE miss roadID=" << features.roadID
+                 << " key={has_waiting=" << key.has_waiting
+                 << ", road_length_q=" << key.road_length_q
+                 << ", turn_type=" << key.turn_type
+                 << ", road_flow=" << key.road_flow
+                 << ", lane_flow_q=" << key.lane_flow_q
+                 << "} raw={has_waiting=" << features.has_waiting
+                 << ", road_length=" << features.road_length
+                 << ", turn_type=" << features.turn_type
+                 << ", road_flow=" << features.road_flow
+                 << ", lane_flow_for_model=" << lane_flow_for_model
+                 << ", lane_num=" << features.lane_num
+                 << "}" << endl;
+        }
+
+        return fallbackToSpeedNet
+            ? predictRoadTravelTimeSpeedNet(features.roadID)
+            : predictRoadTravelTimeMinTime(features.roadID);
+    }
 
     RoadKey key = buildRoadKeyForPrediction(features);
     auto it = dictionary.find(key);

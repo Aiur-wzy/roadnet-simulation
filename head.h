@@ -216,6 +216,11 @@ enum class TravelTimeMode {
     KINEMATIC
 };
 
+enum class TravelTimeTableFormat {
+    LEGACY,
+    SUMO_V1
+};
+
 TravelTimeMode parseTravelTimeMode(const string& s);
 string travelTimeModeToString(TravelTimeMode mode);
 
@@ -317,6 +322,32 @@ struct BasicRoadModelFeatures {
     int waiting_duration = 0;
 
     unordered_map<string, double> extra;
+};
+
+
+struct SumoV1TravelTimeKey {
+    int has_waiting = 0;
+    long long road_length_q = 0;
+    int turn_type = 0;
+    int road_flow = 0;
+    long long lane_flow_q = 0;
+
+    bool operator==(const SumoV1TravelTimeKey& other) const {
+        return std::tie(has_waiting, road_length_q, turn_type, road_flow, lane_flow_q) ==
+               std::tie(other.has_waiting, other.road_length_q, other.turn_type, other.road_flow, other.lane_flow_q);
+    }
+};
+
+struct SumoV1TravelTimeKeyHash {
+    std::size_t operator()(const SumoV1TravelTimeKey& k) const {
+        size_t res = 17;
+        res = res * 31 + std::hash<int>()(k.has_waiting);
+        res = res * 31 + std::hash<long long>()(k.road_length_q);
+        res = res * 31 + std::hash<int>()(k.turn_type);
+        res = res * 31 + std::hash<int>()(k.road_flow);
+        res = res * 31 + std::hash<long long>()(k.lane_flow_q);
+        return res;
+    }
 };
 
 struct SumoTripInfoTruth {
@@ -782,6 +813,8 @@ public:
 
     void buildDictionary(const std::string& filename);
     unordered_map<RoadKey, double> dictionary;
+    TravelTimeTableFormat travelTimeTableFormat = TravelTimeTableFormat::LEGACY;
+    unordered_map<SumoV1TravelTimeKey, double, SumoV1TravelTimeKeyHash> sumoV1TravelTimeTable;
     string model_catch_dic_path = join_path(Base, "model_catching_with_travel_time_1.txt");
 
     TravelTimeMode travelTimeMode = TravelTimeMode::MIN_TIME;
@@ -846,6 +879,7 @@ public:
     int predictRoadTravelTimeKinematic(const BasicRoadModelFeatures& features) const;
     int predictRoadTravelTimeKinematic(int roadID, int vehicleID) const;
     RoadKey buildRoadKeyForPrediction(const BasicRoadModelFeatures& features) const;
+    SumoV1TravelTimeKey buildSumoV1TravelTimeKeyForPrediction(const BasicRoadModelFeatures& features) const;
     RoadKey buildRoadKeyForPrediction(int roadID, int vehicleID) const;
     bool queryExternalTravelTimeModel(const BasicRoadModelFeatures& features, double& predictedTime);
     void insertVehicleToBufferOrdered(int bufferID, int vehicleID);

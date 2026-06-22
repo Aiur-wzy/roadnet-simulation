@@ -243,7 +243,11 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
             throw runtime_error("--travel-time-mode table requires --travel-time-table or a non-empty default table path");
         }
         g.buildDictionary(g.travelTimeTablePath);
-        cout << "[TravelTime] Loaded table dictionary entries: " << g.dictionary.size() << endl;
+        if (g.travelTimeTableFormat == TravelTimeTableFormat::SUMO_V1) {
+            cout << "[TravelTime] Loaded SUMO v1 table entries: " << g.sumoV1TravelTimeTable.size() << endl;
+        } else {
+            cout << "[TravelTime] Loaded legacy table dictionary entries: " << g.dictionary.size() << endl;
+        }
     }
 }
 
