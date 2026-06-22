@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Train an AutoGluon Tabular model on SUMO/TraCI edge-level records, following the
-same baseline training logic as `model_training6.py` (CityFlow version), but
-with SUMO net.xml + TraCI_output_adjusted.csv as inputs.
+Train an AutoGluon Tabular model on the slim SUMO/CAMS TraCI training schema.
 
-Expected inputs (sample):
-- net xml: roadnet_example.txt (SUMO net.xml)  fileciteturn1file7L34-L36
-- records csv: track_example.txt (TraCI_output_adjusted.csv) fileciteturn1file14L1-L3
+Default input is TraCI_output_adjusted.csv with exactly these model columns:
+    has_waiting, road_length, turn_type, road_flow, lane_flow, travel_time_label
 
-Notes:
-- We map SUMO edge -> "intersection" using the downstream junction (edge 'to' attribute).
-- Graph neighbor features (competing/downstream/upstream + in/out degree) are computed in the same way
-  as model_training6.py's `add_neighbor_features` pipeline. fileciteturn1file1L25-L47
-- The TraCI script that produces the CSV writes Wait/Travel/Delay/LowSpeed times per (vehicle, edge). fileciteturn1file4L42-L47
+The model label is travel_time_no_waiting, copied from travel_time_label, so it
+predicts road running time only (driving_time + low_speed_time). Signal and
+queue delay are handled by the macro simulator instead of this model.
 """
 
 
@@ -27,7 +22,6 @@ import numpy as np
 import pandas as pd
 import xml.etree.ElementTree as ET
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 
 from autogluon.tabular import TabularPredictor
 
@@ -248,76 +242,111 @@ def add_neighbor_features(
 # ==========================================================
 # 4) SUMO dataset -> baseline schema (enter_time/road_id/inter_id + features/label)
 # ==========================================================
+SLIM_COLS = [
+    "has_waiting",
+    "road_length",
+    "turn_type",
+    "road_flow",
+    "lane_flow",
+    "travel_time_label",
+]
+FULL_CAMS_MARKERS = {"vehicleID", "roadID", "movementID", "driving_time", "low_speed_time"}
+LEGACY_REQUIRED = ["E_Length", "Driving_Num", "Turn", "Travel_Time", "LowSpee_Time"]
+TURN_TYPE_MAP = {"l": 1, "L": 1, "s": 2, "r": 3, "R": 3, "t": 4}
+
+
+def _encode_legacy_turn(value) -> int:
+    if pd.isna(value):
+        return 0
+    return TURN_TYPE_MAP.get(str(value), 0)
+
+
+def _detect_schema(csv_path: str):
+    columns = list(pd.read_csv(csv_path, nrows=0).columns)
+    column_set = set(columns)
+    if set(SLIM_COLS).issubset(column_set):
+        if FULL_CAMS_MARKERS & column_set:
+            print("[INFO] detected full CAMS training schema; using slim column projection")
+            return "full_cams", SLIM_COLS
+        print("[INFO] detected slim TraCI training schema")
+        return "slim", SLIM_COLS
+    if set(LEGACY_REQUIRED).issubset(column_set):
+        print("[WARN] detected older legacy TraCI schema; using compatibility conversion")
+        usecols = sorted(set(LEGACY_REQUIRED + ["Wait_Time", "Delay_Time", "Lanes_Net", "lane_flow", "turn_type", "travel_time_label", "has_waiting"]))
+        return "legacy", [c for c in usecols if c in column_set]
+    raise ValueError(
+        f"[SUMO] Unsupported CSV schema in {csv_path}. Expected slim columns {SLIM_COLS}."
+    )
+
+
 def prepare_sumo_training_frame(
     csv_path: str,
-    net_xml_path: str,
+    net_xml_path: str = "",
 ) -> Tuple[pd.DataFrame, dict, dict, dict]:
-    """
-    Convert TraCI_output_adjusted.csv into the "baseline" training DataFrame:
-      enter_time, road_id, inter_id,
-      has_waiting, road_length, turn_type, road_flow, lane_flow,
-      road_waiting_flow (for road_t table),
-      travel_time_no_waiting (label)
+    """Load the slim SUMO/CAMS-aligned base-feature training frame."""
+    schema, usecols = _detect_schema(csv_path)
+    df = pd.read_csv(csv_path, usecols=usecols)
 
-    Source of available columns: TraCI script writes these columns. fileciteturn1file3L14-L24
-    """
-    raw = pd.read_csv(csv_path)
-
-    # Basic cleaning: drop rows with missing essentials
-    must = ["Edge_ID", "Time", "E_Length", "Turn", "Driving_Num", "Wait_Time", "Travel_Time", "Delay_Time", "LowSpee_Time", "Lanes_Net"]
-    for c in must:
-        if c not in raw.columns:
-            raise ValueError(f"[SUMO] Missing required column in {csv_path}: {c}")
-    df = raw.dropna(subset=["Edge_ID", "Time", "E_Length", "Turn", "Driving_Num", "Lanes_Net"]).copy()
-
-    # Build graph + edge -> junction mapping
-    downstream, upstream, edge2inter, inter_in_roads = build_sumo_road_graph(net_xml_path)
-
-    # Map schema names
-    df["enter_time"] = df["Time"].astype(float).round().astype(int)
-    df["road_id"] = df["Edge_ID"].astype(str)
-    df["inter_id"] = df["road_id"].map(edge2inter).fillna("UNKNOWN_INTER")
-
-    # Base features (match baseline names as much as possible)
-    df["road_length"] = df["E_Length"].astype(float)
-
-    # road_flow: use Driving_Num (vehicles on edge at last step) as a flow proxy
-    df["road_flow"] = df["Driving_Num"].astype(float)
-
-    # lane_flow: normalize by lanes
-    eps = 1e-6
-    df["lane_flow"] = df["road_flow"] / (df["Lanes_Net"].astype(float) + eps)
-
-    # turn_type: from Turn (s/t/l/r/L/R/end)
-    df["turn_type"] = df["Turn"].astype(str)
-    le = LabelEncoder()
-    df["turn_type"] = le.fit_transform(df["turn_type"])
-
-    # has_waiting: based on red-light waiting time
-    df["has_waiting"] = (df["Wait_Time"].fillna(0).astype(float) > 0).astype("category")
-
-    # Label construction:
-    # We only have components, so define:
-    #   total_time = Travel_Time + Wait_Time + Delay_Time + LowSpee_Time
-    #   travel_time_no_waiting = total_time - Wait_Time = Travel + Delay + LowSpeed
-    df["Wait_Time"] = df["Wait_Time"].fillna(0).astype(float)
-    df["Travel_Time"] = df["Travel_Time"].fillna(0).astype(float)
-    df["Delay_Time"] = df["Delay_Time"].fillna(0).astype(float)
-    df["LowSpee_Time"] = df["LowSpee_Time"].fillna(0).astype(float)
-
-    df["travel_time_no_waiting"] = df["Travel_Time"] + df["Delay_Time"] + df["LowSpee_Time"]
-    if (df["travel_time_no_waiting"] < 0).any():
-        raise ValueError("[SUMO] travel_time_no_waiting has negative values, please check input.")
-
-    # road_waiting_flow: proxy "congestion/wait" at edge level.
-    # Use Wait_Sum if present (counts low-speed steps), else use (Wait+Delay+LowSpeed)
-    if "Wait_Sum" in df.columns:
-        df["road_waiting_flow"] = df["Wait_Sum"].fillna(0).astype(float)
+    if schema in {"slim", "full_cams"}:
+        missing = [c for c in SLIM_COLS if c not in df.columns]
+        if missing:
+            raise ValueError(f"[SUMO] Missing required slim columns in {csv_path}: {missing}")
     else:
-        df["road_waiting_flow"] = df["Wait_Time"] + df["Delay_Time"] + df["LowSpee_Time"]
+        df["road_length"] = df["E_Length"].astype(float)
+        df["road_flow"] = df["Driving_Num"].fillna(0).astype(float)
+        if "lane_flow" not in df.columns:
+            raise ValueError("[SUMO] Legacy fallback requires a lane_flow column; refusing to recompute lane_flow from Lanes_Net.")
+        if "turn_type" not in df.columns:
+            df["turn_type"] = df["Turn"].map(_encode_legacy_turn)
+        if "has_waiting" not in df.columns:
+            df["has_waiting"] = (df["Wait_Time"].fillna(0).astype(float) > 0).astype(int) if "Wait_Time" in df.columns else 0
+        if "travel_time_label" not in df.columns:
+            df["travel_time_label"] = df["Travel_Time"].fillna(0).astype(float) + df["LowSpee_Time"].fillna(0).astype(float)
 
-    return df, downstream, upstream, inter_in_roads
+    essential = SLIM_COLS.copy()
+    before_drop = len(df)
+    df = df.dropna(subset=essential).copy()
+    dropped_missing = before_drop - len(df)
+    if dropped_missing:
+        print(f"[INFO] dropped rows with missing essential columns: {dropped_missing}")
 
+    df["has_waiting"] = df["has_waiting"].fillna(0).astype(int).astype("category")
+    df["road_length"] = df["road_length"].astype(float)
+    df["turn_type"] = df["turn_type"].fillna(0).astype(int)
+    df["road_flow"] = df["road_flow"].fillna(0).astype(float)
+    df["lane_flow"] = df["lane_flow"].fillna(0).astype(float)
+    df["travel_time_no_waiting"] = df["travel_time_label"].astype(float)
+
+    invalid = (
+        (df["travel_time_no_waiting"] <= 0)
+        | (df["road_length"] <= 0)
+        | (df["road_flow"] < 0)
+        | (df["lane_flow"] < 0)
+    )
+    invalid_count = int(invalid.sum())
+    if invalid_count:
+        print(f"[INFO] dropped invalid rows: {invalid_count}")
+        df = df.loc[~invalid].copy()
+
+    lane_gt_road = int((df["lane_flow"] > df["road_flow"]).sum())
+    if lane_gt_road:
+        print(f"[WARN] lane_flow > road_flow in {lane_gt_road} rows")
+
+    q99 = df["travel_time_no_waiting"].quantile(0.99)
+    before_q99 = len(df)
+    df = df[df["travel_time_no_waiting"] <= q99].reset_index(drop=True)
+    print(f"[INFO] q99 travel_time_no_waiting threshold: {q99}")
+    print(f"[INFO] q99 rows removed: {before_q99 - len(df)}")
+
+    base_feats = ["has_waiting", "road_length", "turn_type", "road_flow", "lane_flow"]
+    print(f"[INFO] selected feature columns: {base_feats}")
+    print(f"[INFO] final row count after cleaning: {len(df)}")
+    for col in ["road_length", "road_flow", "lane_flow", "travel_time_no_waiting"]:
+        print(f"[INFO] {col} min/max: {df[col].min()} / {df[col].max()}")
+    print(f"[INFO] unique turn_type values: {sorted(df['turn_type'].dropna().astype(int).unique().tolist())}")
+    print(f"[INFO] has_waiting distribution: {df['has_waiting'].value_counts(dropna=False).to_dict()}")
+
+    return df[base_feats + ["travel_time_no_waiting"]], {}, {}, {}
 
 # ==========================================================
 # 5) Main training pipeline (same structure as baseline)
@@ -330,29 +359,18 @@ def train(
     test_size: float,
     random_state: int,
 ):
-    df_processed, downstream, upstream, inter_in_roads = prepare_sumo_training_frame(csv_path, net_xml_path)
+    df_processed, _downstream, _upstream, _inter_in_roads = prepare_sumo_training_frame(csv_path, net_xml_path)
     print("data process finished")
-    # (f) remove extreme outliers (99th percentile), same baseline idea fileciteturn1file2L22-L24
-    q99 = df_processed["travel_time_no_waiting"].quantile(0.99)
-    df_processed = df_processed[df_processed["travel_time_no_waiting"] <= q99].reset_index(drop=True)
 
-    # Export degree combos for caching/table lookup like the baseline fileciteturn1file11L41-L64
-    export_degree_combinations(downstream, upstream, out_csv="road_degree_combinations.csv")
-    print("degree finished")
-
-    # Add graph neighbor features
-    road_t = build_road_time_table(df_processed)
-    print("build road finished")
-    #df_processed = add_neighbor_features(df_processed, road_t, downstream, upstream, inter_in_roads)
-    print("have add neighbor's feature")
-    # Feature set: keep aligned with model_training6.py's chosen subset fileciteturn1file2L35-L47
-
-    base_feats = ["has_waiting", "road_length", "turn_type", "road_flow", "lane_flow"]
-    #graph_feats = ["competing_wait_ratio", "downstream_cong_mean", "upstream_pressure", "out_degree", "in_degree"]
-    graph_feats=[]
+    base_feats = [
+        "has_waiting",
+        "road_length",
+        "turn_type",
+        "road_flow",
+        "lane_flow",
+    ]
     label = "travel_time_no_waiting"
-
-    feature_cols = [c for c in (base_feats + graph_feats) if c in df_processed.columns]
+    feature_cols = base_feats
     df_selected = df_processed[feature_cols + [label]]
 
     train_data, test_data = train_test_split(df_selected, test_size=test_size, random_state=random_state)
@@ -378,10 +396,10 @@ def train(
 
 
 def _build_argparser():
-    p = argparse.ArgumentParser(description="AutoGluon training on SUMO TraCI edge records (baseline-compatible).")
-    p.add_argument("--csv", required=True, help="TraCI_output_adjusted.csv path")
-    p.add_argument("--net", required=True, help="SUMO net.xml path")
-    p.add_argument("--save_path", default="AutogluonModels_SUMO", help="AutoGluon model directory")
+    p = argparse.ArgumentParser(description="AutoGluon training on slim SUMO/CAMS TraCI records.")
+    p.add_argument("--csv", default="TraCI_output_adjusted.csv", help="Slim TraCI training CSV path")
+    p.add_argument("--net", default="", help="Optional SUMO net.xml path (unused by the default slim base-feature model)")
+    p.add_argument("--save_path", default="models_v1", help="AutoGluon model directory")
     p.add_argument("--time_limit", type=int, default=43200, help="Training time limit (seconds)")
     p.add_argument("--test_size", type=float, default=0.2, help="Test split ratio")
     p.add_argument("--random_state", type=int, default=42, help="Random seed")
@@ -389,7 +407,7 @@ def _build_argparser():
 
 
 def main():
-    '''args = _build_argparser().parse_args()
+    args = _build_argparser().parse_args()
     train(
         csv_path=args.csv,
         net_xml_path=args.net,
@@ -397,14 +415,6 @@ def main():
         time_limit=args.time_limit,
         test_size=args.test_size,
         random_state=args.random_state,
-    )'''
-    train(
-        csv_path="TraCI_output_adjusted.csv",
-        net_xml_path='test.net.xml',
-        save_path='models_v1',
-        time_limit=36000,
-        test_size=0.2,
-        random_state=42,
     )
 
 if __name__ == "__main__":
