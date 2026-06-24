@@ -6,56 +6,47 @@ RoadNet is a cycle-aware macroscopic traffic simulation system built around SUMO
 
 The repository supports two workflows:
 
-1. **SUMO-based workflow**: the current recommended workflow for experiments. It starts from a SUMO `.net.xml` file and generated `.rou.xml` demand, uses SUMO and TraCI to create ground truth and training data, and evaluates the C++ CAMS simulation against SUMO `tripinfo.xml`.
-2. **Legacy BJ workflow**: the older Manhattan/Beijing-style text-file workflow, kept for compatibility and regression checks.
+1. **SUMO/CAMS workflow**: the current recommended workflow for experiments. It starts from a SUMO `.net.xml` file and generated `.rou.xml` demand, uses SUMO and TraCI to create ground truth and a slim model-training CSV, trains an AutoGluon road travel-time model, catches the model into a lookup table, and evaluates the C++ CAMS simulation against SUMO `tripinfo.xml`.
+2. **Legacy BJ workflow**: the older Manhattan/Beijing-style text-file workflow, kept as a compatibility and regression workflow.
 
-High-level experiment pipeline:
-
-1. Generate SUMO route demand as a `.rou.xml` file.
-2. Run SUMO to generate microscopic `tripinfo.xml` ground truth.
-3. Run TraCI to collect road-level model training data and CAMS movement/cycle ground truth.
-4. Train a road-level travel-time model. **[TODO]**
-5. Convert trained model predictions into a lookup table for fast C++ travel-time lookup. **[TODO]**
-6. Run the C++ CAMS simulation with `speed-net`, `min-time`, `table`, `kinematic`, or future `model` travel-time mode.
-7. Evaluate predicted travel time against SUMO `tripinfo.xml`.
+High-level SUMO/CAMS pipeline:
 
 ```text
 test.net.xml
-    |
-    +--> generate_route_on_test_net_full.py
-    |       -> all_congestion_routes.rou.xml
-    |
-    +--> SUMO
-    |       -> tripinfo.xml
-    |
-    +--> TraCI_Python_Adjusted.py
-    |       -> cams_model_training_data.csv
-    |       -> cams_vehicle_movement_events.csv
-    |       -> cams_movement_cycle_summary.csv
-    |       -> TraCI_output_adjusted.csv
-    |
-    +--> model_training / table generation  [TODO]
-    |       -> travel_time_table.txt
-    |
-    +--> C++ Simulation_Prediction
-            -> sumo_eval.csv
-            -> eval_summary.txt
-            -> eval_grouped_metrics.csv
-            -> eval_distribution_metrics.csv
+    -> generate_route_on_test_net_full.py
+    -> all_congestion_routes.rou.xml
+    -> SUMO tripinfo.xml
+    -> TraCI_Python_Adjusted.py
+    -> TraCI_output_adjusted.csv  [slim training table]
+    -> model_training_sumo_v1.py
+    -> models_v1/
+    -> model_catching_sumo_v1.py
+    -> model_catching_sumo_v1.txt
+    -> C++ Simulation_Prediction with --travel-time-mode table
+    -> sumo_eval.csv / eval_summary.txt / grouped metrics / distribution metrics
+```
+
+Optional TraCI debug outputs:
+
+```text
+cams_model_training_data.csv
+cams_vehicle_movement_events.csv
+cams_movement_cycle_summary.csv
 ```
 
 ## 2. Repository Structure
 
 | Path | Role |
 | --- | --- |
-| `main.cpp` | CLI parsing, SUMO/BJ workflow selection, resolved configuration printing, smoke-test orchestration, full simulation orchestration, and evaluation entry. |
-| `head.h` | Core data structures and the `Graph` class, including roads, nodes, movements, signals, vehicles, SUMO raw structures, graph containers, validation declarations, and path plumbing. |
+| `main.cpp` | CLI parsing, SUMO/BJ workflow selection, resolved configuration printing, smoke-test orchestration, travel-time table load reporting, full simulation orchestration, and evaluation entry. |
+| `head.h` | Core data structures and the `Graph` class, including roads, nodes, movements, signals, vehicles, SUMO raw structures, travel-time table formats, SUMO v1 lookup keys, graph containers, validation declarations, and path plumbing. |
 | `data_preparation.cpp` | SUMO net/route parsing, legacy graph readers, graph construction, movement/lane-group/signal-program construction, and route conversion helpers. |
 | `data_cleaning.cpp` | SUMO network, connection, signal-program, route, and input validation helpers. |
-| `simulation.cpp` | Cycle-aware simulation, movement dispatch, travel-time prediction, SUMO `tripinfo.xml` evaluation, grouped metrics, distribution metrics, and legacy evaluation. |
+| `simulation.cpp` | Cycle-aware simulation, movement dispatch, travel-time prediction, legacy and SUMO v1 table parsing/lookup, SUMO `tripinfo.xml` evaluation, grouped metrics, distribution metrics, and legacy evaluation. |
 | `generate_route_on_test_net_full.py` | Route demand generation from predefined valid SUMO route sequences, including the staged `all-congestion` profile. |
-| `TraCI_Python_Adjusted.py` | TraCI-based data collector for road-level model training rows, vehicle movement records, cycle summaries, and legacy-compatible edge output. |
-| `model_training/` | Planned location for model training and lookup-table generation scripts. **[TODO: directory/scripts are not yet present in this repository.]** |
+| `TraCI_Python_Adjusted.py` | TraCI-based data collector for the slim training CSV, the fuller CAMS debug/training-compatible CSV, vehicle movement records, and cycle summaries. |
+| `model_training_sumo_v1.py` | Active AutoGluon training script for the slim SUMO/CAMS v1 feature schema. |
+| `model_catching_sumo_v1.py` | Active lookup-table builder that enumerates SUMO/CAMS v1 features and catches AutoGluon predictions into a space-separated table. |
 | `config_defaults.h` | Default relative paths used when command-line arguments are omitted. Prefer explicit CLI paths for reproducible experiments. |
 | `CMakeLists.txt` | C++ build configuration for the `Simulation_Prediction` executable. |
 | `README.md` | This end-to-end experiment pipeline guide. |
@@ -63,8 +54,6 @@ test.net.xml
 ## 3. Environment Setup
 
 ### 3.1 C++ build dependencies
-
-**Purpose:** build the C++ CAMS simulator.
 
 Required tools/libraries:
 
@@ -94,25 +83,13 @@ g++ -std=c++14 -O0 -g \
   -o roadnet_sim -lpthread
 ```
 
-If the executable starts but fails to load system libraries, set `LD_LIBRARY_PATH` for the libraries installed on that machine. For example, on some Linux servers:
-
-```bash
-LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH ./build/Simulation_Prediction --help
-```
-
-**Expected input:** C++ source files and `CMakeLists.txt`.
-
-**Expected output:** `build/Simulation_Prediction` or `roadnet_sim`.
-
-**Sanity check:**
+Sanity check:
 
 ```bash
 ./build/Simulation_Prediction --help
 ```
 
 ### 3.2 SUMO and TraCI setup
-
-**Purpose:** enable SUMO simulation, `tripinfo.xml` generation, and TraCI replay.
 
 SUMO must be installed and `SUMO_HOME` must point to the SUMO installation so Python can import TraCI.
 
@@ -137,49 +114,13 @@ sumo --version
 python -c "import os, sys; sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools')); import traci; print('traci ok')"
 ```
 
-**Expected input:** installed SUMO and configured `SUMO_HOME`.
-
-**Expected output:** SUMO version text and `traci ok`.
-
-**Sanity check:** fix `SUMO_HOME` first if Python reports that `traci` cannot be imported.
+If Python reports that `traci` cannot be imported, fix `SUMO_HOME` before running the TraCI collector.
 
 ## 4. Step 1: Generate SUMO Route Demand
 
-**Purpose:** create SUMO `.rou.xml` demand from predefined valid route sequences in `generate_route_on_test_net_full.py`.
+Create SUMO `.rou.xml` demand from predefined valid route sequences in `generate_route_on_test_net_full.py`.
 
-The generator supports route groups such as:
-
-- `ALL`
-- `CORE`
-- `WEST_IN`
-- `NORTH_IN`
-- `EAST_IN`
-- `SOUTH_IN`
-- `SOUTHWEST_IN`
-- `ORIGINAL`
-- individual route ids such as `route_01_E9_to_E5_original`
-
-Supported departure modes:
-
-- `uniform`
-- `poisson`
-- `period`
-
-Basic command:
-
-```bash
-python generate_route_on_test_net_full.py \
-  --output expanded_routes.rou.xml \
-  --route-option ALL \
-  --mode uniform \
-  --num-vehicles 10 \
-  --start-time 0 \
-  --end-time 1200
-```
-
-Total vehicles = number of departure times × number of selected routes. For `poisson`, `--num-vehicles` is the expected departure count.
-
-Recommended large all-congestion file command:
+Recommended large all-congestion command:
 
 ```bash
 python generate_route_on_test_net_full.py \
@@ -188,18 +129,16 @@ python generate_route_on_test_net_full.py \
   --manifest-output all_congestion_manifest.csv
 ```
 
-The `all-congestion` profile is implemented and is intended to include staged free-flow, light, medium, heavy, oversaturated, directional bottleneck, and single-route pressure scenarios.
+The `all-congestion` profile is intended to include staged free-flow, light, medium, heavy, oversaturated, directional bottleneck, and single-route pressure scenarios.
 
-**Expected input:** built-in route definitions in `generate_route_on_test_net_full.py`.
-
-**Expected output:**
+Expected outputs:
 
 ```text
 all_congestion_routes.rou.xml
 all_congestion_manifest.csv
 ```
 
-**Sanity check:**
+Sanity check:
 
 ```bash
 python generate_route_on_test_net_full.py --help
@@ -207,7 +146,7 @@ python generate_route_on_test_net_full.py --help
 
 ## 5. Step 2: Create or Update SUMO Config
 
-**Purpose:** point a SUMO `.sumocfg` file to the network and generated demand.
+Point a SUMO `.sumocfg` file to the network and generated demand.
 
 Example `map.sumo.cfg`:
 
@@ -224,68 +163,53 @@ Example `map.sumo.cfg`:
 </configuration>
 ```
 
-Choose an `end` time long enough for all vehicles to depart and finish. If vehicles are still active at the end time, extend the simulation horizon before generating final evaluation data.
+Choose an `end` time long enough for all vehicles to depart and finish.
 
-**Expected input:** `test.net.xml` and `all_congestion_routes.rou.xml`.
-
-**Expected output:** `map.sumo.cfg`.
-
-**Sanity check:**
+Sanity check:
 
 ```bash
 sumo -c map.sumo.cfg --check-route-files true
 ```
 
-If the installed SUMO version does not support `--check-route-files`, run a short SUMO simulation and inspect route-loading errors.
+If the installed SUMO version does not support `--check-route-files`, run a short simulation and inspect route-loading errors:
+
+```bash
+sumo -c map.sumo.cfg --end 300 --no-step-log true
+```
 
 ## 6. Step 3: Run SUMO to Generate TripInfo Ground Truth
 
-**Purpose:** generate SUMO microscopic travel-time ground truth for final evaluation.
-
-Command:
+Generate SUMO microscopic travel-time ground truth for final evaluation.
 
 ```bash
-sumo \
-  -c map.sumo.cfg \
+sumo -c map.sumo.cfg \
   --tripinfo-output tripinfo.xml \
   --duration-log.statistics true \
   --no-step-log true
 ```
 
-Optional GUI command:
-
-```bash
-sumo-gui \
-  -c map.sumo.cfg \
-  --tripinfo-output tripinfo.xml
-```
-
 `tripinfo.xml` contains per-vehicle SUMO truth. The C++ evaluator reads each `<tripinfo>` record's `duration` as ground-truth travel time and uses `arrival` as a secondary arrival-time check. Records are aligned by SUMO vehicle id, not by XML line order.
 
-**Expected input:** `map.sumo.cfg`, `test.net.xml`, and `all_congestion_routes.rou.xml`.
-
-**Expected output:**
+Expected output:
 
 ```text
 tripinfo.xml
 ```
 
-**Sanity check:** confirm that `tripinfo.xml` contains `<tripinfo ... id="..." duration="..." .../>` records for the vehicles you expect to evaluate.
+## 7. Step 4: Run TraCI to Generate the Slim Training CSV
 
-## 7. Step 4: Run TraCI to Generate Model Training Data
+Replay the SUMO simulation through TraCI and collect the preferred large-scale model-training input.
 
-**Purpose:** replay the SUMO simulation through TraCI and collect road-level training data plus CAMS movement/cycle debug files.
+`--outputs legacy` still writes `TraCI_output_adjusted.csv` for CLI compatibility, but the content is **not** the old legacy wide edge table. It is now the slim SUMO/CAMS model-training table.
 
-Command:
+Recommended command:
 
 ```bash
 python TraCI_Python_Adjusted.py \
   --sumo-config map.sumo.cfg \
   --net-file test.net.xml \
   --sumo-binary sumo \
-  --training-output cams_model_training_data.csv \
-  --vehicle-event-output cams_vehicle_movement_events.csv \
-  --cycle-summary-output cams_movement_cycle_summary.csv \
+  --outputs legacy \
   --legacy-edge-output TraCI_output_adjusted.csv \
   --waiting-region-length 80 \
   --stop-speed-threshold 0.1 \
@@ -294,125 +218,156 @@ python TraCI_Python_Adjusted.py \
   --downstream-block-occupancy-threshold 85
 ```
 
-Training label:
+Expected output:
 
 ```text
-travel_time_label = driving_time + low_speed_time
+TraCI_output_adjusted.csv
 ```
 
-The label is intended to represent pure road travel time before crossing the stop line. It excludes red-light waiting, green-queue waiting, and downstream-block waiting. Debug fields such as `red_light_waiting_time`, `green_queue_wait_time`, and `downstream_block_wait_time` are retained for analysis but are not included in `travel_time_label`.
+Expected columns:
 
-**Expected input:** `map.sumo.cfg`, `test.net.xml`, and a working SUMO/TraCI environment.
+```text
+has_waiting,road_length,turn_type,road_flow,lane_flow,travel_time_label
+```
 
-**Expected output:**
+Feature and label semantics:
+
+- `has_waiting`: whether the vehicle had waiting before entering the current road / previous movement waiting state.
+- `road_length`: selected/current lane length sampled by TraCI/CAMS.
+- `turn_type`: fixed SUMO/C++ numeric encoding.
+- `road_flow`: vehicle count on the current edge.
+- `lane_flow`: selected-lane vehicle count. Do not derive this as `road_flow / lane_num`.
+- `travel_time_label`: `driving_time + low_speed_time`.
+
+The label excludes `red_light_waiting_time`, `green_queue_wait_time`, and `downstream_block_wait_time` because signal waiting, queue waiting, and downstream blocking are handled by the macro CAMS dispatch logic, not by the road travel-time model.
+
+Optional debug command:
+
+```bash
+python TraCI_Python_Adjusted.py \
+  --sumo-config map.sumo.cfg \
+  --net-file test.net.xml \
+  --sumo-binary sumo \
+  --outputs legacy,training,events,cycles
+```
+
+Expected debug outputs:
 
 ```text
 cams_model_training_data.csv
 cams_vehicle_movement_events.csv
 cams_movement_cycle_summary.csv
+```
+
+Use `TraCI_output_adjusted.csv` as the recommended large-scale training input. Use `cams_model_training_data.csv` when you need the fuller debug/training-compatible table; it contains many more fields and is wider and slower to load.
+
+Sanity checks:
+
+```bash
+head TraCI_output_adjusted.csv
+python - <<'PY'
+import pandas as pd
+df = pd.read_csv("TraCI_output_adjusted.csv")
+print(df.head())
+print(df.describe())
+print(df["turn_type"].value_counts().sort_index())
+print(df["has_waiting"].value_counts())
+PY
+```
+
+## 8. Step 5: Train the SUMO v1 Road-Level Travel-Time Model
+
+`model_training_sumo_v1.py` is the active AutoGluon training script for the slim SUMO/CAMS schema.
+
+Recommended command:
+
+```bash
+python model_training_sumo_v1.py \
+  --csv TraCI_output_adjusted.csv \
+  --save_path models_v1 \
+  --time_limit 36000
+```
+
+The script also accepts `--net`, but the default slim base-feature model does not require it.
+
+Expected input:
+
+```text
 TraCI_output_adjusted.csv
 ```
 
-**Sanity check:**
-
-```bash
-head cams_model_training_data.csv
-```
-
-Verify that `travel_time_label > 0`, flow columns cover a useful range, and debug waiting-time fields are present but not part of the label formula.
-
-## 8. Step 5: Train Road-Level Travel-Time Model [TODO]
-
-**Purpose:** train a road-level model that predicts `travel_time_label` from static road features and dynamic traffic-state features.
-
-This section is intentionally a placeholder. The model-training workflow will be completed later.
-
-**Expected input:**
+Expected model input features:
 
 ```text
-cams_model_training_data.csv
-```
-
-**Expected output:**
-
-```text
-trained_model/
-model_metrics.json
-```
-
-Placeholder command:
-
-```bash
-python model_training/train_travel_time_model.py \
-  --input cams_model_training_data.csv \
-  --output-dir trained_model \
-  --target travel_time_label
-```
-
-Expected feature columns:
-
-```text
+has_waiting
 road_length
 turn_type
 road_flow
 lane_flow
-lane_num
-speed_limit
-vehicle_length
-vehicle_min_gap
-lane_capacity
-lane_occupied_length
-has_waiting
-waiting_duration
 ```
 
-TODO:
-
-- finalize feature preprocessing
-- finalize train/validation/test split strategy
-- choose model family
-- save trained model artifact
-- write evaluation report
-
-**Sanity check [TODO]:** after implementation, confirm that `model_metrics.json` reports validation/test metrics and that the saved artifact can reload without retraining.
-
-## 9. Step 6: Generate Travel-Time Lookup Table [TODO]
-
-**Purpose:** precompute model predictions into a fast lookup table for the C++ simulator. This avoids querying an ML model online for every road event during simulation.
-
-This section is intentionally a placeholder. The table-generation workflow will be completed later.
-
-**Expected input:**
+Expected AutoGluon label:
 
 ```text
-trained_model/
-feature_grid_config.yaml
+travel_time_no_waiting
 ```
 
-**Expected output:**
+The training script maps:
 
 ```text
-travel_time_table.txt
+travel_time_no_waiting = travel_time_label
 ```
 
-Placeholder command:
+Do not add `Delay_Time`, red-light waiting, green-queue waiting, or downstream-block waiting to this label.
+
+Expected output:
+
+```text
+models_v1/
+```
+
+## 9. Step 6: Generate the SUMO v1 Travel-Time Lookup Table
+
+`model_catching_sumo_v1.py` is the active lookup table builder. It loads the AutoGluon model from `models_v1/`, enumerates feature combinations, predicts `travel_time_no_waiting`, and writes a space-separated table for C++ table mode.
+
+Recommended command:
 
 ```bash
-python model_training/build_travel_time_table.py \
-  --model-dir trained_model \
-  --output travel_time_table.txt \
-  --grid-config feature_grid_config.yaml
+python model_catching_sumo_v1.py \
+  --csv TraCI_output_adjusted.csv \
+  --model_path models_v1 \
+  --output_txt model_catching_sumo_v1.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
 ```
 
-Current C++ table mode uses a `RoadKey` dictionary derived from static and dynamic cycle-aware road state. Static fields include lane count, rounded speed limit, and rounded length; dynamic fields include current running vehicle count and waiting-buffer occupancy. Delay and low-speed features are currently set to `0`, so table matching is approximate.
+Notes:
 
-TODO: migrate the table schema from the current `RoadKey` format to the future `BasicRoadModelFeatures` schema used by the road-level training dataset.
+- `--max_road_flow` controls `road_flow` enumeration.
+- `--max_lane_flow` controls selected-lane `lane_flow` enumeration.
+- `lane_flow` is enumerated independently but constrained to `lane_flow <= road_flow`.
+- The script is Python 3.6 compatible.
+- The output table header is:
 
-**Sanity check [TODO]:** after implementation, run a small C++ simulation with `--travel-time-mode table --verbose-travel-time` and verify that table hit rates are acceptable and fallback usage is understood.
+```text
+has_waiting road_length turn_type road_flow lane_flow travel_time_no_waiting
+```
 
-## 10. Step 7: Run C++ CAMS Simulation
+Expected output:
 
-**Purpose:** run the cycle-aware C++ simulation on the SUMO network and generated route demand.
+```text
+model_catching_sumo_v1.txt
+```
+
+Sanity checks:
+
+```bash
+head model_catching_sumo_v1.txt
+wc -l model_catching_sumo_v1.txt
+```
+
+## 10. Step 7: Run C++ CAMS Simulation in Table Mode
 
 Start with a smoke test:
 
@@ -423,65 +378,7 @@ Start with a smoke test:
   --smoke-test
 ```
 
-The smoke test parses and validates the SUMO network, then prints preparation details such as parsed edges, skipped internal edges, junctions, traffic lights, connections, `tlLogic` programs, phases, movements, lane groups, waiting buffers, validation summary, and sample signal states.
-
-No-evaluation simulation run:
-
-```bash
-./build/Simulation_Prediction \
-  --use-sumo \
-  --sumo-net test.net.xml \
-  --sumo-route all_congestion_routes.rou.xml \
-  --travel-time-mode speed-net \
-  --read-num 100000 \
-  --no-eval
-```
-
-Table-mode simulation run:
-
-```bash
-./build/Simulation_Prediction \
-  --use-sumo \
-  --sumo-net test.net.xml \
-  --sumo-route all_congestion_routes.rou.xml \
-  --travel-time-mode table \
-  --travel-time-table travel_time_table.txt \
-  --tt-fallback speed-net \
-  --read-num 100000 \
-  --no-eval
-```
-
-Available travel-time modes:
-
-```text
-speed-net
-min-time
-table
-model
-kinematic
-```
-
-Mode meanings:
-
-- `speed-net`: uses `road.length / road.speedLimit` with safety clamping and a minimum return value.
-- `min-time`: uses precomputed minimum travel time when available, otherwise falls back to `speed-net`.
-- `table`: looks up a precomputed table and falls back according to `--tt-fallback` when the key is missing.
-- `model`: reserved for a future external model service; the current implementation falls back according to `--tt-fallback`.
-- `kinematic`: uses the current kinematic/congestion approximation when available.
-
-Supported SUMO route XML formats include global route definitions with vehicle route references and inline routes nested inside vehicles. Internal SUMO edges whose ids begin with `:` are skipped during route conversion. Vehicles whose remaining route references an unknown edge are skipped with a `[SUMO Route Warning]` instead of being mapped to road id `0`.
-
-**Expected input:** `test.net.xml`, `all_congestion_routes.rou.xml`, and optionally `travel_time_table.txt`.
-
-**Expected output:** simulator logs and, when `--no-eval` is omitted with truth data, evaluation outputs.
-
-**Sanity check:** run the smoke test before full simulation and inspect route warnings before trusting large-batch results.
-
-## 11. Step 8: Run Final Evaluation Against SUMO TripInfo
-
-**Purpose:** compare C++ predicted vehicle travel times with SUMO microscopic ground truth.
-
-Command:
+Run SUMO v1 table-mode simulation and evaluation:
 
 ```bash
 ./build/Simulation_Prediction \
@@ -489,18 +386,44 @@ Command:
   --sumo-net test.net.xml \
   --sumo-route all_congestion_routes.rou.xml \
   --sumo-tripinfo tripinfo.xml \
+  --eval-output sumo_eval.csv \
   --travel-time-mode table \
-  --travel-time-table travel_time_table.txt \
-  --tt-fallback speed-net \
-  --read-num 100000 \
-  --eval-output sumo_eval.csv
+  --travel-time-table model_catching_sumo_v1.txt \
+  --tt-fallback speed-net
 ```
 
-For baseline evaluation before the table workflow is complete, replace `--travel-time-mode table --travel-time-table travel_time_table.txt --tt-fallback speed-net` with `--travel-time-mode speed-net` or `--travel-time-mode min-time`.
+Optional table debugging:
 
-**Expected input:** `test.net.xml`, `all_congestion_routes.rou.xml`, and `tripinfo.xml`.
+```bash
+./build/Simulation_Prediction \
+  --use-sumo \
+  --sumo-net test.net.xml \
+  --sumo-route all_congestion_routes.rou.xml \
+  --sumo-tripinfo tripinfo.xml \
+  --eval-output sumo_eval.csv \
+  --travel-time-mode table \
+  --travel-time-table model_catching_sumo_v1.txt \
+  --tt-fallback speed-net \
+  --verbose-travel-time
+```
 
-**Expected output:**
+Expected logs include:
+
+```text
+[TravelTime] Loaded SUMO v1 table entries: ...
+[TravelTime] table hits: ...
+[TravelTime] table misses: ...
+```
+
+If a legacy RoadKey table is provided instead, the loader falls back to the legacy parser and logs:
+
+```text
+[TravelTime] Loaded legacy table dictionary entries: ...
+```
+
+Supported SUMO route XML formats include global route definitions with vehicle route references and inline routes nested inside vehicles. Internal SUMO edges whose ids begin with `:` are skipped during route conversion. Vehicles whose remaining route references an unknown edge are skipped with a `[SUMO Route Warning]` instead of being mapped to road id `0`.
+
+Expected evaluation outputs:
 
 ```text
 sumo_eval.csv
@@ -509,143 +432,159 @@ eval_grouped_metrics.csv
 eval_distribution_metrics.csv
 ```
 
-Output meanings:
+## 11. Travel-Time Modes
 
-- `sumo_eval.csv`: per-vehicle prediction-vs-truth rows.
-- `eval_summary.txt`: overall MAE, MSE, RMSE, MAPE, bias, coverage, and distribution-summary values.
-- `eval_grouped_metrics.csv`: grouped error analysis by duration, waiting time, time loss, route length, and movement count.
-- `eval_distribution_metrics.csv`: distribution-level comparison of predicted and truth durations.
+The C++ simulator supports these travel-time modes:
 
-**Sanity check:** confirm that the evaluator reports matched records. Vehicle ids are matched by id, not by XML line order.
+- `speed-net`: computes `length / speed_limit` with safety clamping and a minimum return value.
+- `min-time`: uses precomputed `minTravelTime` when available, otherwise uses `speed-net`.
+- `table`: loads either a legacy RoadKey table or a SUMO_V1 table depending on the first-line header. SUMO_V1 is the recommended mode for the trained AutoGluon lookup table produced by `model_catching_sumo_v1.py`.
+- `kinematic`: uses a formula-based road travel-time approximation.
+- `model`: reserved; currently not a full external model-service path unless implemented in the C++ runtime. Use `table` for the caught AutoGluon model.
 
-## 12. Recommended End-to-End Command Sequence
+## 12. SUMO_V1 Lookup Table Schema
+
+SUMO_V1 table header:
+
+```text
+has_waiting road_length turn_type road_flow lane_flow travel_time_no_waiting
+```
+
+Feature definitions:
+
+- `has_waiting`: `0/1` previous waiting state.
+- `road_length`: selected/current lane length.
+- `turn_type`: fixed SUMO/C++ encoding:
+  - `0` = unknown/end/missing
+  - `1` = left or partially left, `l/L`
+  - `2` = straight, `s`
+  - `3` = right or partially right, `r/R`
+  - `4` = turn/u-turn, `t`
+- `road_flow`: current edge vehicle count.
+- `lane_flow`: selected-lane vehicle count. Do not derive this as `road_flow / lane_num`.
+- `travel_time_no_waiting`: model prediction for road travel time, trained from `travel_time_label`.
+
+C++ table lookup quantizes floating-point fields before hashing:
+
+```text
+road_length_q = round(road_length * 10000)
+lane_flow_q = round(lane_flow * 1000000)
+```
+
+The current C++ SUMO_V1 lookup uses `features.lane_flow` directly, matching the slim TraCI output and catching script feature semantics.
+
+## 13. Recommended End-to-End Quickstart
 
 ```bash
-# 1. Build C++ simulator
 cmake -S . -B build
 cmake --build build -j2
 
-# 2. Generate large route demand
 python generate_route_on_test_net_full.py \
   --profile all-congestion \
   --output all_congestion_routes.rou.xml \
   --manifest-output all_congestion_manifest.csv
 
-# 3. Generate SUMO tripinfo ground truth
-sumo \
-  -c map.sumo.cfg \
+sumo -c map.sumo.cfg \
   --tripinfo-output tripinfo.xml \
   --duration-log.statistics true \
   --no-step-log true
 
-# 4. Generate TraCI training data
 python TraCI_Python_Adjusted.py \
   --sumo-config map.sumo.cfg \
   --net-file test.net.xml \
-  --training-output cams_model_training_data.csv
+  --sumo-binary sumo \
+  --outputs legacy \
+  --legacy-edge-output TraCI_output_adjusted.csv
 
-# 5. Train model [TODO]
-python model_training/train_travel_time_model.py \
-  --input cams_model_training_data.csv \
-  --output-dir trained_model \
-  --target travel_time_label
+python model_training_sumo_v1.py \
+  --csv TraCI_output_adjusted.csv \
+  --save_path models_v1 \
+  --time_limit 36000
 
-# 6. Build lookup table [TODO]
-python model_training/build_travel_time_table.py \
-  --model-dir trained_model \
-  --output travel_time_table.txt
+python model_catching_sumo_v1.py \
+  --csv TraCI_output_adjusted.csv \
+  --model_path models_v1 \
+  --output_txt model_catching_sumo_v1.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80
 
-# 7. Run final simulation and evaluation
 ./build/Simulation_Prediction \
   --use-sumo \
   --sumo-net test.net.xml \
   --sumo-route all_congestion_routes.rou.xml \
   --sumo-tripinfo tripinfo.xml \
+  --eval-output sumo_eval.csv \
   --travel-time-mode table \
-  --travel-time-table travel_time_table.txt \
-  --tt-fallback speed-net \
-  --read-num 100000 \
-  --eval-output sumo_eval.csv
+  --travel-time-table model_catching_sumo_v1.txt \
+  --tt-fallback speed-net
 ```
 
-## 13. Output Files
+## 14. Output Files
 
 | File | Produced by | Purpose |
 | --- | --- | --- |
 | `all_congestion_routes.rou.xml` | route generator | SUMO route demand. |
 | `all_congestion_manifest.csv` | route generator | Scenario metadata. |
 | `tripinfo.xml` | SUMO | Microscopic ground truth. |
-| `cams_model_training_data.csv` | TraCI | Road-level model training dataset. |
+| `TraCI_output_adjusted.csv` | TraCI | Preferred slim training table with `has_waiting,road_length,turn_type,road_flow,lane_flow,travel_time_label`. |
+| `cams_model_training_data.csv` | TraCI | Fuller CAMS debug/training-compatible table; wider and slower to load than the slim CSV. |
 | `cams_vehicle_movement_events.csv` | TraCI | Movement-level signal event debug data. |
 | `cams_movement_cycle_summary.csv` | TraCI | Signal-cycle discharge summary. |
-| `TraCI_output_adjusted.csv` | TraCI | Compact legacy-compatible summary. |
-| `trained_model/` | model training [TODO] | Trained model artifact. |
-| `travel_time_table.txt` | table generation [TODO] | Fast lookup table for C++ simulation. |
+| `models_v1/` | `model_training_sumo_v1.py` | AutoGluon model artifact. |
+| `model_catching_sumo_v1.txt` | `model_catching_sumo_v1.py` | SUMO_V1 lookup table for C++ table mode. |
 | `sumo_eval.csv` | C++ simulator | Per-vehicle prediction-vs-truth evaluation. |
 | `eval_summary.txt` | C++ simulator | Overall evaluation summary. |
 | `eval_grouped_metrics.csv` | C++ simulator | Grouped error analysis. |
 | `eval_distribution_metrics.csv` | C++ simulator | Distribution-level error analysis. |
 
-## 14. Debugging and Sanity Checks
+## 15. Troubleshooting and Sanity Checks
 
-### Check route generation
+### SUMO / TraCI import failures
+
+If SUMO cannot import `traci`, check `SUMO_HOME` and make sure `$SUMO_HOME/tools` is available to Python.
+
+```bash
+python -c "import os, sys; sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools')); import traci; print('traci ok')"
+```
+
+### Model catching cannot load AutoGluon model
+
+Check that `--model_path` points to the directory produced by `model_training_sumo_v1.py`.
+
+```bash
+python model_catching_sumo_v1.py --model_path models_v1 --help
+```
+
+### High table misses
+
+Run with `--verbose-travel-time` and check:
+
+- `road_length` precision and the C++ `round(road_length * 10000)` quantization.
+- `turn_type` encoding consistency between TraCI, catching, and C++.
+- `lane_flow` semantics: selected-lane vehicle count, not `road_flow / lane_num`.
+- `--max_road_flow` and `--max_lane_flow` coverage in `model_catching_sumo_v1.py`.
+- Whether C++ lookup uses `features.lane_flow` rather than deriving `road_flow / lane_num`.
+
+### Evaluation has missing truth
+
+Check SUMO `tripinfo.xml` vehicle ids and the route generation manifest. The C++ evaluator matches by SUMO vehicle id.
+
+### CSV loading is slow
+
+Use the slim `TraCI_output_adjusted.csv` for large-scale model training. Reserve `cams_model_training_data.csv` for debugging and compatibility because it is wider and slower to load.
+
+### General route/config checks
 
 ```bash
 python generate_route_on_test_net_full.py --help
-```
-
-Confirm that the needed route groups, `--profile all-congestion`, and departure options are listed.
-
-### Check SUMO config
-
-```bash
 sumo -c map.sumo.cfg --check-route-files true
+head TraCI_output_adjusted.csv
+head model_catching_sumo_v1.txt
 ```
 
-If `--check-route-files` is unsupported in the installed SUMO version, run a short SUMO simulation and inspect route errors:
+## 16. Legacy BJ Workflow (Compatibility / Regression)
 
-```bash
-sumo -c map.sumo.cfg --end 300 --no-step-log true
-```
-
-### Check TraCI data
-
-After running TraCI, inspect:
-
-```bash
-head cams_model_training_data.csv
-```
-
-Check that:
-
-- `travel_time_label > 0`.
-- `road_flow` and `lane_flow` cover low, medium, and high values.
-- `turn_type` includes left, straight, right, and other turns when available.
-- `red_light_waiting_time`, `green_queue_wait_time`, and `downstream_block_wait_time` are debug fields and are not included in `travel_time_label`.
-
-### Check C++ simulator
-
-```bash
-./build/Simulation_Prediction \
-  --use-sumo \
-  --sumo-net test.net.xml \
-  --smoke-test
-```
-
-Common issues to inspect:
-
-- Missing required files: readers fail with messages such as `[Fatal] ... cannot open required file '<path>'`.
-- Invalid SUMO connection edge references.
-- `linkIndex` outside the active phase `state` string.
-- Route road pair missing a movement.
-- Query/route/time size mismatch in legacy mode.
-- Table-mode misses; use `--verbose-travel-time` while debugging lookup tables.
-
-Useful internal validation helpers include `validate_sumo_network()`, `validate_sumo_connections()`, `validate_sumo_signal_programs()`, and `validate_sumo_routes()`.
-
-## 15. Legacy BJ Workflow
-
-**Purpose:** run the older text-file workflow for compatibility with Manhattan/Beijing-style data.
+The legacy BJ workflow is separate from the recommended SUMO/CAMS pipeline. Keep it for compatibility with Manhattan/Beijing-style data and regression checks.
 
 Use a base directory when the standard legacy files are colocated:
 
@@ -682,13 +621,9 @@ Legacy data notes:
 - Road-info files contain additional road attributes such as direction, speed limit, lane count, width, and kind.
 - Query, route, and time files are aligned by index. The `i`th query corresponds to the `i`th route and `i`th time record.
 
-**Expected input:** legacy text files.
+Sanity check: start with a small `--read-num`, such as `1000`, before running the full legacy dataset.
 
-**Expected output:** simulator logs and legacy evaluation output unless `--no-eval` is set.
-
-**Sanity check:** start with a small `--read-num` such as `1000` before running the full legacy dataset.
-
-## 16. Command-Line Reference
+## 17. Command-Line Reference
 
 ### C++ simulator options
 
@@ -703,10 +638,10 @@ Legacy data notes:
 | `--sumo-tripinfo <path>` | SUMO `tripinfo.xml` ground-truth output used for evaluation. | Empty | SUMO |
 | `--eval-output <path>` | CSV path for per-vehicle SUMO prediction-vs-truth rows. Sibling summary/grouped/distribution files are also written. | Empty | SUMO |
 | `--travel-time-mode <speed-net|min-time|table|model|kinematic>` | Select the single-road travel-time predictor. | `min-time` | Both |
-| `--travel-time-table <path>` | Dictionary path for table-mode lookups. | Derived default table path | Both |
+| `--travel-time-table <path>` | Dictionary path for table-mode lookups. Supports legacy RoadKey tables and SUMO_V1 tables. | Derived default table path | Both |
 | `--tt-fallback <speed-net|min-time>` | Fallback predictor for table misses or unimplemented model mode. | `speed-net` | Both |
-| `--model-host <host>` | Host reserved for a future external model service. | `127.0.0.1` | Both |
-| `--model-port <port>` | Port reserved for a future external model service. | `9000` | Both |
+| `--model-host <host>` | Host reserved for an external model service path if implemented. | `127.0.0.1` | Both |
+| `--model-port <port>` | Port reserved for an external model service path if implemented. | `9000` | Both |
 | `--verbose-travel-time` | Print per-miss or diagnostic travel-time messages. | Off | Both |
 | `--kinematic-congestion-alpha <value>` | Congestion multiplier for `kinematic` mode; negative values clamp to `0`. | `1.0` | Both |
 | `--lane-discharge-interval <k>` | Global seconds per movement lane-discharge slot; values `<=0` clamp to `1`. | `1` | Both |
@@ -752,26 +687,43 @@ USE_SUMO_NET=1 SUMO_NET_PATH=test.net.xml ./roadnet_sim
 | `--sumo-config <path>` | SUMO `.sumocfg` used for TraCI replay. |
 | `--net-file <path>` | SUMO `.net.xml` file used for network metadata. |
 | `--sumo-binary <sumo|sumo-gui|path>` | SUMO binary launched through TraCI. |
-| `--training-output <path>` | Output CSV for road-level CAMS model training rows. |
-| `--vehicle-event-output <path>` | Output CSV for vehicle-movement ground-truth events. |
-| `--cycle-summary-output <path>` | Output CSV for movement-level green-window summaries. |
-| `--legacy-edge-output <path>` | Compatibility CSV containing compact vehicle-edge summaries. |
+| `--outputs <legacy,training,events,cycles,all,none>` | Select CSV outputs. Default `legacy` writes the slim `TraCI_output_adjusted.csv`. |
+| `--legacy-edge-output <path>` | Output path for the slim model-training table. Default `TraCI_output_adjusted.csv`. |
+| `--training-output <path>` | Fuller debug/training-compatible CSV enabled by `--outputs training` or `all`. |
+| `--vehicle-event-output <path>` | Vehicle-movement event debug CSV enabled by `--outputs events` or `all`. |
+| `--cycle-summary-output <path>` | Movement-level green-window summary CSV enabled by `--outputs cycles` or `all`. |
 | `--waiting-region-length <meters>` | Distance before a signalized stop line treated as the waiting region. |
 | `--stop-speed-threshold <m/s>` | Speed at or below this value is treated as stopped. |
 | `--queue-speed-threshold <m/s>` | Speed at or below this value inside the waiting region is treated as queued. |
 | `--low-speed-threshold <m/s>` | Speed above stop threshold and at or below this value is counted as low-speed time. |
 | `--downstream-block-occupancy-threshold <percent>` | Downstream lane occupancy percentage above which storage is treated as blocked. |
 
-## 17. README Quality Requirements
+### Model training options
 
-This README uses relative paths such as `test.net.xml`, `map.sumo.cfg`, `all_congestion_routes.rou.xml`, and `tripinfo.xml` for reproducibility. Server-specific absolute paths such as `/data5/...` should be treated only as local deployment examples and should not be required for the standard workflow.
+| Argument | Meaning |
+| --- | --- |
+| `--csv <path>` | Slim TraCI training CSV. Default `TraCI_output_adjusted.csv`. |
+| `--save_path <dir>` | AutoGluon model output directory. Default `models_v1`. |
+| `--time_limit <seconds>` | AutoGluon training time limit. |
+| `--test_size <ratio>` | Test split ratio. |
+| `--random_state <n>` | Random seed. |
+| `--net <path>` | Optional SUMO net path; unused by the default slim base-feature model. |
 
-Each pipeline stage above includes:
+### Model catching options
 
-1. purpose
-2. command
-3. expected input
-4. expected output
-5. sanity check
+| Argument | Meaning |
+| --- | --- |
+| `--csv <path>` | Training CSV used to discover observed feature values. Default `TraCI_output_adjusted.csv`. |
+| `--model_path <dir>` | AutoGluon model directory. Default `models_v1`. |
+| `--output_txt <path>` | Space-separated SUMO_V1 table output. Default `model_catching_sumo_v1.txt`. |
+| `--max_road_flow <n>` | Maximum `road_flow` to enumerate. Use `-1` to infer from CSV max. |
+| `--road_flow_step <n>` | `road_flow` enumeration step. |
+| `--max_lane_flow <n>` | Maximum selected-lane `lane_flow` to enumerate. Default is `max_road_flow`. |
+| `--lane_flow_step <n>` | Independent `lane_flow` enumeration step. |
+| `--chunk_size <n>` | Prediction batch size. |
 
-Unfinished model-training and table-generation stages are explicitly marked as **[TODO]**. Before committing README changes, verify that Markdown code fences are balanced and run any configured Markdown linter if one is added to the repository.
+## 18. README Maintenance Notes
+
+This README uses relative paths such as `test.net.xml`, `map.sumo.cfg`, `all_congestion_routes.rou.xml`, `TraCI_output_adjusted.csv`, and `tripinfo.xml` for reproducibility. Server-specific absolute paths such as `/data5/...` should be treated only as local deployment examples and should not be required for the standard workflow.
+
+Before committing README changes, verify that Markdown code fences are balanced and run any configured Markdown linter if one is added to the repository.
