@@ -61,6 +61,10 @@ static long long quantizeLaneFlow(double laneFlow) {
     return static_cast<long long>(std::llround(laneFlow * 1000000.0));
 }
 
+static double sumoV1LaneFlowForModel(const BasicRoadModelFeatures& features) {
+    return static_cast<double>(std::max(0, features.lane_flow));
+}
+
 static bool isSumoV1TravelTimeHeader(const string& line) {
     stringstream ss(line);
     vector<string> cols;
@@ -1958,9 +1962,10 @@ SumoV1TravelTimeKey Graph::buildSumoV1TravelTimeKeyForPrediction(const BasicRoad
     key.turn_type = features.turn_type;
     key.road_flow = max(0, features.road_flow);
 
-    double lane_flow_for_model = features.lane_num > 0
-        ? static_cast<double>(features.road_flow) / static_cast<double>(features.lane_num)
-        : static_cast<double>(features.lane_flow);
+    // SUMO_V1 table feature contract:
+    // lane_flow is selected-lane vehicle count, matching TraCI slim output and
+    // model_catching_sumo_v1.py. Do not derive it as road_flow / lane_num.
+    double lane_flow_for_model = sumoV1LaneFlowForModel(features);
     key.lane_flow_q = quantizeLaneFlow(lane_flow_for_model);
     return key;
 }
@@ -1978,9 +1983,7 @@ int Graph::predictRoadTravelTimeTable(const BasicRoadModelFeatures& features) {
 
         ++travelTimeTableMiss;
         if (verboseTravelTimePrediction) {
-            double lane_flow_for_model = features.lane_num > 0
-                ? static_cast<double>(features.road_flow) / static_cast<double>(features.lane_num)
-                : static_cast<double>(features.lane_flow);
+            double lane_flow_for_model = sumoV1LaneFlowForModel(features);
             cout << "[TravelTime] SUMO_V1 TABLE miss roadID=" << features.roadID
                  << " key={has_waiting=" << key.has_waiting
                  << ", road_length_q=" << key.road_length_q
@@ -1992,7 +1995,9 @@ int Graph::predictRoadTravelTimeTable(const BasicRoadModelFeatures& features) {
                  << ", turn_type=" << features.turn_type
                  << ", road_flow=" << features.road_flow
                  << ", lane_flow_for_model=" << lane_flow_for_model
+                 << ", lane_flow=" << features.lane_flow
                  << ", lane_num=" << features.lane_num
+                 << ", laneIndex=" << features.laneIndex
                  << "}" << endl;
         }
 
