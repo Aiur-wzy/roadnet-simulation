@@ -861,8 +861,26 @@ public:
             int currentTime,
             int preferredLaneIndex = -1
     ) const;
+    BasicRoadModelFeatures buildBasicRoadModelFeaturesWithEnteringVehicle(
+            int roadID,
+            int vehicleID,
+            int movementID,
+            int currentTime,
+            int preferredLaneIndex = -1
+    ) const;
     int encodeTurnDirForModel(TurnDir turn) const;
+    int predictRoadTravelTimeFromFeatures(
+            int roadID,
+            const BasicRoadModelFeatures& features
+    );
     int predictRoadTravelTime(
+            int roadID,
+            int vehicleID,
+            int movementID,
+            int currentTime,
+            int preferredLaneIndex = -1
+    );
+    int predictRoadTravelTimeWithEnteringVehicle(
             int roadID,
             int vehicleID,
             int movementID,
