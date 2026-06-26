@@ -511,6 +511,9 @@ struct VehicleLabel {
     int currentRoadID = -1;
     int arrivalTime = 0;
     int scheduledDepartTime = 0;
+    int assignedEntryRoadID = -1;
+    int assignedEntryLaneIndex = -1;
+    bool queuedForEntry = false;
 
     // Waiting state from the most recent movement discharge. These values describe
     // whether the vehicle waited before entering its current road, so downstream
@@ -803,7 +806,7 @@ public:
     vector<int> movementPQVersion;
     vector<bool> movementBlockedByDownstream;
     vector<bool> movementInDispatchPQ;
-    unordered_set<int> delayedDepartureLogged;
+    vector<vector<deque<int>>> entryLaneDepartureQueues;
     // Step 3: ALGORITHM I SIMULATION
     // -----------------------------------------------------------------------------
 
@@ -836,7 +839,13 @@ public:
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
     void initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vector<int>>& routeRoadID);
     void initialize_signal_event_queue(int simStartTime);
+    void initializeEntryLaneDepartureQueues();
+    bool hasPendingEntryDepartureQueues() const;
+    void processScheduledDeparturesUntil(int t);
     void process_departures_until(int windowStart, int windowEnd);
+    bool enqueueDepartingVehicle(int vehicleID, int scheduledTime);
+    bool tryStartVehicleFromEntryQueue(int vehicleID, int actualDepartTime, int firstRoad, int laneIndex);
+    void processEntryDepartureQueuesAtTime(int t);
     bool departVehicle(int vehicleID, int departTime);
     void process_discharge_window(int windowStart, int windowEnd);
     void rebuildActiveDispatchPQ(int currentTime, int windowEnd);
