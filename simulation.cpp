@@ -1514,7 +1514,8 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     // A future model can add next-movement features without changing this call shape.
     if (v.roadIndex >= static_cast<int>(v.routeRoadIDs.size()) - 1) {
         // ETA update section: final road prediction completes the route.
-        v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
+        v.arrivalTime = dischargeTime + predictRoadTravelTimeWithEnteringVehicle(
+                m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
         result.newArrivalTime = v.arrivalTime;
         v.currentMovementID = -1;
         v.currentBufferID = -1;
@@ -1880,18 +1881,33 @@ BasicRoadModelFeatures Graph::buildBasicRoadModelFeatures(
     return features;
 }
 
-// Single-road travel-time prediction selector.
-// --travel-time-mode affects only this road-time estimate, not movement dispatch
-// scheduling, signal handling, FIFO order, or capacity rules.
-int Graph::predictRoadTravelTime(
+BasicRoadModelFeatures Graph::buildBasicRoadModelFeaturesWithEnteringVehicle(
         int roadID,
         int vehicleID,
         int movementID,
         int currentTime,
-        int preferredLaneIndex) {
+        int preferredLaneIndex) const {
     BasicRoadModelFeatures features = buildBasicRoadModelFeatures(
             roadID, vehicleID, movementID, currentTime, preferredLaneIndex);
 
+    features.road_flow += 1;
+    features.lane_flow += 1;
+
+    if (verboseTravelTimePrediction) {
+        cout << "[TravelTime FinalRoad] vehicle=" << vehicleID
+             << " road=" << roadID
+             << " lane=" << preferredLaneIndex
+             << " adjustedRoadFlow=" << features.road_flow
+             << " adjustedLaneFlow=" << features.lane_flow
+             << endl;
+    }
+
+    return features;
+}
+
+int Graph::predictRoadTravelTimeFromFeatures(
+        int roadID,
+        const BasicRoadModelFeatures& features) {
     if (enableBasicFeatureLogging) {
         basicFeatureSnapshots.push_back(features);
     }
@@ -1909,6 +1925,31 @@ int Graph::predictRoadTravelTime(
             return predictRoadTravelTimeKinematic(features);
     }
     return predictRoadTravelTimeSpeedNet(roadID);
+}
+
+// Single-road travel-time prediction selector.
+// --travel-time-mode affects only this road-time estimate, not movement dispatch
+// scheduling, signal handling, FIFO order, or capacity rules.
+int Graph::predictRoadTravelTime(
+        int roadID,
+        int vehicleID,
+        int movementID,
+        int currentTime,
+        int preferredLaneIndex) {
+    BasicRoadModelFeatures features = buildBasicRoadModelFeatures(
+            roadID, vehicleID, movementID, currentTime, preferredLaneIndex);
+    return predictRoadTravelTimeFromFeatures(roadID, features);
+}
+
+int Graph::predictRoadTravelTimeWithEnteringVehicle(
+        int roadID,
+        int vehicleID,
+        int movementID,
+        int currentTime,
+        int preferredLaneIndex) {
+    BasicRoadModelFeatures features = buildBasicRoadModelFeaturesWithEnteringVehicle(
+            roadID, vehicleID, movementID, currentTime, preferredLaneIndex);
+    return predictRoadTravelTimeFromFeatures(roadID, features);
 }
 
 int Graph::predictRoadTravelTime(int roadID, int vehicleID) {
