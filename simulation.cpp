@@ -460,6 +460,9 @@ float Graph::evaluate_sumo_tripinfo_truth(
         if (!csv) {
             throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open CSV output '" + evalOutputPath + "'");
         }
+        // predDepart is the actual first-road entry time recorded after the
+        // first lane occupancy reservation succeeds, not the scheduled/input
+        // departure time.
         csv << "vehicleID,predDepart,truthDepart,predArrival,truthArrival,"
             << "predDuration,truthDuration,durationError,absDurationError,"
             << "arrivalError,truthWaitingTime,truthTimeLoss,truthRouteLength,"
@@ -518,6 +521,8 @@ float Graph::evaluate_sumo_tripinfo_truth(
         }
 
         const SumoTripInfoTruth &truth = truthIt->second;
+        // ETA.front() is inserted only after actual first-road entry, so
+        // predDuration excludes any initial storage-blocked departure delay.
         double predDepart = ETA[i].front().second;
         double predArrival = ETA[i].back().second;
         double predDuration = predArrival - predDepart;
@@ -1139,6 +1144,7 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
         }
 
         int departTime = (i < static_cast<int>(Q.size()) && Q[i].size() > 2) ? Q[i][2] : 0;
+        v.scheduledDepartTime = departTime;
         v.currentRoadID = v.routeRoadIDs[0];
         v.arrivalTime = departTime;
         // First-road entry is an outside-system departure, not a signal-buffer
@@ -1152,8 +1158,6 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
             mark_invalid(v);
             continue;
         }
-
-        ETA_result_cycle_aware[i].push_back({v.currentRoadID, static_cast<float>(departTime)});
 
         if (v.routeRoadIDs.size() > 1) {
             if (v.routeMovementIDs.empty()) {
@@ -1267,6 +1271,21 @@ bool Graph::departVehicle(int vehicleID, int departTime) {
     }
 
     reserveLaneOccupancy(vehicleID, firstRoad, chosenLane);
+    if (ETA_result_cycle_aware[vehicleID].empty()) {
+        ETA_result_cycle_aware[vehicleID].push_back({firstRoad, static_cast<float>(departTime)});
+    } else if (verboseTravelTimePrediction) {
+        cout << "[Depart] duplicate first ETA ignored vehicle=" << vehicleID
+             << " existingRoad=" << ETA_result_cycle_aware[vehicleID].front().first
+             << " existingDepart=" << ETA_result_cycle_aware[vehicleID].front().second
+             << " attemptedDepart=" << departTime << endl;
+    }
+    if (verboseTravelTimePrediction) {
+        cout << "[Depart] vehicle=" << vehicleID
+             << " scheduledDepart=" << v.scheduledDepartTime
+             << " actualDepart=" << departTime
+             << " firstRoad=" << firstRoad
+             << " lane=" << chosenLane << endl;
+    }
     // Keep first-road has_waiting at 0: this prediction represents departure from
     // outside the modeled network, not discharge from a signal waiting buffer.
     v.hasWaitingBeforeCurrentRoad = false;

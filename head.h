@@ -510,6 +510,7 @@ struct VehicleLabel {
     int roadIndex = 0;
     int currentRoadID = -1;
     int arrivalTime = 0;
+    int scheduledDepartTime = 0;
 
     // Waiting state from the most recent movement discharge. These values describe
     // whether the vehicle waited before entering its current road, so downstream
