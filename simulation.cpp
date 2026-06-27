@@ -280,6 +280,102 @@ string eval_sibling_path(const string& evalOutputPath, const string& filename)
     return evalOutputPath.substr(0, slash + 1) + filename;
 }
 
+string csv_escape(const string& value)
+{
+    bool needsQuotes = false;
+    string escaped;
+    escaped.reserve(value.size());
+    for (char c : value) {
+        if (c == '"') {
+            escaped += "\"\"";
+            needsQuotes = true;
+        } else {
+            if (c == ',' || c == '\n' || c == '\r') needsQuotes = true;
+            escaped += c;
+        }
+    }
+    if (!needsQuotes) return escaped;
+    return "\"" + escaped + "\"";
+}
+
+string join_int_vector(const vector<int>& values, const string& sep = "|")
+{
+    ostringstream out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out << sep;
+        out << values[i];
+    }
+    return out.str();
+}
+
+string join_string_vector(const vector<string>& values, const string& sep = "|")
+{
+    ostringstream out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out << sep;
+        out << values[i];
+    }
+    return out.str();
+}
+
+string road_debug_name(const Graph& g, int roadID)
+{
+    auto it = g.roadIDToSumoEdgeStr.find(roadID);
+    if (it != g.roadIDToSumoEdgeStr.end() && !it->second.empty()) return it->second;
+    return "road_" + to_string(roadID);
+}
+
+string join_road_debug_names(const Graph& g, const vector<int>& roadIDs)
+{
+    vector<string> names;
+    names.reserve(roadIDs.size());
+    for (int roadID : roadIDs) names.push_back(road_debug_name(g, roadID));
+    return join_string_vector(names, "|");
+}
+
+string turn_dir_to_string(TurnDir turn)
+{
+    switch (turn) {
+        case TurnDir::Left: return "Left";
+        case TurnDir::Straight: return "Straight";
+        case TurnDir::Right: return "Right";
+        case TurnDir::UTurn: return "UTurn";
+        case TurnDir::Unknown: return "Unknown";
+    }
+    return "Unknown";
+}
+
+string movement_debug_name(const Graph& g, int movementID)
+{
+    if (movementID < 0 || movementID >= static_cast<int>(g.movements.size())) {
+        return "movement_" + to_string(movementID) + ":invalid";
+    }
+    const Movement& movement = g.movements[movementID];
+    const string fromEdge = road_debug_name(g, movement.fromRoadID);
+    const string toEdge = road_debug_name(g, movement.toRoadID);
+    return to_string(movementID) + ":" + fromEdge + "->" + toEdge + ":" + turn_dir_to_string(movement.turn);
+}
+
+string join_movement_debug_names(const Graph& g, const vector<int>& movementIDs)
+{
+    vector<string> names;
+    names.reserve(movementIDs.size());
+    for (int movementID : movementIDs) names.push_back(movement_debug_name(g, movementID));
+    return join_string_vector(names, "|");
+}
+
+struct ExtremeRouteStats {
+    int count = 0;
+    double sumRelativeDurationError = 0.0;
+    double maxRelativeDurationError = 0.0;
+    double sumAbsDurationError = 0.0;
+    double maxAbsDurationError = 0.0;
+
+    vector<string> sampleVehicleIDs;
+    vector<int> routeRoadIDs;
+    vector<int> routeMovementIDs;
+};
+
 vector<pair<string, function<bool(const SumoEvalRecord&)>>> sumo_duration_bins()
 {
     return {
@@ -444,6 +540,7 @@ float Graph::evaluate_sumo_tripinfo_truth(
         const vector<vector<pair<int, float>>>& ETA)
 {
     const double epsilon = 1e-9;
+    const double extremeRelativeDurationThreshold = 3.0;
 
     if (sumoTruthByVehicleID.empty()) {
         cout << "[SUMO Eval] No SUMO tripinfo truth loaded; skipping evaluation." << endl;
@@ -453,6 +550,8 @@ float Graph::evaluate_sumo_tripinfo_truth(
     const string summaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_summary.txt");
     const string groupedPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_grouped_metrics.csv");
     const string distributionPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_distribution_metrics.csv");
+    const string extremePath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_duration_errors.csv");
+    const string extremeRouteSummaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_route_summary.csv");
 
     ofstream csv;
     if (!evalOutputPath.empty()) {
@@ -470,6 +569,24 @@ float Graph::evaluate_sumo_tripinfo_truth(
             << "absDurationErrorPerKm,predAvgSpeed,truthAvgSpeed,speedError,"
             << "numRoads,numMovements,validVehicle\n";
     }
+
+    ofstream extremeCsv;
+    if (!extremePath.empty()) {
+        extremeCsv.open(extremePath.c_str());
+        if (!extremeCsv) {
+            throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open extreme duration output '" + extremePath + "'");
+        }
+
+        extremeCsv << "vehicleID,predDepart,truthDepart,predArrival,truthArrival,"
+                   << "predDuration,truthDuration,durationError,absDurationError,"
+                   << "relativeDurationError,relativeDurationErrorPercent,"
+                   << "arrivalError,absArrivalError,truthWaitingTime,truthTimeLoss,truthRouteLength,"
+                   << "predAvgSpeed,truthAvgSpeed,speedError,numRoads,numMovements,"
+                   << "routeRoadIDs,routeRoadEdges,routeMovementIDs,routeMovementEdges\n";
+    }
+
+    unordered_map<string, ExtremeRouteStats> extremeRouteStatsByRoute;
+    int extremeDurationErrorCount = 0;
 
     int comparedCount = 0;
     int missingTruthCount = 0;
@@ -543,6 +660,59 @@ float Graph::evaluate_sumo_tripinfo_truth(
         int numMovements = (i < static_cast<int>(routeMovementID.size()))
                          ? static_cast<int>(routeMovementID[i].size())
                          : 0;
+        vector<int> vehicleRouteRoadIDs = (i < static_cast<int>(routeRoadID.size()))
+                                        ? routeRoadID[i]
+                                        : vector<int>{};
+        vector<int> vehicleRouteMovementIDs = (i < static_cast<int>(routeMovementID.size()))
+                                            ? routeMovementID[i]
+                                            : vector<int>{};
+
+        if (truthDuration > epsilon && relativeDurationError >= extremeRelativeDurationThreshold) {
+            ++extremeDurationErrorCount;
+            const string routeRoadIDsValue = join_int_vector(vehicleRouteRoadIDs, "|");
+            const string routeRoadEdgesValue = join_road_debug_names(*this, vehicleRouteRoadIDs);
+            const string routeMovementIDsValue = join_int_vector(vehicleRouteMovementIDs, "|");
+            const string routeMovementEdgesValue = join_movement_debug_names(*this, vehicleRouteMovementIDs);
+            const double relativeDurationErrorPercent = relativeDurationError * 100.0;
+
+            if (extremeCsv) {
+                extremeCsv << csv_escape(vehicleID) << ','
+                           << predDepart << ','
+                           << truth.depart << ','
+                           << predArrival << ','
+                           << truth.arrival << ','
+                           << predDuration << ','
+                           << truthDuration << ','
+                           << durationError << ','
+                           << absDurationError << ','
+                           << relativeDurationError << ','
+                           << relativeDurationErrorPercent << ','
+                           << arrivalError << ','
+                           << absArrivalError << ','
+                           << truth.waitingTime << ','
+                           << truth.timeLoss << ','
+                           << truth.routeLength << ','
+                           << predAvgSpeed << ','
+                           << truthAvgSpeed << ','
+                           << speedError << ','
+                           << numRoads << ','
+                           << numMovements << ','
+                           << csv_escape(routeRoadIDsValue) << ','
+                           << csv_escape(routeRoadEdgesValue) << ','
+                           << csv_escape(routeMovementIDsValue) << ','
+                           << csv_escape(routeMovementEdgesValue) << '\n';
+            }
+
+            ExtremeRouteStats& stats = extremeRouteStatsByRoute[routeRoadIDsValue];
+            ++stats.count;
+            stats.sumRelativeDurationError += relativeDurationError;
+            stats.maxRelativeDurationError = max(stats.maxRelativeDurationError, relativeDurationError);
+            stats.sumAbsDurationError += absDurationError;
+            stats.maxAbsDurationError = max(stats.maxAbsDurationError, absDurationError);
+            if (stats.sampleVehicleIDs.size() < 10) stats.sampleVehicleIDs.push_back(vehicleID);
+            if (stats.routeRoadIDs.empty()) stats.routeRoadIDs = vehicleRouteRoadIDs;
+            if (stats.routeMovementIDs.empty()) stats.routeMovementIDs = vehicleRouteMovementIDs;
+        }
 
         comparedCount++;
         absDurationErrors.push_back(absDurationError);
@@ -705,7 +875,56 @@ float Graph::evaluate_sumo_tripinfo_truth(
     summary << "predP10=" << distribution.predP10 << '\n' << "truthP10=" << distribution.truthP10 << '\n' << "diffP10=" << distribution.diffP10 << '\n';
     summary << "predP50=" << distribution.predP50 << '\n' << "truthP50=" << distribution.truthP50 << '\n' << "diffP50=" << distribution.diffP50 << '\n';
     summary << "predP90=" << distribution.predP90 << '\n' << "truthP90=" << distribution.truthP90 << '\n' << "diffP90=" << distribution.diffP90 << '\n';
-    summary << "predMean=" << distribution.predMean << '\n' << "truthMean=" << distribution.truthMean << '\n' << "diffMean=" << distribution.diffMean << "\n";
+    summary << "predMean=" << distribution.predMean << '\n' << "truthMean=" << distribution.truthMean << '\n' << "diffMean=" << distribution.diffMean << "\n\n";
+
+    summary << "[Extreme Duration Error]\n";
+    summary << "threshold=absDurationError/truthDuration >= " << extremeRelativeDurationThreshold << '\n';
+    summary << "thresholdPercent=" << (extremeRelativeDurationThreshold * 100.0) << '\n';
+    summary << "vehicleCount=" << extremeDurationErrorCount << '\n';
+    summary << "routePatternCount=" << extremeRouteStatsByRoute.size() << '\n';
+    summary << "extremeVehicleOutput=" << extremePath << '\n';
+    summary << "extremeRouteSummaryOutput=" << extremeRouteSummaryPath << "\n";
+
+    if (!extremeRouteSummaryPath.empty()) {
+        vector<pair<string, ExtremeRouteStats>> routeRows(extremeRouteStatsByRoute.begin(), extremeRouteStatsByRoute.end());
+        sort(routeRows.begin(), routeRows.end(), [](const auto& a, const auto& b) {
+            if (a.second.count != b.second.count) return a.second.count > b.second.count;
+            return a.second.maxRelativeDurationError > b.second.maxRelativeDurationError;
+        });
+
+        ofstream routeSummaryCsv(extremeRouteSummaryPath.c_str());
+        if (!routeSummaryCsv) {
+            throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open extreme route summary output '" + extremeRouteSummaryPath + "'");
+        }
+        routeSummaryCsv << "routeKey,count,meanRelativeDurationError,meanRelativeDurationErrorPercent,"
+                        << "maxRelativeDurationError,maxRelativeDurationErrorPercent,"
+                        << "meanAbsDurationError,maxAbsDurationError,sampleVehicleIDs,"
+                        << "routeRoadIDs,routeRoadEdges,routeMovementIDs,routeMovementEdges\n";
+        for (const auto& row : routeRows) {
+            const string& routeKey = row.first;
+            const ExtremeRouteStats& stats = row.second;
+            const double count = static_cast<double>(stats.count);
+            const double meanRelativeDurationError = safe_divide(stats.sumRelativeDurationError, count);
+            const double meanAbsDurationError = safe_divide(stats.sumAbsDurationError, count);
+            const string routeRoadIDsValue = join_int_vector(stats.routeRoadIDs, "|");
+            const string routeRoadEdgesValue = join_road_debug_names(*this, stats.routeRoadIDs);
+            const string routeMovementIDsValue = join_int_vector(stats.routeMovementIDs, "|");
+            const string routeMovementEdgesValue = join_movement_debug_names(*this, stats.routeMovementIDs);
+            routeSummaryCsv << csv_escape(routeKey) << ','
+                            << stats.count << ','
+                            << meanRelativeDurationError << ','
+                            << (meanRelativeDurationError * 100.0) << ','
+                            << stats.maxRelativeDurationError << ','
+                            << (stats.maxRelativeDurationError * 100.0) << ','
+                            << meanAbsDurationError << ','
+                            << stats.maxAbsDurationError << ','
+                            << csv_escape(join_string_vector(stats.sampleVehicleIDs, "|")) << ','
+                            << csv_escape(routeRoadIDsValue) << ','
+                            << csv_escape(routeRoadEdgesValue) << ','
+                            << csv_escape(routeMovementIDsValue) << ','
+                            << csv_escape(routeMovementEdgesValue) << '\n';
+        }
+    }
 
     cout << "[SUMO Eval] Overall Accuracy" << endl;
     cout << "[SUMO Eval] comparedCount: " << comparedCount << endl;
@@ -733,6 +952,16 @@ float Graph::evaluate_sumo_tripinfo_truth(
     cout << "[SUMO Eval] MAE arrival: " << maeArrival << endl;
     cout << "[SUMO Eval] RMSE arrival: " << rmseArrival << endl;
     cout << "[SUMO Eval] Bias arrival: " << biasArrival << endl;
+    cout << "[SUMO Eval] Extreme duration error threshold: absDurationError/truthDuration >= "
+         << extremeRelativeDurationThreshold << " (" << extremeRelativeDurationThreshold * 100.0 << "%)" << endl;
+    cout << "[SUMO Eval] Extreme duration error vehicles: "
+         << extremeDurationErrorCount << endl;
+    cout << "[SUMO Eval] Extreme duration error route patterns: "
+         << extremeRouteStatsByRoute.size() << endl;
+    if (!extremePath.empty()) {
+        cout << "[SUMO Eval] Extreme vehicle output: " << extremePath << endl;
+        cout << "[SUMO Eval] Extreme route summary output: " << extremeRouteSummaryPath << endl;
+    }
     cout << summary.str();
 
     if (!evalOutputPath.empty()) {
@@ -745,6 +974,8 @@ float Graph::evaluate_sumo_tripinfo_truth(
         cout << "[SUMO Eval] Summary written to " << summaryPath << endl;
         cout << "[SUMO Eval] Grouped metrics written to " << groupedPath << endl;
         cout << "[SUMO Eval] Distribution metrics written to " << distributionPath << endl;
+        cout << "[SUMO Eval] Extreme vehicle output written to " << extremePath << endl;
+        cout << "[SUMO Eval] Extreme route summary written to " << extremeRouteSummaryPath << endl;
     }
 
     return static_cast<float>(mse);
