@@ -576,6 +576,18 @@ enum class DischargeBlockReason {
     Invalid
 };
 
+// Runtime-only candidate data for movements that share the same dispatch time.
+// These records let process_discharge_window classify a same-time batch before
+// applying downstream-road round-robin ordering within each ready group.
+struct ReadyDispatchCandidate {
+    int movementID = -1;
+    int time = 0;
+    int bufferID = -1;
+    int frontVehicleID = -1;
+    int chosenLane = -1;
+    DischargeBlockReason reason = DischargeBlockReason::Invalid;
+};
+
 // Output of a successful discharge.
 // releasedRoadID/releasedLaneIndex identify freed storage so upstream movements
 // blocked by downstream fullness can be reactivated.
@@ -861,6 +873,19 @@ public:
     void scheduleMovementCandidate(int movementID, int time);
     void deactivateMovementForDownstreamBlock(int movementID);
     void reactivateMovementsBlockedByRoad(int freedRoadID, int currentTime);
+    vector<int> orderMovementsByDownstreamRoundRobin(
+            int intersectionID,
+            int toRoadID,
+            const vector<int>& movementIDs
+    );
+    void markDownstreamRoundRobinServed(int movementID);
+    void handleSuccessfulDischargePostUpdate(
+            int movementID,
+            int t,
+            int oldLabel,
+            int bufferID,
+            const DischargeResult& result
+    );
     bool hasDischargeCapacity(int movementID, int t);
     void consumeDischargeCapacity(int movementID, int t);
     int nextAvailableCapacityTime(int movementID, int t);

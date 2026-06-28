@@ -1642,49 +1642,25 @@ bool Graph::departVehicle(int vehicleID, int departTime) {
 // Core movement-dispatch window.
 // Pop movement candidates, read the current FIFO front only after pop, compute the
 // actual attempt time, classify blocks, and mutate queues/flows only on success.
+namespace {
+string joinMovementIDsForLog(const vector<int>& movementIDs) {
+    ostringstream oss;
+    for (size_t i = 0; i < movementIDs.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << movementIDs[i];
+    }
+    return oss.str();
+}
+}
+
+// Core movement-dispatch window.
+// Pop movement candidates, read the current FIFO front only after pop, compute the
+// actual attempt time, classify blocks, and mutate queues/flows only on success.
 void Graph::process_discharge_window(int windowStart, int windowEnd) {
     (void)windowStart;
     rebuildActiveDispatchPQ(windowStart, windowEnd);
 
-    // Core loop: the heap orders movements by next attempt time; it does not
-    // store a vehicle ID because the FIFO front can change between pushes.
-    while (!dispatchPQ.empty()) {
-        DispatchCandidate c = dispatchPQ.top();
-        if (c.timeLabel >= windowEnd) break;
-        dispatchPQ.pop();
-
-        // Defensive guard, not the main dispatch rule:
-        // lazy invalidation may leave stale movement labels in the PQ.
-        if (!isDispatchCandidateValid(c)) continue;
-        int movementID = c.movementID;
-        movementInDispatchPQ[movementID] = false;
-
-        if (movementBlockedByDownstream[movementID]) continue;
-
-        int bufferID = getMovementBufferID(movementID);
-        // Defensive guard: buffer mapping may be absent, or another discharge in
-        // this window may already have emptied the real FIFO queue.
-        if (bufferID < 0 || waitingBuffers[bufferID].vehicleQueue.empty()) continue;
-
-        // Read the current FIFO front only after popping the movement candidate.
-        int vehicleID = waitingBuffers[bufferID].vehicleQueue.front();
-        // Defensive guard: skip corrupted vehicle ids without changing FIFO order.
-        if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) continue;
-        // Actual attempt time respects persistent movement label, front vehicle
-        // arrival label, and the popped candidate label.
-        int t = max(max(movementTimeLabel[movementID], vehicles[vehicleID].arrivalTime), c.timeLabel);
-
-        if (t >= windowEnd) {
-            // Boundary guard: keep the candidate for a future stable signal window.
-            scheduleMovementCandidate(movementID, t);
-            continue;
-        }
-
-        int frontVehicleID = -1;
-        int chosenLane = -1;
-        // Classify the block reason first; rescheduling policy is handled below.
-        DischargeBlockReason reason = getDischargeBlockReason(movementID, t, frontVehicleID, chosenLane);
-
+    auto handleBlockedCandidate = [&](int movementID, int t, DischargeBlockReason reason, int frontVehicleID) {
         // Red signal: jump directly to next green instead of retrying every second.
         if (reason == DischargeBlockReason::RedSignal) {
             int nextT = nextGreenTimeForMovement(movementID, t);
@@ -1692,7 +1668,7 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
                 movementTimeLabel[movementID] = max(movementTimeLabel[movementID], nextT);
                 scheduleMovementCandidate(movementID, movementTimeLabel[movementID]);
             }
-            continue;
+            return;
         }
 
         // Capacity exhausted: move to the next discharge-capacity slot.
@@ -1700,7 +1676,7 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
             int nextT = nextAvailableCapacityTime(movementID, t);
             movementTimeLabel[movementID] = max(movementTimeLabel[movementID], nextT);
             scheduleMovementCandidate(movementID, movementTimeLabel[movementID]);
-            continue;
+            return;
         }
 
         // Front vehicle has not reached the waiting-buffer label time yet.
@@ -1710,65 +1686,213 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
                 : t + 1;
             movementTimeLabel[movementID] = max(movementTimeLabel[movementID], nextT);
             scheduleMovementCandidate(movementID, movementTimeLabel[movementID]);
-            continue;
+            return;
         }
 
         // Downstream lane storage is full: deactivate until a vehicle releases that road.
         if (reason == DischargeBlockReason::DownstreamFull) {
             deactivateMovementForDownstreamBlock(movementID);
-            continue;
+        }
+    };
+
+    // Core loop: the heap still orders movements by next attempt time. We process
+    // all valid candidates with the same label as one batch, then apply fairness
+    // only among ready movements competing for the same downstream road.
+    while (!dispatchPQ.empty()) {
+        DispatchCandidate first;
+        bool hasFirst = false;
+        while (!dispatchPQ.empty()) {
+            DispatchCandidate c = dispatchPQ.top();
+            if (c.timeLabel >= windowEnd) return;
+            dispatchPQ.pop();
+            if (!isDispatchCandidateValid(c)) continue;
+            first = c;
+            hasFirst = true;
+            break;
+        }
+        if (!hasFirst) break;
+
+        const int batchTime = first.timeLabel;
+        vector<DispatchCandidate> sameTimeBatch;
+        sameTimeBatch.push_back(first);
+
+        while (!dispatchPQ.empty()) {
+            DispatchCandidate c = dispatchPQ.top();
+            if (c.timeLabel != batchTime) break;
+            dispatchPQ.pop();
+            if (!isDispatchCandidateValid(c)) continue;
+            sameTimeBatch.push_back(c);
         }
 
-        if (reason != DischargeBlockReason::None) continue;
+        map<pair<int, int>, vector<ReadyDispatchCandidate>> readyGroups;
 
-        // Success path only: dischargeOneVehicle may pop FIFO and update road/lane flow.
-        int oldLabel = movementTimeLabel[movementID];
-        int fifoBefore = waitingBuffers[bufferID].vehicleQueue.empty() ? -1 : waitingBuffers[bufferID].vehicleQueue.front();
-        DischargeResult result = dischargeOneVehicle(movementID, t);
-        if (result.vehicleID < 0) {
-            // Defensive sanity check: failed discharge must not mutate FIFO order.
-            if (fifoBefore >= 0 && !waitingBuffers[bufferID].vehicleQueue.empty()
-                    && waitingBuffers[bufferID].vehicleQueue.front() != fifoBefore) {
-                cout << "[Dispatch Sanity Warning] failed discharge changed FIFO movement=" << movementID << endl;
+        for (const DispatchCandidate &candidate : sameTimeBatch) {
+            int movementID = candidate.movementID;
+            if (movementID < 0 || movementID >= static_cast<int>(movements.size())) continue;
+            movementInDispatchPQ[movementID] = false;
+
+            if (movementBlockedByDownstream[movementID]) continue;
+
+            int bufferID = getMovementBufferID(movementID);
+            if (bufferID < 0 || waitingBuffers[bufferID].vehicleQueue.empty()) continue;
+
+            int vehicleID = waitingBuffers[bufferID].vehicleQueue.front();
+            if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) continue;
+
+            int t = max(max(movementTimeLabel[movementID], vehicles[vehicleID].arrivalTime), candidate.timeLabel);
+            if (t >= windowEnd) {
+                scheduleMovementCandidate(movementID, t);
+                continue;
             }
-            continue;
+            if (t > batchTime) {
+                scheduleMovementCandidate(movementID, t);
+                continue;
+            }
+
+            int frontVehicleID = -1;
+            int chosenLane = -1;
+            DischargeBlockReason reason = getDischargeBlockReason(movementID, t, frontVehicleID, chosenLane);
+            if (reason != DischargeBlockReason::None) {
+                handleBlockedCandidate(movementID, t, reason, frontVehicleID);
+                continue;
+            }
+
+            const Movement &m = movements[movementID];
+            readyGroups[{m.intersectionID, m.toRoadID}].push_back(
+                    {movementID, t, bufferID, frontVehicleID, chosenLane, reason});
         }
 
-        int nextLabel = nextAvailableCapacityTime(movementID, t);
-        if (nextLabel < oldLabel) {
-            cout << "[Dispatch Sanity Warning] movementTimeLabel would decrease movement=" << movementID
-                 << " old=" << oldLabel << " new=" << nextLabel << endl;
-            nextLabel = oldLabel;
-        }
-        movementTimeLabel[movementID] = nextLabel;
+        for (const auto &groupEntry : readyGroups) {
+            int intersectionID = groupEntry.first.first;
+            int toRoadID = groupEntry.first.second;
+            vector<int> movementIDs;
+            unordered_map<int, ReadyDispatchCandidate> readyByMovement;
+            for (const ReadyDispatchCandidate &ready : groupEntry.second) {
+                movementIDs.push_back(ready.movementID);
+                readyByMovement[ready.movementID] = ready;
+            }
 
-        if (verboseTravelTimePrediction) {
-            cout << "[Dispatch Success] movement=" << movementID
-                 << " vehicle=" << result.vehicleID
-                 << " dischargeTime=" << t
-                 << " oldLabel=" << oldLabel
-                 << " newLabel=" << movementTimeLabel[movementID]
-                 << " releasedRoad=" << result.releasedRoadID
-                 << " toRoad=" << result.toRoadID << endl;
-        }
+            int lastServedBefore = -1;
+            if (intersectionID >= 0 && intersectionID < static_cast<int>(intersections.size())) {
+                auto it = intersections[intersectionID].roundRobinPointerByToRoad.find(toRoadID);
+                if (it != intersections[intersectionID].roundRobinPointerByToRoad.end()) lastServedBefore = it->second;
+            }
 
-        // Same movement may still have a FIFO front; schedule its next capacity-safe attempt.
-        if (!waitingBuffers[bufferID].vehicleQueue.empty()) {
-            int nextFront = waitingBuffers[bufferID].vehicleQueue.front();
-            int nextT = max(movementTimeLabel[movementID], vehicles[nextFront].arrivalTime);
-            scheduleMovementCandidate(movementID, computeMovementAttemptTime(movementID, nextT));
-        }
+            vector<int> ordered = orderMovementsByDownstreamRoundRobin(intersectionID, toRoadID, movementIDs);
+            if (verboseTravelTimePrediction && ordered.size() > 1) {
+                cout << "[DownstreamRR] t=" << batchTime
+                     << " intersection=" << intersectionID
+                     << " toRoad=" << toRoadID
+                     << " order=" << joinMovementIDsForLog(ordered)
+                     << " lastServedBefore=" << lastServedBefore << endl;
+            }
 
-        // Vehicle entered a downstream road and will next wait on its next movement.
-        if (!result.finished && result.nextMovementID >= 0) {
-            int nextT = max(movementTimeLabel[result.nextMovementID], result.newArrivalTime);
-            scheduleMovementCandidate(result.nextMovementID,
-                                      computeMovementAttemptTime(result.nextMovementID, nextT));
-        }
+            for (int movementID : ordered) {
+                auto readyIt = readyByMovement.find(movementID);
+                if (readyIt == readyByMovement.end()) continue;
+                int frontVehicleID = -1;
+                int chosenLane = -1;
+                DischargeBlockReason reason = getDischargeBlockReason(movementID, batchTime, frontVehicleID, chosenLane);
+                if (reason != DischargeBlockReason::None) {
+                    handleBlockedCandidate(movementID, batchTime, reason, frontVehicleID);
+                    continue;
+                }
 
-        // Released upstream storage can unblock movements that were deactivated by DownstreamFull.
-        reactivateMovementsBlockedByRoad(result.releasedRoadID, t);
+                int bufferID = readyIt->second.bufferID;
+                if (bufferID < 0 || bufferID >= static_cast<int>(waitingBuffers.size())) continue;
+                int oldLabel = movementTimeLabel[movementID];
+                int fifoBefore = waitingBuffers[bufferID].vehicleQueue.empty() ? -1 : waitingBuffers[bufferID].vehicleQueue.front();
+                DischargeResult result = dischargeOneVehicle(movementID, batchTime);
+                if (result.vehicleID < 0) {
+                    // Defensive sanity check: failed discharge must not mutate FIFO order.
+                    if (fifoBefore >= 0 && !waitingBuffers[bufferID].vehicleQueue.empty()
+                            && waitingBuffers[bufferID].vehicleQueue.front() != fifoBefore) {
+                        cout << "[Dispatch Sanity Warning] failed discharge changed FIFO movement=" << movementID << endl;
+                    }
+                    continue;
+                }
+
+                markDownstreamRoundRobinServed(movementID);
+                if (verboseTravelTimePrediction) {
+                    cout << "[DownstreamRR Served] t=" << batchTime
+                         << " toRoad=" << toRoadID
+                         << " movement=" << movementID << endl;
+                }
+                handleSuccessfulDischargePostUpdate(movementID, batchTime, oldLabel, bufferID, result);
+            }
+        }
     }
+}
+
+vector<int> Graph::orderMovementsByDownstreamRoundRobin(
+        int intersectionID,
+        int toRoadID,
+        const vector<int>& movementIDs
+) {
+    vector<int> ordered = movementIDs;
+    if (ordered.empty()) return ordered;
+    sort(ordered.begin(), ordered.end());
+    ordered.erase(unique(ordered.begin(), ordered.end()), ordered.end());
+
+    if (intersectionID < 0 || intersectionID >= static_cast<int>(intersections.size())) return ordered;
+    auto it = intersections[intersectionID].roundRobinPointerByToRoad.find(toRoadID);
+    if (it == intersections[intersectionID].roundRobinPointerByToRoad.end()) return ordered;
+
+    auto lastServedIt = find(ordered.begin(), ordered.end(), it->second);
+    if (lastServedIt == ordered.end()) return ordered;
+    rotate(ordered.begin(), next(lastServedIt), ordered.end());
+    return ordered;
+}
+
+void Graph::markDownstreamRoundRobinServed(int movementID) {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return;
+    const Movement &m = movements[movementID];
+    if (m.intersectionID < 0 || m.intersectionID >= static_cast<int>(intersections.size())) return;
+    intersections[m.intersectionID].roundRobinPointerByToRoad[m.toRoadID] = movementID;
+}
+
+void Graph::handleSuccessfulDischargePostUpdate(
+        int movementID,
+        int t,
+        int oldLabel,
+        int bufferID,
+        const DischargeResult& result
+) {
+    int nextLabel = nextAvailableCapacityTime(movementID, t);
+    if (nextLabel < oldLabel) {
+        cout << "[Dispatch Sanity Warning] movementTimeLabel would decrease movement=" << movementID
+             << " old=" << oldLabel << " new=" << nextLabel << endl;
+        nextLabel = oldLabel;
+    }
+    movementTimeLabel[movementID] = nextLabel;
+
+    if (verboseTravelTimePrediction) {
+        cout << "[Dispatch Success] movement=" << movementID
+             << " vehicle=" << result.vehicleID
+             << " dischargeTime=" << t
+             << " oldLabel=" << oldLabel
+             << " newLabel=" << movementTimeLabel[movementID]
+             << " releasedRoad=" << result.releasedRoadID
+             << " toRoad=" << result.toRoadID << endl;
+    }
+
+    // Same movement may still have a FIFO front; schedule its next capacity-safe attempt.
+    if (bufferID >= 0 && bufferID < static_cast<int>(waitingBuffers.size())
+            && !waitingBuffers[bufferID].vehicleQueue.empty()) {
+        int nextFront = waitingBuffers[bufferID].vehicleQueue.front();
+        int nextT = max(movementTimeLabel[movementID], vehicles[nextFront].arrivalTime);
+        scheduleMovementCandidate(movementID, computeMovementAttemptTime(movementID, nextT));
+    }
+
+    // Vehicle entered a downstream road and will next wait on its next movement.
+    if (!result.finished && result.nextMovementID >= 0) {
+        int nextT = max(movementTimeLabel[result.nextMovementID], result.newArrivalTime);
+        scheduleMovementCandidate(result.nextMovementID,
+                                  computeMovementAttemptTime(result.nextMovementID, nextT));
+    }
+
+    // Released upstream storage can unblock movements that were deactivated by DownstreamFull.
+    reactivateMovementsBlockedByRoad(result.releasedRoadID, t);
 }
 
 void Graph::initializeMovementLaneDischargeCapacity() {
