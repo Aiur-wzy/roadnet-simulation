@@ -553,12 +553,15 @@ struct DepartureEvent {
 };
 
 // Event stream 3/3: movement-based dispatch attempt, not vehicle-based.
-// timeLabel is the next attempt time for movementID. version supports lazy
-// invalidation because std::priority_queue cannot update keys in place. Vehicle ID
-// is intentionally absent; the current WaitingBuffer front is read when popped.
+// timeLabel is the next attempt time for movementID. firstCarArriveTime and
+// frontVehicleID bind the candidate to the current FIFO front for fair ordering
+// and stale-candidate detection. version supports lazy invalidation because
+// std::priority_queue cannot update keys in place.
 struct DispatchCandidate {
     int timeLabel = 0;
+    int firstCarArriveTime = INF;
     int movementID = -1;
+    int frontVehicleID = -1;
     int version = 0;
 };
 
@@ -625,7 +628,12 @@ struct DispatchCandidateCompare {
         if (a.timeLabel != b.timeLabel) {
             return a.timeLabel > b.timeLabel;
         }
-        if (a.movementID != b.movementID) return a.movementID > b.movementID;
+        if (a.firstCarArriveTime != b.firstCarArriveTime) {
+            return a.firstCarArriveTime > b.firstCarArriveTime;
+        }
+        if (a.movementID != b.movementID) {
+            return a.movementID > b.movementID;
+        }
         return a.version > b.version;
     }
 };
