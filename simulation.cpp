@@ -227,7 +227,72 @@ struct SumoEvalRecord {
     double absArrivalError = 0.0;
     double speedError = 0.0;
     int numMovements = 0;
+    int vehicleIndex = -1;
+    string vehicleID;
+    double relativeDurationError = 0.0;
+    vector<int> routeRoadIDs;
+    vector<int> routeMovementIDs;
 };
+
+
+double safe_divide(double numerator, double denominator);
+double percentile_sorted(vector<double> values, double percentile);
+double mean_of(const vector<double>& values);
+
+struct EvalMetricSummary {
+    string subsetName;
+    int count = 0;
+    double mseDuration = 0.0, maeDuration = 0.0, rmseDuration = 0.0, mapeDuration = 0.0, biasDuration = 0.0;
+    double medianAbsDurationError = 0.0, p90AbsDurationError = 0.0, p95AbsDurationError = 0.0;
+    double mseArrival = 0.0, maeArrival = 0.0, rmseArrival = 0.0, biasArrival = 0.0;
+    double medianAbsArrivalError = 0.0, p90AbsArrivalError = 0.0, p95AbsArrivalError = 0.0;
+    double meanPredDuration = 0.0, meanTruthDuration = 0.0, meanDurationDiff = 0.0, relativeMeanDurationDiff = 0.0;
+    double sumPredDuration = 0.0, sumTruthDuration = 0.0, sumDurationDiff = 0.0, relativeSumDurationDiff = 0.0;
+    double meanPredArrival = 0.0, meanTruthArrival = 0.0, meanArrivalDiff = 0.0;
+    double meanPredSpeed = 0.0, meanTruthSpeed = 0.0, speedBias = 0.0, speedMAE = 0.0;
+};
+
+EvalMetricSummary compute_eval_metric_summary(const string& subsetName, const vector<SumoEvalRecord>& records)
+{
+    EvalMetricSummary m;
+    m.subsetName = subsetName;
+    m.count = static_cast<int>(records.size());
+    if (records.empty()) return m;
+    vector<double> absDur, absArr, durErr, arrErr, predDur, truthDur, predArr, truthArr, predSpd, truthSpd, spdErr;
+    int pctCount = 0;
+    for (const auto& r : records) {
+        absDur.push_back(r.absDurationError); absArr.push_back(r.absArrivalError);
+        durErr.push_back(r.durationError); arrErr.push_back(r.arrivalError);
+        predDur.push_back(r.predDuration); truthDur.push_back(r.truthDuration);
+        predArr.push_back(r.predArrival); truthArr.push_back(r.truthArrival);
+        predSpd.push_back(r.predAvgSpeed); truthSpd.push_back(r.truthAvgSpeed); spdErr.push_back(r.speedError);
+        m.sumPredDuration += r.predDuration; m.sumTruthDuration += r.truthDuration;
+        m.mseDuration += r.durationError * r.durationError; m.maeDuration += r.absDurationError;
+        if (r.truthDuration > 0.0) { m.mapeDuration += r.absDurationError / r.truthDuration; ++pctCount; }
+        m.mseArrival += r.arrivalError * r.arrivalError; m.maeArrival += r.absArrivalError;
+        m.speedMAE += abs(r.speedError);
+    }
+    const double n = static_cast<double>(records.size());
+    m.mseDuration /= n; m.maeDuration /= n; m.rmseDuration = sqrt(m.mseDuration); m.mapeDuration = (pctCount > 0) ? (m.mapeDuration / pctCount) * 100.0 : 0.0;
+    m.biasDuration = mean_of(durErr); m.medianAbsDurationError = percentile_sorted(absDur, 50.0);
+    m.p90AbsDurationError = percentile_sorted(absDur, 90.0); m.p95AbsDurationError = percentile_sorted(absDur, 95.0);
+    m.mseArrival /= n; m.maeArrival /= n; m.rmseArrival = sqrt(m.mseArrival); m.biasArrival = mean_of(arrErr);
+    m.medianAbsArrivalError = percentile_sorted(absArr, 50.0); m.p90AbsArrivalError = percentile_sorted(absArr, 90.0); m.p95AbsArrivalError = percentile_sorted(absArr, 95.0);
+    m.meanPredDuration = mean_of(predDur); m.meanTruthDuration = mean_of(truthDur); m.meanDurationDiff = m.meanPredDuration - m.meanTruthDuration;
+    m.relativeMeanDurationDiff = safe_divide(m.meanDurationDiff, m.meanTruthDuration);
+    m.sumDurationDiff = m.sumPredDuration - m.sumTruthDuration; m.relativeSumDurationDiff = safe_divide(m.sumDurationDiff, m.sumTruthDuration);
+    m.meanPredArrival = mean_of(predArr); m.meanTruthArrival = mean_of(truthArr); m.meanArrivalDiff = m.meanPredArrival - m.meanTruthArrival;
+    m.meanPredSpeed = mean_of(predSpd); m.meanTruthSpeed = mean_of(truthSpd); m.speedBias = mean_of(spdErr); m.speedMAE /= n;
+    return m;
+}
+
+void write_split_metric_summary_csv(const string& path, const vector<EvalMetricSummary>& rows)
+{
+    ofstream out(path.c_str());
+    if (!out) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open split metrics output '" + path + "'");
+    out << "subset,count,meanPredDuration,meanTruthDuration,meanDurationDiff,relativeMeanDurationDiff,sumPredDuration,sumTruthDuration,sumDurationDiff,relativeSumDurationDiff,maeDuration,mseDuration,rmseDuration,mapeDuration,biasDuration,medianAbsDurationError,p90AbsDurationError,p95AbsDurationError,meanPredArrival,meanTruthArrival,meanArrivalDiff,maeArrival,mseArrival,rmseArrival,biasArrival,medianAbsArrivalError,p90AbsArrivalError,p95AbsArrivalError,meanPredSpeed,meanTruthSpeed,speedBias,speedMAE\n";
+    for (const auto& m : rows) out << m.subsetName << ',' << m.count << ',' << m.meanPredDuration << ',' << m.meanTruthDuration << ',' << m.meanDurationDiff << ',' << m.relativeMeanDurationDiff << ',' << m.sumPredDuration << ',' << m.sumTruthDuration << ',' << m.sumDurationDiff << ',' << m.relativeSumDurationDiff << ',' << m.maeDuration << ',' << m.mseDuration << ',' << m.rmseDuration << ',' << m.mapeDuration << ',' << m.biasDuration << ',' << m.medianAbsDurationError << ',' << m.p90AbsDurationError << ',' << m.p95AbsDurationError << ',' << m.meanPredArrival << ',' << m.meanTruthArrival << ',' << m.meanArrivalDiff << ',' << m.maeArrival << ',' << m.mseArrival << ',' << m.rmseArrival << ',' << m.biasArrival << ',' << m.medianAbsArrivalError << ',' << m.p90AbsArrivalError << ',' << m.p95AbsArrivalError << ',' << m.meanPredSpeed << ',' << m.meanTruthSpeed << ',' << m.speedBias << ',' << m.speedMAE << '\n';
+}
 
 struct DistributionMetrics {
     double sortedMAE = 0.0;
@@ -540,7 +605,7 @@ float Graph::evaluate_sumo_tripinfo_truth(
         const vector<vector<pair<int, float>>>& ETA)
 {
     const double epsilon = 1e-9;
-    const double extremeRelativeDurationThreshold = 3.0;
+    const double extremeRelativeDurationThreshold = (evalExtremeRelativeDurationThreshold > 0.0) ? evalExtremeRelativeDurationThreshold : 3.0;
 
     if (sumoTruthByVehicleID.empty()) {
         cout << "[SUMO Eval] No SUMO tripinfo truth loaded; skipping evaluation." << endl;
@@ -552,6 +617,17 @@ float Graph::evaluate_sumo_tripinfo_truth(
     const string distributionPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_distribution_metrics.csv");
     const string extremePath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_duration_errors.csv");
     const string extremeRouteSummaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_route_summary.csv");
+    const string splitMetricsPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_split_metrics.csv");
+    const string membershipPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_membership.csv");
+    const string groupedNonExtremePath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_grouped_metrics_non_extreme.csv");
+    const string distributionNonExtremePath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_distribution_metrics_non_extreme.csv");
+    const string groupedExtremeOnlyPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_grouped_metrics_extreme_only.csv");
+    const string distributionExtremeOnlyPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_distribution_metrics_extreme_only.csv");
+    const string roadTimelinePath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_vehicle_road_timeline.csv");
+    const string movementTimelinePath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_vehicle_movement_timeline.csv");
+    const string roadTimeSummaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_road_time_summary.csv");
+    const string movementTimeSummaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_movement_time_summary.csv");
+    const string transitionTimeSummaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_transition_time_summary.csv");
 
     ofstream csv;
     if (!evalOutputPath.empty()) {
@@ -593,6 +669,8 @@ float Graph::evaluate_sumo_tripinfo_truth(
     int invalidVehicleSkipped = 0;
     int etaMissingSkipped = 0;
     vector<SumoEvalRecord> evalRecords;
+    vector<SumoEvalRecord> nonExtremeRecords;
+    vector<SumoEvalRecord> extremeOnlyRecords;
     vector<double> absDurationErrors;
     vector<double> absArrivalErrors;
     vector<double> durationErrors;
@@ -667,7 +745,9 @@ float Graph::evaluate_sumo_tripinfo_truth(
                                             ? routeMovementID[i]
                                             : vector<int>{};
 
-        if (truthDuration > epsilon && relativeDurationError >= extremeRelativeDurationThreshold) {
+        const bool isExtremeDuration = truthDuration > epsilon && relativeDurationError >= extremeRelativeDurationThreshold;
+
+        if (isExtremeDuration) {
             ++extremeDurationErrorCount;
             const string routeRoadIDsValue = join_int_vector(vehicleRouteRoadIDs, "|");
             const string routeRoadEdgesValue = join_road_debug_names(*this, vehicleRouteRoadIDs);
@@ -726,10 +806,15 @@ float Graph::evaluate_sumo_tripinfo_truth(
         predSpeeds.push_back(predAvgSpeed);
         truthSpeeds.push_back(truthAvgSpeed);
         speedErrors.push_back(speedError);
-        evalRecords.push_back({predDuration, truthDuration, predArrival, truth.arrival,
+        SumoEvalRecord record{predDuration, truthDuration, predArrival, truth.arrival,
                                truth.waitingTime, truth.timeLoss, truth.routeLength,
                                predAvgSpeed, truthAvgSpeed, durationError, absDurationError,
-                               arrivalError, absArrivalError, speedError, numMovements});
+                               arrivalError, absArrivalError, speedError, numMovements,
+                               i, vehicleID, relativeDurationError,
+                               vehicleRouteRoadIDs, vehicleRouteMovementIDs};
+        evalRecords.push_back(record);
+        if (isExtremeDuration) extremeOnlyRecords.push_back(record);
+        else nonExtremeRecords.push_back(record);
 
         if (csv) {
             csv << vehicleID << ','
@@ -821,6 +906,14 @@ float Graph::evaluate_sumo_tripinfo_truth(
     double speedMAE = 0.0;
     for (double v : speedErrors) speedMAE += abs(v);
     speedMAE = safe_divide(speedMAE, static_cast<double>(speedErrors.size()));
+    const EvalMetricSummary allSummary = compute_eval_metric_summary("all", evalRecords);
+    const EvalMetricSummary nonExtremeSummary = compute_eval_metric_summary("non_extreme", nonExtremeRecords);
+    const EvalMetricSummary extremeOnlySummary = compute_eval_metric_summary("extreme_only", extremeOnlyRecords);
+    mse = allSummary.mseDuration; mae = allSummary.maeDuration; rmse = allSummary.rmseDuration; mape = allSummary.mapeDuration; biasDuration = allSummary.biasDuration;
+    medianAbsDurationError = allSummary.medianAbsDurationError; p90AbsDurationError = allSummary.p90AbsDurationError; p95AbsDurationError = allSummary.p95AbsDurationError;
+    mseArrival = allSummary.mseArrival; maeArrival = allSummary.maeArrival; rmseArrival = allSummary.rmseArrival; biasArrival = allSummary.biasArrival;
+    medianAbsArrivalError = allSummary.medianAbsArrivalError; p90AbsArrivalError = allSummary.p90AbsArrivalError; p95AbsArrivalError = allSummary.p95AbsArrivalError;
+
     const double biasThreshold = 1.0;
     const string durationBiasDirection = (meanDurationDiff > biasThreshold) ? "slower" : ((meanDurationDiff < -biasThreshold) ? "faster" : "balanced");
     const string arrivalBiasDirection = (meanArrivalDiff > biasThreshold) ? "later" : ((meanArrivalDiff < -biasThreshold) ? "earlier" : "balanced");
@@ -883,7 +976,56 @@ float Graph::evaluate_sumo_tripinfo_truth(
     summary << "vehicleCount=" << extremeDurationErrorCount << '\n';
     summary << "routePatternCount=" << extremeRouteStatsByRoute.size() << '\n';
     summary << "extremeVehicleOutput=" << extremePath << '\n';
-    summary << "extremeRouteSummaryOutput=" << extremeRouteSummaryPath << "\n";
+    summary << "extremeRouteSummaryOutput=" << extremeRouteSummaryPath << "\n\n";
+
+    summary << "[Extreme Split Evaluation]\n";
+    summary << "enabled=" << (evalSplitExtreme ? "true" : "false") << '\n';
+    if (evalSplitExtreme) {
+        summary << "threshold=absDurationError/truthDuration >= " << extremeRelativeDurationThreshold << '\n';
+        summary << "thresholdPercent=" << (extremeRelativeDurationThreshold * 100.0) << '\n';
+        summary << "allCount=" << allSummary.count << '\n';
+        summary << "nonExtremeCount=" << nonExtremeSummary.count << '\n';
+        summary << "extremeCount=" << extremeOnlySummary.count << '\n';
+        summary << "extremeRatio=" << safe_divide(extremeOnlySummary.count, allSummary.count) << '\n';
+        summary << "splitMetricsOutput=" << splitMetricsPath << '\n';
+        summary << "nonExtremeGroupedMetricsOutput=" << groupedNonExtremePath << '\n';
+        summary << "nonExtremeDistributionMetricsOutput=" << distributionNonExtremePath << '\n';
+        summary << "extremeOnlyGroupedMetricsOutput=" << groupedExtremeOnlyPath << '\n';
+        summary << "extremeOnlyDistributionMetricsOutput=" << distributionExtremeOnlyPath << '\n';
+        summary << "membershipOutput=" << membershipPath << "\n\n";
+        auto appendMetricSection = [&](const string& name, const EvalMetricSummary& m) {
+            summary << name << "\n";
+            summary << "count=" << m.count << '\n' << "MAE=" << m.maeDuration << '\n' << "MSE=" << m.mseDuration << '\n' << "RMSE=" << m.rmseDuration << '\n' << "MAPE=" << m.mapeDuration << '\n';
+            summary << "meanDurationDiff=" << m.meanDurationDiff << '\n' << "meanArrivalDiff=" << m.meanArrivalDiff << '\n' << "maeArrival=" << m.maeArrival << '\n' << "rmseArrival=" << m.rmseArrival << "\n\n";
+        };
+        appendMetricSection("[Non-Extreme Vehicles Metrics]", nonExtremeSummary);
+        appendMetricSection("[Extreme-Only Vehicles Metrics]", extremeOnlySummary);
+        if (evalExtremeTimeline) {
+            summary << "[Extreme Timeline Diagnostics]\n";
+            summary << "enabled=true\n";
+            summary << "roadTimelineOutput=" << roadTimelinePath << '\n';
+            summary << "movementTimelineOutput=" << movementTimelinePath << '\n';
+            summary << "roadTimeSummaryOutput=" << roadTimeSummaryPath << '\n';
+            summary << "movementTimeSummaryOutput=" << movementTimeSummaryPath << '\n';
+            summary << "transitionTimeSummaryOutput=" << transitionTimeSummaryPath << '\n';
+            summary << "extremeTimelineVehicleCount=" << extremeOnlySummary.count << '\n';
+            summary << "topExtremeRoadByTotalTime=see_csv\n";
+            summary << "topExtremeRoadTotalTime=0\n";
+            summary << "topExtremeMovementByTotalWaiting=see_csv\n";
+            summary << "topExtremeMovementTotalWaiting=0\n";
+            summary << "topExtremeTransitionByTotalTime=see_csv\n";
+            summary << "topExtremeTransitionTotalTime=0\n\n";
+        }
+        summary << "[Extreme Impact]\n";
+        summary << "meanDurationDiffImpact=" << (allSummary.meanDurationDiff - nonExtremeSummary.meanDurationDiff) << '\n';
+        summary << "meanArrivalDiffImpact=" << (allSummary.meanArrivalDiff - nonExtremeSummary.meanArrivalDiff) << '\n';
+        summary << "maeDurationImpact=" << (allSummary.maeDuration - nonExtremeSummary.maeDuration) << '\n';
+        summary << "rmseDurationImpact=" << (allSummary.rmseDuration - nonExtremeSummary.rmseDuration) << '\n';
+        summary << "maeArrivalImpact=" << (allSummary.maeArrival - nonExtremeSummary.maeArrival) << '\n';
+        summary << "rmseArrivalImpact=" << (allSummary.rmseArrival - nonExtremeSummary.rmseArrival) << "\n\n";
+    } else {
+        summary << '\n';
+    }
 
     if (!extremeRouteSummaryPath.empty()) {
         vector<pair<string, ExtremeRouteStats>> routeRows(extremeRouteStatsByRoute.begin(), extremeRouteStatsByRoute.end());
@@ -962,6 +1104,15 @@ float Graph::evaluate_sumo_tripinfo_truth(
         cout << "[SUMO Eval] Extreme vehicle output: " << extremePath << endl;
         cout << "[SUMO Eval] Extreme route summary output: " << extremeRouteSummaryPath << endl;
     }
+    if (evalSplitExtreme) {
+        cout << "[SUMO Eval] Extreme split evaluation enabled" << endl;
+        cout << "[SUMO Eval] Extreme threshold: " << extremeRelativeDurationThreshold << " (" << extremeRelativeDurationThreshold * 100.0 << "%)" << endl;
+        cout << "[SUMO Eval] All records: " << allSummary.count << endl;
+        cout << "[SUMO Eval] Non-extreme records: " << nonExtremeSummary.count << endl;
+        cout << "[SUMO Eval] Extreme-only records: " << extremeOnlySummary.count << endl;
+        cout << "[SUMO Eval] Extreme ratio: " << safe_divide(extremeOnlySummary.count, allSummary.count) << endl;
+        if (!splitMetricsPath.empty()) cout << "[SUMO Eval] Split metrics written to " << splitMetricsPath << endl;
+    }
     cout << summary.str();
 
     if (!evalOutputPath.empty()) {
@@ -970,6 +1121,57 @@ float Graph::evaluate_sumo_tripinfo_truth(
         summaryOut << summary.str();
         write_grouped_metrics_csv(groupedPath, evalRecords);
         write_distribution_metrics_csv(distributionPath, distribution);
+        if (evalSplitExtreme) {
+            write_split_metric_summary_csv(splitMetricsPath, {allSummary, nonExtremeSummary, extremeOnlySummary});
+            write_grouped_metrics_csv(groupedNonExtremePath, nonExtremeRecords);
+            write_distribution_metrics_csv(distributionNonExtremePath, compute_distribution_metrics(nonExtremeRecords));
+            write_grouped_metrics_csv(groupedExtremeOnlyPath, extremeOnlyRecords);
+            write_distribution_metrics_csv(distributionExtremeOnlyPath, compute_distribution_metrics(extremeOnlyRecords));
+            ofstream membershipCsv(membershipPath.c_str());
+            if (!membershipCsv) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open membership output '" + membershipPath + "'");
+            membershipCsv << "vehicleID,isExtremeDuration,relativeDurationError,relativeDurationErrorPercent,predDuration,truthDuration,durationError,absDurationError,predArrival,truthArrival,arrivalError,absArrivalError,routeRoadEdges,routeMovementEdges\n";
+            for (const auto& r : evalRecords) {
+                const bool isExtreme = r.truthDuration > epsilon && r.relativeDurationError >= extremeRelativeDurationThreshold;
+                membershipCsv << csv_escape(r.vehicleID) << ',' << (isExtreme ? "true" : "false") << ',' << r.relativeDurationError << ',' << (r.relativeDurationError * 100.0) << ','
+                              << r.predDuration << ',' << r.truthDuration << ',' << r.durationError << ',' << r.absDurationError << ','
+                              << r.predArrival << ',' << r.truthArrival << ',' << r.arrivalError << ',' << r.absArrivalError << ','
+                              << csv_escape(join_road_debug_names(*this, r.routeRoadIDs)) << ',' << csv_escape(join_movement_debug_names(*this, r.routeMovementIDs)) << '\n';
+            }
+            if (evalExtremeTimeline) {
+                ofstream roadTl(roadTimelinePath.c_str());
+                if (!roadTl) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open road timeline output '" + roadTimelinePath + "'");
+                roadTl << "vehicleID,routeRoadIndex,roadID,roadEdge,enteringMovementID,enteringMovementEdge,nextMovementID,nextMovementEdge,laneIndex,enterTime,arrivalAtRoadEndTime,roadTravelTime,predDuration,truthDuration,relativeDurationError,routeRoadEdges,routeMovementEdges\n";
+                ofstream movTl(movementTimelinePath.c_str());
+                if (!movTl) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open movement timeline output '" + movementTimelinePath + "'");
+                movTl << "vehicleID,routeMovementIndex,movementID,movementEdge,fromRoadID,fromEdge,toRoadID,toEdge,turn,chosenLane,arrivalAtWaitingBufferTime,dischargeTime,movementWaitingTime,predDuration,truthDuration,relativeDurationError,routeRoadEdges,routeMovementEdges\n";
+                map<int, vector<double>> roadExtreme, roadAll, roadNon, movExtreme, movAll, movNon, transExtreme, transAll, transNon;
+                map<int, vector<int>> roadSamples, movSamples, transSamples;
+                unordered_set<int> extremeIdx;
+                for (const auto& r : extremeOnlyRecords) extremeIdx.insert(r.vehicleIndex);
+                for (const auto& r : evalRecords) {
+                    const bool isExtreme = extremeIdx.count(r.vehicleIndex) > 0;
+                    const string routeRoadEdges = join_road_debug_names(*this, r.routeRoadIDs);
+                    const string routeMovementEdges = join_movement_debug_names(*this, r.routeMovementIDs);
+                    if (r.vehicleIndex >= 0 && r.vehicleIndex < static_cast<int>(vehicleRoadTimeline.size())) for (const auto& tr : vehicleRoadTimeline[r.vehicleIndex]) {
+                        roadAll[tr.roadID].push_back(tr.roadTravelTime); if (!isExtreme) roadNon[tr.roadID].push_back(tr.roadTravelTime);
+                        if (isExtreme) { roadExtreme[tr.roadID].push_back(tr.roadTravelTime); if (roadSamples[tr.roadID].size() < 10) roadSamples[tr.roadID].push_back(r.vehicleIndex); roadTl << csv_escape(r.vehicleID) << ',' << tr.routeRoadIndex << ',' << tr.roadID << ',' << csv_escape(road_debug_name(*this, tr.roadID)) << ',' << tr.enteringMovementID << ',' << csv_escape(movement_debug_name(*this, tr.enteringMovementID)) << ',' << tr.nextMovementID << ',' << csv_escape(movement_debug_name(*this, tr.nextMovementID)) << ',' << tr.laneIndex << ',' << tr.enterTime << ',' << tr.arrivalAtRoadEndTime << ',' << tr.roadTravelTime << ',' << r.predDuration << ',' << r.truthDuration << ',' << r.relativeDurationError << ',' << csv_escape(routeRoadEdges) << ',' << csv_escape(routeMovementEdges) << '\n'; }
+                    }
+                    if (r.vehicleIndex >= 0 && r.vehicleIndex < static_cast<int>(vehicleMovementTimeline.size())) for (const auto& tr : vehicleMovementTimeline[r.vehicleIndex]) {
+                        movAll[tr.movementID].push_back(tr.movementWaitingTime); if (!isExtreme) movNon[tr.movementID].push_back(tr.movementWaitingTime);
+                        double downstream = 0.0; if (r.vehicleIndex < static_cast<int>(vehicleRoadTimeline.size())) for (const auto& rt : vehicleRoadTimeline[r.vehicleIndex]) if (rt.enteringMovementID == tr.movementID) { downstream = rt.roadTravelTime; break; }
+                        const double transition = tr.movementWaitingTime + downstream; transAll[tr.movementID].push_back(transition); if (!isExtreme) transNon[tr.movementID].push_back(transition);
+                        if (isExtreme) { movExtreme[tr.movementID].push_back(tr.movementWaitingTime); transExtreme[tr.movementID].push_back(transition); if (movSamples[tr.movementID].size() < 10) movSamples[tr.movementID].push_back(r.vehicleIndex); if (transSamples[tr.movementID].size() < 10) transSamples[tr.movementID].push_back(r.vehicleIndex); string turn = (tr.movementID >= 0 && tr.movementID < static_cast<int>(movements.size())) ? turn_dir_to_string(movements[tr.movementID].turn) : "Unknown"; movTl << csv_escape(r.vehicleID) << ',' << tr.routeMovementIndex << ',' << tr.movementID << ',' << csv_escape(movement_debug_name(*this, tr.movementID)) << ',' << tr.fromRoadID << ',' << csv_escape(road_debug_name(*this, tr.fromRoadID)) << ',' << tr.toRoadID << ',' << csv_escape(road_debug_name(*this, tr.toRoadID)) << ',' << turn << ',' << tr.chosenLane << ',' << tr.arrivalAtWaitingBufferTime << ',' << tr.dischargeTime << ',' << tr.movementWaitingTime << ',' << r.predDuration << ',' << r.truthDuration << ',' << r.relativeDurationError << ',' << csv_escape(routeRoadEdges) << ',' << csv_escape(routeMovementEdges) << '\n'; }
+                    }
+                }
+                auto idsToString = [](const vector<int>& ids) { vector<string> s; for (int id : ids) s.push_back(to_string(id)); return join_string_vector(s, "|"); };
+                ofstream roadSum(roadTimeSummaryPath.c_str()); roadSum << "roadID,roadEdge,count,totalRoadTravelTime,meanRoadTravelTime,p50RoadTravelTime,p90RoadTravelTime,p95RoadTravelTime,maxRoadTravelTime,meanRoadTravelTimeAll,meanRoadTravelTimeNonExtreme,extremeToNonExtremeMeanRatio,sampleVehicleIDs\n";
+                for (auto& kv : roadExtreme) { double total=0; for(double v:kv.second) total+=v; double mean=mean_of(kv.second), non=mean_of(roadNon[kv.first]); roadSum << kv.first << ',' << csv_escape(road_debug_name(*this, kv.first)) << ',' << kv.second.size() << ',' << total << ',' << mean << ',' << percentile_sorted(kv.second,50) << ',' << percentile_sorted(kv.second,90) << ',' << percentile_sorted(kv.second,95) << ',' << percentile_sorted(kv.second,100) << ',' << mean_of(roadAll[kv.first]) << ',' << non << ',' << safe_divide(mean, non) << ',' << csv_escape(idsToString(roadSamples[kv.first])) << '\n'; }
+                auto writeMoveSummary = [&](const string& path, const map<int, vector<double>>& extreme, map<int, vector<double>>& all, map<int, vector<double>>& nonMap, map<int, vector<int>>& samples, bool transition) { ofstream out(path.c_str()); out << "movementID,movementEdge,fromRoadID,fromEdge,toRoadID,toEdge,turn,count,total" << (transition ? "TransitionTime" : "MovementWaitingTime") << ",mean" << (transition ? "TransitionTime" : "MovementWaitingTime") << ",p50" << (transition ? "TransitionTime" : "MovementWaitingTime") << ",p90" << (transition ? "TransitionTime" : "MovementWaitingTime") << ",p95" << (transition ? "TransitionTime" : "MovementWaitingTime") << ",max" << (transition ? "TransitionTime" : "MovementWaitingTime") << ",mean" << (transition ? "TransitionTime" : "MovementWaitingTime") << "All,mean" << (transition ? "TransitionTime" : "MovementWaitingTime") << "NonExtreme,extremeToNonExtremeMeanRatio,sampleVehicleIDs\n"; for (auto& kv : extreme) { int from=-1,to=-1; string turn="Unknown"; if(kv.first>=0 && kv.first<static_cast<int>(movements.size())){from=movements[kv.first].fromRoadID; to=movements[kv.first].toRoadID; turn=turn_dir_to_string(movements[kv.first].turn);} double total=0; for(double v:kv.second) total+=v; double mean=mean_of(kv.second), non=mean_of(nonMap[kv.first]); out << kv.first << ',' << csv_escape(movement_debug_name(*this, kv.first)) << ',' << from << ',' << csv_escape(road_debug_name(*this, from)) << ',' << to << ',' << csv_escape(road_debug_name(*this, to)) << ',' << turn << ',' << kv.second.size() << ',' << total << ',' << mean << ',' << percentile_sorted(kv.second,50) << ',' << percentile_sorted(kv.second,90) << ',' << percentile_sorted(kv.second,95) << ',' << percentile_sorted(kv.second,100) << ',' << mean_of(all[kv.first]) << ',' << non << ',' << safe_divide(mean, non) << ',' << csv_escape(idsToString(samples[kv.first])) << '\n'; } };
+                writeMoveSummary(movementTimeSummaryPath, movExtreme, movAll, movNon, movSamples, false);
+                writeMoveSummary(transitionTimeSummaryPath, transExtreme, transAll, transNon, transSamples, true);
+                cout << "[SUMO Eval] Extreme timeline outputs written to " << roadTimelinePath << ", " << movementTimelinePath << endl;
+            }
+        }
         cout << "[SUMO Eval] CSV written to " << evalOutputPath << endl;
         cout << "[SUMO Eval] Summary written to " << summaryPath << endl;
         cout << "[SUMO Eval] Grouped metrics written to " << groupedPath << endl;
@@ -1334,6 +1536,12 @@ vector<vector<pair<int, float>>> Graph::cycle_aware_signal_driven_records(
 void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vector<int>>& routeRoadIDInput) {
     vehicles.clear();
     vehicles.resize(routeRoadIDInput.size());
+    vehicleRoadTimeline.clear();
+    vehicleMovementTimeline.clear();
+    if (evalExtremeTimeline) {
+        vehicleRoadTimeline.resize(routeRoadIDInput.size());
+        vehicleMovementTimeline.resize(routeRoadIDInput.size());
+    }
     ETA_result_cycle_aware.assign(routeRoadIDInput.size(), {});
     finishedVehicleCount = 0;
     invalidVehicleCount = 0;
@@ -1593,6 +1801,11 @@ bool Graph::tryStartVehicleFromEntryQueue(int vehicleID, int actualDepartTime, i
     v.lastDischargeHadWaiting = false;
     v.lastWaitingDuration = 0;
     v.arrivalTime = actualDepartTime + predictRoadTravelTime(firstRoad, vehicleID, firstMovement, actualDepartTime, laneIndex);
+    if (evalExtremeTimeline && vehicleID >= 0 && vehicleID < static_cast<int>(vehicleRoadTimeline.size())) {
+        vehicleRoadTimeline[vehicleID].push_back({vehicleID, 0, firstRoad, -1, firstMovement, laneIndex,
+                                                  static_cast<double>(actualDepartTime), static_cast<double>(v.arrivalTime),
+                                                  static_cast<double>(v.arrivalTime - actualDepartTime)});
+    }
 
     if (v.routeRoadIDs.size() == 1) {
         releaseLaneOccupancy(vehicleID);
@@ -1883,7 +2096,8 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
 
     // Feature update section: has_waiting describes signal-buffer waiting before
     // predicting travel time on the downstream road.
-    const int waitingDuration = max(0, dischargeTime - v.arrivalTime);
+    const int arrivalAtWaitingBufferTime = v.arrivalTime;
+    const int waitingDuration = max(0, dischargeTime - arrivalAtWaitingBufferTime);
     v.lastWaitingDuration = waitingDuration;
     v.lastDischargeHadWaiting = waitingDuration > 0;
     v.hasWaitingBeforeCurrentRoad = v.lastDischargeHadWaiting;
@@ -1906,6 +2120,12 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
     releaseLaneOccupancy(vehicleID);
     consumeDischargeCapacity(movementID, dischargeTime);
 
+    if (evalExtremeTimeline && vehicleID >= 0 && vehicleID < static_cast<int>(vehicleMovementTimeline.size())) {
+        vehicleMovementTimeline[vehicleID].push_back({vehicleID, v.roadIndex, movementID, m.fromRoadID, m.toRoadID, chosenLane,
+                                                      static_cast<double>(arrivalAtWaitingBufferTime), static_cast<double>(dischargeTime),
+                                                      static_cast<double>(waitingDuration)});
+    }
+
     v.roadIndex += 1;
     v.currentRoadID = m.toRoadID;
 
@@ -1922,6 +2142,11 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
         // ETA update section: final road prediction completes the route.
         v.arrivalTime = dischargeTime + predictRoadTravelTimeWithEnteringVehicle(
                 m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
+        if (evalExtremeTimeline && vehicleID >= 0 && vehicleID < static_cast<int>(vehicleRoadTimeline.size())) {
+            vehicleRoadTimeline[vehicleID].push_back({vehicleID, v.roadIndex, m.toRoadID, movementID, -1, chosenLane,
+                                                      static_cast<double>(dischargeTime), static_cast<double>(v.arrivalTime),
+                                                      static_cast<double>(v.arrivalTime - dischargeTime)});
+        }
         result.newArrivalTime = v.arrivalTime;
         v.currentMovementID = -1;
         v.currentBufferID = -1;
@@ -1942,6 +2167,11 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, int dischargeTime) {
             reserveLaneOccupancy(vehicleID, m.toRoadID, chosenLane);
             // ETA update section for the next waiting buffer.
             v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
+            if (evalExtremeTimeline && vehicleID >= 0 && vehicleID < static_cast<int>(vehicleRoadTimeline.size())) {
+                vehicleRoadTimeline[vehicleID].push_back({vehicleID, v.roadIndex, m.toRoadID, movementID, nextMovementID, chosenLane,
+                                                          static_cast<double>(dischargeTime), static_cast<double>(v.arrivalTime),
+                                                          static_cast<double>(v.arrivalTime - dischargeTime)});
+            }
             result.newArrivalTime = v.arrivalTime;
             insertVehicleToBufferOrdered(nextBufferID, vehicleID);
             result.nextMovementID = nextMovementID;

@@ -557,6 +557,30 @@ struct DepartureEvent {
 // frontVehicleID bind the candidate to the current FIFO front for fair ordering
 // and stale-candidate detection. version supports lazy invalidation because
 // std::priority_queue cannot update keys in place.
+struct VehicleRoadTimelineRecord {
+    int vehicleID = -1;
+    int routeRoadIndex = -1;
+    int roadID = -1;
+    int enteringMovementID = -1;
+    int nextMovementID = -1;
+    int laneIndex = -1;
+    double enterTime = 0.0;
+    double arrivalAtRoadEndTime = 0.0;
+    double roadTravelTime = 0.0;
+};
+
+struct VehicleMovementTimelineRecord {
+    int vehicleID = -1;
+    int routeMovementIndex = -1;
+    int movementID = -1;
+    int fromRoadID = -1;
+    int toRoadID = -1;
+    int chosenLane = -1;
+    double arrivalAtWaitingBufferTime = 0.0;
+    double dischargeTime = 0.0;
+    double movementWaitingTime = 0.0;
+};
+
 struct DispatchCandidate {
     int timeLabel = 0;
     int firstCarArriveTime = INF;
@@ -720,6 +744,9 @@ public:
     string sumoRoutePath;
     string sumoTripinfoPath;
     string evalOutputPath;
+    bool evalSplitExtreme = false;
+    bool evalExtremeTimeline = false;
+    double evalExtremeRelativeDurationThreshold = 3.0;
     void read_sumo_net_xml(const string& netXmlPath);
     void read_sumo_route_xml(const string& routeXmlPath, int maxVehicles);
     void read_sumo_tripinfo_xml(const string& tripinfoPath);
@@ -818,6 +845,8 @@ public:
     priority_queue<DepartureEvent, vector<DepartureEvent>, DepartureEventCompare> departurePQ;
     priority_queue<DispatchCandidate, vector<DispatchCandidate>, DispatchCandidateCompare> dispatchPQ;
     vector<vector<pair<int, float>>> ETA_result_cycle_aware;
+    vector<vector<VehicleRoadTimelineRecord>> vehicleRoadTimeline;
+    vector<vector<VehicleMovementTimelineRecord>> vehicleMovementTimeline;
     int finishedVehicleCount = 0;
     int invalidVehicleCount = 0;
     int defaultDischargeInterval = 1;
