@@ -1368,10 +1368,17 @@ vector<int> Graph::laneIntersection(const vector<int>& a, const vector<int>& b) 
 
 void Graph::initializeRoadLaneStorage() {
     const VehicleType& representative = getVehicleTypeForVehicle(-1);
-    const double vehicleSpace = max(1e-6, representative.length + representative.minGap);
+    const double vehicleLength = max(1e-6, representative.length);
+    const double vehicleGap = max(0.0, representative.minGap);
+    const double vehicleSpace = max(1e-6, vehicleLength + vehicleGap);
     for (auto &road : roads) {
         int laneNum = max(1, road.laneNum);
-        int capacityPerLane = max(1, static_cast<int>(floor(max(0.0, road.length) / vehicleSpace)));
+        // Lane capacity uses (road_length + minGap) / (vehicle_length + minGap) + 1
+        // to allow a slightly more realistic boundary spacing.
+        int capacityPerLane = max(
+            1,
+            static_cast<int>(floor((max(0.0, road.length) + vehicleGap) / vehicleSpace)) + 1
+        );
         road.roadFlow = 0;
         road.laneFlow.assign(laneNum, 0);
         road.laneCapacity.assign(laneNum, capacityPerLane);
