@@ -877,6 +877,15 @@ public:
     string modelHost = "127.0.0.1";
     int modelPort = 9000;
     bool modelWarningPrinted = false;
+    bool debugMovement53Enabled = false;
+    int debugCurrentTime = -1;
+    mutable ofstream debugMovement53Timeline;
+    mutable ofstream debugE13Occupancy;
+    mutable ofstream debugLane53;
+    void initMovement53DebugIfNeeded();
+    void debugMovement53Event(int time, const string& eventType, int movementID, int frontVehicleID, int chosenLane, const string& blockReason, const string& note);
+    void debugE13OccupancyEvent(int time, const string& eventType, int vehicleID, int roadID, int laneIndex, int movementID, const string& note, int laneFlowBefore=-1, int roadFlowBefore=-1, double occupiedBefore=-1.0);
+    void debugMovement53LaneCheck(int time, int movementID, int vehicleID, const vector<int>& toLanes, const vector<int>& nextFromLanes, const vector<int>& intersected, const vector<int>& candidateLanes, int chosenLane, bool result);
     int travelTimeTableHit = 0;
     int travelTimeTableMiss = 0;
     double kinematicCongestionAlpha = 1.0;

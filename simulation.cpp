@@ -601,6 +601,143 @@ void write_grouped_metrics_csv(const string& path, const vector<SumoEvalRecord>&
 
 } // namespace
 
+static string join_ints_for_debug(const vector<int>& values)
+{
+    string out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i) out += "|";
+        out += to_string(values[i]);
+    }
+    return out;
+}
+
+static string vehicle_debug_name(const Graph& g, int vehicleID)
+{
+    if (vehicleID >= 0 && vehicleID < static_cast<int>(g.sumoVehicleIDs.size())) {
+        return g.sumoVehicleIDs[vehicleID];
+    }
+    return to_string(vehicleID);
+}
+
+void Graph::initMovement53DebugIfNeeded()
+{
+    if (debugMovement53Enabled) return;
+    const char* enabled = getenv("ROADNET_DEBUG_MOVEMENT53");
+    if (enabled == nullptr || string(enabled) == "0") return;
+    debugMovement53Enabled = true;
+    debugMovement53Timeline.open("debug_movement53_timeline.csv");
+    debugE13Occupancy.open("debug_e13_occupancy.csv");
+    debugLane53.open("debug_downstream_full_53.csv");
+    debugMovement53Timeline
+        << "time,eventType,movementID,movementEdge,frontVehicleID,frontVehicleName,frontArrivalTime,"
+        << "movementTimeLabel,movementInDispatchPQ,movementPQVersion,movementBlockedByDownstream,"
+        << "signalState,nextGreenTime,dischargeCapacityUsed,dischargeCapacityCap,blockReason,chosenLane,queueSize,note\n";
+    debugE13Occupancy
+        << "time,eventType,vehicleID,vehicleName,roadID,edgeID,laneIndex,movementID,previousMovementID,nextMovementID,"
+        << "routeRoadEdges,routeMovementEdges,laneFlowBefore,laneFlowAfter,roadFlowBefore,roadFlowAfter,laneCapacity,"
+        << "laneOccupiedLengthBefore,laneOccupiedLengthAfter,laneStorageLength,vehicleOccupiedRoadBefore,vehicleOccupiedLaneBefore,note\n";
+    debugLane53
+        << "time,vehicleID,vehicleName,routeRoadEdges,routeMovementEdges,currentMovementID,currentToRoadID,"
+        << "currentToLanes,nextMovementID,nextMovementFromLanes,intersectionLanes,finalCandidateLanes,"
+        << "laneFlow,laneCapacity,laneOccupiedLength,laneStorageLength,chosenLane,result\n";
+}
+
+void Graph::debugMovement53Event(int time, const string& eventType, int movementID, int frontVehicleID, int chosenLane, const string& blockReason, const string& note)
+{
+    initMovement53DebugIfNeeded();
+    if (!debugMovement53Enabled || !debugMovement53Timeline) return;
+    if (movementID != 53) return;
+    int bufferID = getMovementBufferID(movementID);
+    int queueSize = (bufferID >= 0 && bufferID < static_cast<int>(waitingBuffers.size()))
+        ? static_cast<int>(waitingBuffers[bufferID].vehicleQueue.size()) : 0;
+    int actualFront = frontVehicleID >= 0 ? frontVehicleID : getFrontVehicleForMovement(movementID);
+    int frontArrival = (actualFront >= 0 && actualFront < static_cast<int>(vehicles.size())) ? vehicles[actualFront].arrivalTime : -1;
+    int label = (movementID >= 0 && movementID < static_cast<int>(movementTimeLabel.size())) ? movementTimeLabel[movementID] : -1;
+    int version = (movementID >= 0 && movementID < static_cast<int>(movementPQVersion.size())) ? movementPQVersion[movementID] : -1;
+    bool inPQ = movementID >= 0 && movementID < static_cast<int>(movementInDispatchPQ.size()) && movementInDispatchPQ[movementID];
+    bool blocked = movementID >= 0 && movementID < static_cast<int>(movementBlockedByDownstream.size()) && movementBlockedByDownstream[movementID];
+    int interval = max(1, defaultDischargeInterval);
+    int slot = time >= 0 ? time / interval : -1;
+    int used = usedMovementDischargeCapacity[make_tuple(movementID, slot)];
+    int cap = movementID >= 0 && movementID < static_cast<int>(movements.size()) ? max(1, movements[movementID].laneDischargeCapacity) : -1;
+    string signal = (movementID >= 0 && movementID < static_cast<int>(movements.size()) && time >= 0 && isMovementActive(movementID, time)) ? "green" : "red";
+    int nextGreen = (movementID >= 0 && movementID < static_cast<int>(movements.size()) && time >= 0) ? nextGreenTimeForMovement(movementID, time) : -1;
+    debugMovement53Timeline
+        << time << ',' << eventType << ',' << movementID << ',' << csv_escape(movement_debug_name(*this, movementID)) << ','
+        << actualFront << ',' << csv_escape(vehicle_debug_name(*this, actualFront)) << ',' << frontArrival << ','
+        << label << ',' << (inPQ ? "true" : "false") << ',' << version << ',' << (blocked ? "true" : "false") << ','
+        << signal << ',' << nextGreen << ',' << used << ',' << cap << ',' << blockReason << ',' << chosenLane << ','
+        << queueSize << ',' << csv_escape(note) << '\n';
+}
+
+void Graph::debugE13OccupancyEvent(int time, const string& eventType, int vehicleID, int roadID, int laneIndex, int movementID, const string& note, int laneFlowBefore, int roadFlowBefore, double occupiedBefore)
+{
+    initMovement53DebugIfNeeded();
+    if (!debugMovement53Enabled || !debugE13Occupancy || roadID != 21) return;
+    RoadSegment& road = roads[roadID];
+    int laneFlowAfter = (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneFlow.size())) ? road.laneFlow[laneIndex] : -1;
+    double occupiedAfter = (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneOccupiedLength.size())) ? road.laneOccupiedLength[laneIndex] : -1.0;
+    int laneCap = (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneCapacity.size())) ? road.laneCapacity[laneIndex] : -1;
+    double storage = (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneStorageLength.size())) ? road.laneStorageLength[laneIndex] : -1.0;
+    int prevMov = -1;
+    int nextMov = -1;
+    string routeRoadEdges, routeMovementEdges;
+    int occupiedRoadBefore = -1;
+    int occupiedLaneBefore = -1;
+    if (vehicleID >= 0 && vehicleID < static_cast<int>(vehicles.size())) {
+        const auto& v = vehicles[vehicleID];
+        prevMov = (v.roadIndex > 0 && v.roadIndex - 1 < static_cast<int>(v.routeMovementIDs.size())) ? v.routeMovementIDs[v.roadIndex - 1] : -1;
+        nextMov = (v.roadIndex >= 0 && v.roadIndex < static_cast<int>(v.routeMovementIDs.size())) ? v.routeMovementIDs[v.roadIndex] : -1;
+        routeRoadEdges = join_road_debug_names(*this, v.routeRoadIDs);
+        routeMovementEdges = join_movement_debug_names(*this, v.routeMovementIDs);
+        occupiedRoadBefore = v.occupiedRoadID;
+        occupiedLaneBefore = v.occupiedLaneIndex;
+    }
+    debugE13Occupancy
+        << time << ',' << eventType << ',' << vehicleID << ',' << csv_escape(vehicle_debug_name(*this, vehicleID)) << ','
+        << roadID << ',' << csv_escape(road_debug_name(*this, roadID)) << ',' << laneIndex << ',' << movementID << ','
+        << prevMov << ',' << nextMov << ',' << csv_escape(routeRoadEdges) << ',' << csv_escape(routeMovementEdges) << ','
+        << laneFlowBefore << ',' << laneFlowAfter << ',' << roadFlowBefore << ',' << road.roadFlow << ',' << laneCap << ','
+        << occupiedBefore << ',' << occupiedAfter << ',' << storage << ',' << occupiedRoadBefore << ',' << occupiedLaneBefore << ','
+        << csv_escape(note) << '\n';
+}
+
+void Graph::debugMovement53LaneCheck(int time, int movementID, int vehicleID, const vector<int>& toLanes, const vector<int>& nextFromLanes, const vector<int>& intersected, const vector<int>& candidateLanes, int chosenLane, bool result)
+{
+    initMovement53DebugIfNeeded();
+    if (!debugMovement53Enabled || !debugLane53 || movementID != 53) return;
+    string laneFlow, laneCap, occ, storage;
+    int roadID = movements[movementID].toRoadID;
+    if (roadID >= 0 && roadID < static_cast<int>(roads.size())) {
+        const RoadSegment& road = roads[roadID];
+        for (size_t i = 0; i < candidateLanes.size(); ++i) {
+            int lane = candidateLanes[i];
+            if (i) { laneFlow += "|"; laneCap += "|"; occ += "|"; storage += "|"; }
+            laneFlow += (lane >= 0 && lane < static_cast<int>(road.laneFlow.size())) ? to_string(road.laneFlow[lane]) : "NA";
+            laneCap += (lane >= 0 && lane < static_cast<int>(road.laneCapacity.size())) ? to_string(road.laneCapacity[lane]) : "NA";
+            occ += (lane >= 0 && lane < static_cast<int>(road.laneOccupiedLength.size())) ? to_string(road.laneOccupiedLength[lane]) : "NA";
+            storage += (lane >= 0 && lane < static_cast<int>(road.laneStorageLength.size())) ? to_string(road.laneStorageLength[lane]) : "NA";
+        }
+    }
+    int nextMovementID = -1;
+    string routeRoadEdges, routeMovementEdges;
+    if (vehicleID >= 0 && vehicleID < static_cast<int>(vehicles.size())) {
+        const auto& v = vehicles[vehicleID];
+        int nextIdx = v.roadIndex + 1;
+        if (nextIdx >= 0 && nextIdx < static_cast<int>(v.routeMovementIDs.size())) nextMovementID = v.routeMovementIDs[nextIdx];
+        routeRoadEdges = join_road_debug_names(*this, v.routeRoadIDs);
+        routeMovementEdges = join_movement_debug_names(*this, v.routeMovementIDs);
+    }
+    debugLane53 << time << ',' << vehicleID << ',' << csv_escape(vehicle_debug_name(*this, vehicleID)) << ','
+                << csv_escape(routeRoadEdges) << ',' << csv_escape(routeMovementEdges) << ',' << movementID << ','
+                << roadID << ',' << csv_escape(join_ints_for_debug(toLanes)) << ',' << nextMovementID << ','
+                << csv_escape(join_ints_for_debug(nextFromLanes)) << ',' << csv_escape(join_ints_for_debug(intersected)) << ','
+                << csv_escape(join_ints_for_debug(candidateLanes)) << ',' << csv_escape(laneFlow) << ',' << csv_escape(laneCap) << ','
+                << csv_escape(occ) << ',' << csv_escape(storage) << ',' << chosenLane << ',' << (result ? "true" : "false") << '\n';
+}
+
+
+
 float Graph::evaluate_sumo_tripinfo_truth(
         const vector<vector<pair<int, float>>>& ETA)
 {
@@ -1286,6 +1423,9 @@ void Graph::reserveLaneOccupancy(int vehicleID, int roadID, int laneIndex) {
     if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return;
     RoadSegment& road = roads[roadID];
     if (laneIndex < 0 || laneIndex >= static_cast<int>(road.laneFlow.size())) return;
+    int laneFlowBefore = road.laneFlow[laneIndex];
+    int roadFlowBefore = road.roadFlow;
+    double occupiedBefore = (laneIndex < static_cast<int>(road.laneOccupiedLength.size())) ? road.laneOccupiedLength[laneIndex] : -1.0;
 
     VehicleLabel& vehicle = vehicles[vehicleID];
     if (vehicle.occupiedRoadID >= 0 || vehicle.occupiedLaneIndex >= 0) {
@@ -1307,6 +1447,9 @@ void Graph::reserveLaneOccupancy(int vehicleID, int roadID, int laneIndex) {
     vehicle.occupiedRoadID = roadID;
     vehicle.occupiedLaneIndex = laneIndex;
     vehicle.occupiedLength = occupiedLength;
+    int movementID = (vehicle.roadIndex > 0 && vehicle.roadIndex - 1 < static_cast<int>(vehicle.routeMovementIDs.size()))
+        ? vehicle.routeMovementIDs[vehicle.roadIndex - 1] : -1;
+    debugE13OccupancyEvent(debugCurrentTime, "RESERVE_E13", vehicleID, roadID, laneIndex, movementID, "reserveLaneOccupancy", laneFlowBefore, roadFlowBefore, occupiedBefore);
 }
 
 // Flow accounting entry point: release decrements roadFlow/laneFlow and occupied length.
@@ -1317,8 +1460,14 @@ void Graph::releaseLaneOccupancy(int vehicleID) {
     VehicleLabel& vehicle = vehicles[vehicleID];
     int roadID = vehicle.occupiedRoadID;
     int laneIndex = vehicle.occupiedLaneIndex;
+    int laneFlowBefore = -1;
+    int roadFlowBefore = -1;
+    double occupiedBefore = -1.0;
     if (roadID >= 0 && roadID < static_cast<int>(roads.size())) {
         RoadSegment& road = roads[roadID];
+        roadFlowBefore = road.roadFlow;
+        if (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneFlow.size())) laneFlowBefore = road.laneFlow[laneIndex];
+        if (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneOccupiedLength.size())) occupiedBefore = road.laneOccupiedLength[laneIndex];
         if (road.roadFlow > 0) road.roadFlow--;
         if (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneFlow.size()) && road.laneFlow[laneIndex] > 0) {
             road.laneFlow[laneIndex]--;
@@ -1326,6 +1475,9 @@ void Graph::releaseLaneOccupancy(int vehicleID) {
         if (laneIndex >= 0 && laneIndex < static_cast<int>(road.laneOccupiedLength.size())) {
             road.laneOccupiedLength[laneIndex] = max(0.0, road.laneOccupiedLength[laneIndex] - vehicle.occupiedLength);
         }
+        int movementID = (vehicle.roadIndex >= 0 && vehicle.roadIndex < static_cast<int>(vehicle.routeMovementIDs.size()))
+            ? vehicle.routeMovementIDs[vehicle.roadIndex] : -1;
+        debugE13OccupancyEvent(debugCurrentTime, "RELEASE_E13", vehicleID, roadID, laneIndex, movementID, "releaseLaneOccupancy", laneFlowBefore, roadFlowBefore, occupiedBefore);
     }
     vehicle.occupiedRoadID = -1;
     vehicle.occupiedLaneIndex = -1;
@@ -1346,13 +1498,15 @@ bool Graph::hasDownstreamLaneStorage(int movementID, int vehicleID, int &chosenL
 
     vector<int> toLanes = parseLaneIndices(m.toLanes, toRoadID);
     vector<int> candidateLanes = toLanes;
+    vector<int> nextFromLanes;
+    vector<int> intersected;
     const VehicleLabel& vehicle = vehicles[vehicleID];
     int nextMovementIndex = vehicle.roadIndex + 1;
     if (nextMovementIndex >= 0 && nextMovementIndex < static_cast<int>(vehicle.routeMovementIDs.size())) {
         int nextMovementID = vehicle.routeMovementIDs[nextMovementIndex];
         if (nextMovementID >= 0 && nextMovementID < static_cast<int>(movements.size())) {
-            vector<int> nextFromLanes = parseLaneIndices(movements[nextMovementID].fromLanes, toRoadID);
-            vector<int> intersected = laneIntersection(toLanes, nextFromLanes);
+            nextFromLanes = parseLaneIndices(movements[nextMovementID].fromLanes, toRoadID);
+            intersected = laneIntersection(toLanes, nextFromLanes);
             candidateLanes = !intersected.empty() ? intersected : nextFromLanes;
         }
     }
@@ -1360,6 +1514,7 @@ bool Graph::hasDownstreamLaneStorage(int movementID, int vehicleID, int &chosenL
     if (candidateLanes.empty()) candidateLanes.push_back(0);
 
     chosenLane = chooseLeastOccupiedAvailableLane(toRoadID, candidateLanes, vehicleID);
+    debugMovement53LaneCheck(debugCurrentTime, movementID, vehicleID, toLanes, nextFromLanes, intersected, candidateLanes, chosenLane, chosenLane >= 0);
     return chosenLane >= 0;
 }
 
@@ -1780,6 +1935,7 @@ bool Graph::tryStartVehicleFromEntryQueue(int vehicleID, int actualDepartTime, i
         if (firstBuffer < 0 || firstBuffer >= static_cast<int>(waitingBuffers.size())) return false;
     }
 
+    debugCurrentTime = actualDepartTime;
     reserveLaneOccupancy(vehicleID, firstRoad, laneIndex);
     if (ETA_result_cycle_aware[vehicleID].empty()) {
         ETA_result_cycle_aware[vehicleID].push_back({firstRoad, static_cast<float>(actualDepartTime)});
@@ -1916,7 +2072,11 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
         if (c.timeLabel >= windowEnd) return;
 
         dispatchPQ.pop();
-        if (!isDispatchCandidateValid(c)) continue;
+        if (c.movementID == 53) debugMovement53Event(c.timeLabel, "PQ_POP", 53, c.frontVehicleID, -1, "", "candidate popped");
+        if (!isDispatchCandidateValid(c)) {
+            if (c.movementID == 53) debugMovement53Event(c.timeLabel, "PQ_STALE_SKIP", 53, c.frontVehicleID, -1, "InvalidOrStale", "candidate invalid after pop");
+            continue;
+        }
 
         int movementID = c.movementID;
         movementInDispatchPQ[movementID] = false;
@@ -1943,15 +2103,28 @@ void Graph::process_discharge_window(int windowStart, int windowEnd) {
 
         int frontVehicleID = -1;
         int chosenLane = -1;
+        debugCurrentTime = t;
         DischargeBlockReason reason =
             getDischargeBlockReason(movementID, t, frontVehicleID, chosenLane);
 
         if (reason != DischargeBlockReason::None) {
+            if (movementID == 53) {
+                string reasonName = "Unknown";
+                if (reason == DischargeBlockReason::RedSignal) reasonName = "RedSignal";
+                else if (reason == DischargeBlockReason::Capacity) reasonName = "Capacity";
+                else if (reason == DischargeBlockReason::NotArrived) reasonName = "NotArrived";
+                else if (reason == DischargeBlockReason::DownstreamFull) reasonName = "DownstreamFull";
+                else if (reason == DischargeBlockReason::EmptyBuffer) reasonName = "EmptyBuffer";
+                else if (reason == DischargeBlockReason::Invalid) reasonName = "Invalid";
+                debugMovement53Event(t, string("BLOCK_") + reasonName, movementID, frontVehicleID, chosenLane, reasonName, "blocked candidate");
+            }
             handleBlockedCandidate(movementID, t, reason, frontVehicleID);
             continue;
         }
 
         int oldLabel = movementTimeLabel[movementID];
+        if (movementID == 53) debugMovement53Event(t, "CANDIDATE_SELECTED", movementID, frontVehicleID, chosenLane, "", "candidate can discharge");
+        debugCurrentTime = t;
         DischargeResult result = dischargeOneVehicle(movementID, t);
 
         if (result.vehicleID >= 0) {
@@ -2348,6 +2521,7 @@ void Graph::scheduleMovementCandidate(int movementID, int time) {
     if (movementBlockedByDownstream.size() != movements.size()) movementBlockedByDownstream.assign(movements.size(), false);
     if (movementInDispatchPQ.size() != movements.size()) movementInDispatchPQ.assign(movements.size(), false);
     if (movementBlockedByDownstream[movementID]) {
+        debugMovement53Event(time, "PQ_BLOCKED_SKIP", movementID, -1, -1, "DownstreamBlocked", "schedule rejected because movement is blocked");
         if (verboseTravelTimePrediction) {
             cout << "[Dispatch Sanity Warning] not scheduling downstream-blocked movement=" << movementID << endl;
         }
@@ -2362,6 +2536,7 @@ void Graph::scheduleMovementCandidate(int movementID, int time) {
     int version = ++movementPQVersion[movementID];
     dispatchPQ.push({label, firstCarArriveTime, movementID, frontVehicleID, version});
     movementInDispatchPQ[movementID] = true;
+    debugMovement53Event(label, "PQ_PUSH", movementID, frontVehicleID, -1, "", "scheduleMovementCandidate");
 
     if (verboseTravelTimePrediction) {
         cout << "[Dispatch Schedule] movement=" << movementID
@@ -2380,6 +2555,7 @@ void Graph::deactivateMovementForDownstreamBlock(int movementID) {
     movementBlockedByDownstream[movementID] = true;
     movementInDispatchPQ[movementID] = false;
     ++movementPQVersion[movementID];
+    debugMovement53Event(debugCurrentTime, "DEACTIVATE_DOWNSTREAM", movementID, -1, -1, "DownstreamFull", "deactivate until downstream road releases");
     if (verboseTravelTimePrediction) {
         cout << "[Dispatch DownstreamBlock] movement=" << movementID
              << " timeLabel=" << movementTimeLabel[movementID] << endl;
@@ -2395,9 +2571,14 @@ void Graph::reactivateMovementsBlockedByRoad(int freedRoadID, int currentTime) {
         if (!movementBlockedByDownstream[movementID]) continue;
         if (getFrontVehicleForMovement(movementID) < 0) continue;
 
+        debugMovement53Event(currentTime, "REACTIVATE_CHECK", movementID, -1, -1, "", "freedRoad=" + to_string(freedRoadID));
         int t = computeMovementAttemptTime(movementID, currentTime);
-        if (t >= INF) continue;
+        if (t >= INF) {
+            debugMovement53Event(currentTime, "REACTIVATE_FAIL", movementID, -1, -1, "NoFutureAttempt", "computeMovementAttemptTime returned INF");
+            continue;
+        }
         movementBlockedByDownstream[movementID] = false;
+        debugMovement53Event(currentTime, "REACTIVATE_SUCCESS", movementID, -1, -1, "", "scheduledAt=" + to_string(t));
         if (verboseTravelTimePrediction) {
             cout << "[Dispatch Reactivate] movement=" << movementID
                  << " freedRoad=" << freedRoadID
@@ -2833,6 +3014,8 @@ void Graph::insertVehicleToBufferOrdered(int bufferID, int vehicleID) {
         }
     }
     q.insert(pos, vehicleID);
+    int movementID = waitingBuffers[bufferID].movementID;
+    debugMovement53Event(vehicles[vehicleID].arrivalTime, "BUFFER_INSERT", movementID, vehicleID, -1, "", "insertVehicleToBufferOrdered");
 }
 
 void Graph::handle_signal_change_event(const SignalEvent& e) {
