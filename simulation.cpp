@@ -1383,19 +1383,31 @@ void Graph::initializeRoadLaneStorage() {
         road.laneFlow.assign(laneNum, 0);
         road.laneCapacity.assign(laneNum, capacityPerLane);
         road.laneOccupiedLength.assign(laneNum, 0.0);
+        // Design A: laneCapacity is the authoritative macro storage rule.
+        // laneStorageLength intentionally keeps the physical lane length for diagnostics/features only;
+        // insertion and downstream storage checks use hasLaneStorageCapacity()/laneCapacity.
         road.laneStorageLength.assign(laneNum, max(vehicleSpace, max(0.0, road.length)));
     }
 }
 
+bool Graph::hasLaneStorageCapacity(int roadID, int laneIndex, int vehicleID) const {
+    (void)vehicleID;
+    if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return false;
+    const RoadSegment& road = roads[roadID];
+    if (laneIndex < 0 || laneIndex >= static_cast<int>(road.laneFlow.size())) return false;
+    int capacity = (laneIndex < static_cast<int>(road.laneCapacity.size())) ? road.laneCapacity[laneIndex] : 1;
+    return road.laneFlow[laneIndex] < max(1, capacity);
+}
+
 // Lane-level storage selector, not signal logic: choose an allowed downstream lane
-// with available count/length capacity, preferring the least occupied lane.
+// with available count capacity, preferring the least occupied lane. laneOccupiedLength
+// is kept as a diagnostic/statistical feature and does not override the configured
+// laneCapacity formula.
 int Graph::chooseLeastOccupiedAvailableLane(int roadID, const vector<int>& candidateLanes, int vehicleID) const {
     if (roadID < 0 || roadID >= static_cast<int>(roads.size())) return -1;
     const RoadSegment& road = roads[roadID];
     if (road.laneFlow.empty()) return -1;
 
-    const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
-    const double requiredLength = max(1e-6, vt.length + vt.minGap);
     int bestLane = -1;
     int bestFlow = numeric_limits<int>::max();
     double bestOccupiedLength = numeric_limits<double>::max();
@@ -1404,14 +1416,8 @@ int Graph::chooseLeastOccupiedAvailableLane(int roadID, const vector<int>& candi
         if (rawLane < 0) continue;
         int lane = min(rawLane, static_cast<int>(road.laneFlow.size()) - 1);
         if (lane < 0) continue;
-        int capacity = (lane < static_cast<int>(road.laneCapacity.size())) ? road.laneCapacity[lane] : 1;
         double occupiedLength = (lane < static_cast<int>(road.laneOccupiedLength.size())) ? road.laneOccupiedLength[lane] : 0.0;
-        double storageLength = (lane < static_cast<int>(road.laneStorageLength.size()))
-            ? road.laneStorageLength[lane]
-            : max(0.0, road.length);
-        bool hasCountCapacity = road.laneFlow[lane] < max(1, capacity);
-        bool hasLengthCapacity = occupiedLength + requiredLength <= storageLength + 1e-9;
-        if (!hasCountCapacity || !hasLengthCapacity) continue;
+        if (!hasLaneStorageCapacity(roadID, lane, vehicleID)) continue;
         if (road.laneFlow[lane] < bestFlow ||
             (road.laneFlow[lane] == bestFlow && occupiedLength < bestOccupiedLength)) {
             bestLane = lane;
@@ -1574,10 +1580,11 @@ bool Graph::validateRoadLaneFlows() const {
             }
             double occupiedLength = (lane < static_cast<int>(road.laneOccupiedLength.size())) ? road.laneOccupiedLength[lane] : 0.0;
             double storageLength = (lane < static_cast<int>(road.laneStorageLength.size())) ? road.laneStorageLength[lane] : 0.0;
+            // Design A makes laneCapacity authoritative; laneStorageLength is diagnostic/physical only.
             if (storageLength > 0.0 && occupiedLength > storageLength + 1e-6) {
-                cout << "[LaneFlow Warning] lane exceeds storage length road=" << roadID << " lane=" << lane
-                     << " occupiedLength=" << occupiedLength << " storageLength=" << storageLength << endl;
-                ok = false;
+                cout << "[LaneFlow Diagnostic] lane occupied length exceeds physical storage road=" << roadID << " lane=" << lane
+                     << " occupiedLength=" << occupiedLength << " storageLength=" << storageLength
+                     << " flow=" << road.laneFlow[lane] << " capacity=" << capacity << endl;
             }
         }
         if (road.roadFlow != laneSum || road.roadFlow != expectedRoadFlow[roadID]) {
@@ -1926,12 +1933,7 @@ bool Graph::tryStartVehicleFromEntryQueue(int vehicleID, int actualDepartTime, i
     RoadSegment& road = roads[firstRoad];
     if (laneIndex < 0 || laneIndex >= static_cast<int>(road.laneFlow.size())) return false;
 
-    const VehicleType& vt = getVehicleTypeForVehicle(vehicleID);
-    const double requiredLength = max(1e-6, vt.length + vt.minGap);
-    int capacity = (laneIndex < static_cast<int>(road.laneCapacity.size())) ? road.laneCapacity[laneIndex] : 1;
-    double occupiedLength = (laneIndex < static_cast<int>(road.laneOccupiedLength.size())) ? road.laneOccupiedLength[laneIndex] : 0.0;
-    double storageLength = (laneIndex < static_cast<int>(road.laneStorageLength.size())) ? road.laneStorageLength[laneIndex] : max(0.0, road.length);
-    if (road.laneFlow[laneIndex] >= max(1, capacity) || occupiedLength + requiredLength > storageLength + 1e-9) {
+    if (!hasLaneStorageCapacity(firstRoad, laneIndex, vehicleID)) {
         return false;
     }
 

@@ -812,6 +812,7 @@ public:
     const VehicleType& getVehicleTypeForVehicle(int vehicleID) const;
     vector<int> parseLaneIndices(const vector<string>& lanes, int roadID = -1) const;
     vector<int> laneIntersection(const vector<int>& a, const vector<int>& b) const;
+    bool hasLaneStorageCapacity(int roadID, int laneIndex, int vehicleID = -1) const;
     int chooseLeastOccupiedAvailableLane(int roadID, const vector<int>& candidateLanes, int vehicleID = -1) const;
     void reserveLaneOccupancy(int vehicleID, int roadID, int laneIndex);
     void releaseLaneOccupancy(int vehicleID);
