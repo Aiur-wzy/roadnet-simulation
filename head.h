@@ -744,6 +744,7 @@ public:
     string sumoRoutePath;
     string sumoTripinfoPath;
     string evalOutputPath;
+    string predictionTripinfoOutputPath;
     bool evalSplitExtreme = false;
     bool evalExtremeTimeline = false;
     double evalExtremeRelativeDurationThreshold = 3.0;

@@ -1,0 +1,13 @@
+dataset,group,underCount,underRatio,underMeanError,underMAE,underMedianAbsError,underP90AbsError,underP95AbsError,underMaxAbsError,overCount,overRatio,overMeanError,overMAE,overMedianAbsError,overP90AbsError,overP95AbsError,overMaxAbsError,severeUnderCount_absError_gt_1000,severeOverCount_absError_gt_1000,severeUnderRatioAmongSevere,severeOverRatioAmongSevere
+full_no_change,ALL,43186,0.906831,-139.939,139.939,8,343,653,8240,3828,0.0803813,123.918,123.918,6,244.3,872,1743,1221,102,0.922902,0.0770975
+full_no_change,east_bottleneck,2672,1,-7.73428,7.73428,6,10,12,105,0,0,,,,,,,0,0,0,0
+full_no_change,free_all,1966,0.959024,-7.1236,7.1236,5,8,10,103,54,0.0263415,8.85185,8.85185,1,3,85,86,0,0,0,0
+full_no_change,heavy_all,7299,0.885693,-9.8767,9.8767,7,12,15,104,769,0.0933139,19.5059,19.5059,4,75,82,85,0,0,0,0
+full_no_change,light_all_seed1,3706,0.922349,-11.8171,11.8171,6,12,84,273,247,0.0614734,10.6883,10.6883,2,65,69.7,87,0,0,0,0
+full_no_change,light_all_seed2,3031,0.924085,-11.4101,11.4101,6,12,85.5,185,204,0.0621951,24.8186,24.8186,2,86.7,162.55,246,0,0,0,0
+full_no_change,medium_core,2500,0.944822,-7.272,7.272,6,9,10,97,110,0.0415722,8.73636,8.73636,1,3,81.55,83,0,0,0,0
+full_no_change,north_bottleneck,2435,0.911302,-55.2579,55.2579,10,148,153,242,169,0.0632485,1.99408,1.99408,2,3,3,4,0,0,0,0
+full_no_change,oversat_all,11974,0.874398,-400.625,400.625,183,1011.7,1563.35,8240,1632,0.119176,267.966,267.966,76,883.8,1535.25,1743,1221,102,0.922902,0.0770975
+full_no_change,south_bottleneck,2363,0.884356,-6.6606,6.6606,6,8,10,101,253,0.0946856,1.98024,1.98024,2,3,3,4,0,0,0,0
+full_no_change,southwest_bottleneck,2297,0.859656,-198.64,198.64,213,326,348,507,328,0.122754,4.78354,4.78354,4,6,6,63,0,0,0,0
+full_no_change,west_bottleneck,2943,0.979042,-148.295,148.295,119,304.8,382.9,687,62,0.0206254,169.21,169.21,173.5,267.8,279.75,302,0,0,0,0

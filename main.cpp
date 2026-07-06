@@ -16,6 +16,7 @@ struct RunConfig {
     string sumoRoutePath;
     string sumoTripinfoPath;
     string evalOutputPath;
+    string predictionTripinfoOutputPath;
     bool evalSplitExtreme = false;
     bool evalExtremeTimeline = false;
     double evalExtremeRelativeDurationThreshold = 3.0;
@@ -123,6 +124,8 @@ void print_usage(const char* programName) {
          << "  --sumo-route <path>    SUMO .rou.xml route file used for full SUMO simulation.\n"
          << "  --sumo-tripinfo <path>    SUMO tripinfo.xml ground-truth output used for evaluation.\n"
          << "  --eval-output <path>   CSV path for per-vehicle SUMO evaluation comparison.\n"
+         << "  --prediction-tripinfo-output <path>\n"
+         << "                         Optional SUMO-like XML with CAMS predicted tripinfo records.\n"
          << "  --eval-split-extreme  Write all/non-extreme/extreme-only SUMO evaluation metrics.\n"
          << "  --eval-extreme-timeline\n"
          << "                         Record and write per-road/per-movement diagnostics for extreme vehicles.\n"
@@ -179,6 +182,7 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--sumo-route") cfg.sumoRoutePath = require_value(argc, argv, i, arg);
         else if (arg == "--sumo-tripinfo") cfg.sumoTripinfoPath = require_value(argc, argv, i, arg);
         else if (arg == "--eval-output") cfg.evalOutputPath = require_value(argc, argv, i, arg);
+        else if (arg == "--prediction-tripinfo-output") cfg.predictionTripinfoOutputPath = require_value(argc, argv, i, arg);
         else if (arg == "--eval-split-extreme") cfg.evalSplitExtreme = true;
         else if (arg == "--eval-extreme-timeline") cfg.evalExtremeTimeline = true;
         else if (arg == "--eval-extreme-relative-threshold") {
@@ -241,6 +245,7 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     if (!cfg.sumoRoutePath.empty()) g.sumoRoutePath = cfg.sumoRoutePath;
     if (!cfg.sumoTripinfoPath.empty()) g.sumoTripinfoPath = cfg.sumoTripinfoPath;
     if (!cfg.evalOutputPath.empty()) g.evalOutputPath = cfg.evalOutputPath;
+    if (!cfg.predictionTripinfoOutputPath.empty()) g.predictionTripinfoOutputPath = cfg.predictionTripinfoOutputPath;
     g.evalSplitExtreme = cfg.evalSplitExtreme;
     g.evalExtremeTimeline = cfg.evalExtremeTimeline;
     g.evalExtremeRelativeDurationThreshold = cfg.evalExtremeRelativeDurationThreshold;
@@ -280,6 +285,7 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
         if (!g.sumoRoutePath.empty()) cout << "[Config] SUMO route: " << g.sumoRoutePath << endl;
         if (!g.sumoTripinfoPath.empty()) cout << "[Config] SUMO tripinfo: " << g.sumoTripinfoPath << endl;
         if (!g.evalOutputPath.empty()) cout << "[Config] Eval output: " << g.evalOutputPath << endl;
+        if (!g.predictionTripinfoOutputPath.empty()) cout << "[Config] Prediction tripinfo output: " << g.predictionTripinfoOutputPath << endl;
         cout << "[Config] Eval split extreme: " << g.evalSplitExtreme << endl;
         cout << "[Config] Eval extreme timeline: " << g.evalExtremeTimeline << endl;
         cout << "[Config] Eval extreme relative threshold: " << g.evalExtremeRelativeDurationThreshold << endl;

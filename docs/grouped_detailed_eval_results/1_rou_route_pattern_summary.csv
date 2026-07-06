@@ -1,0 +1,6 @@
+dataset,group,routePattern,count,meanAbsError,absDurationError_gt_1000,meanUnderprediction,meanOverprediction
+1_rou,all_1_rou,E10 -E12 E13 E5,127,52.1732,0,-55.5479,47.6111
+1_rou,all_1_rou,E9 -E12 E20 E15 -E0 E5,105,164.619,0,-172.917,76.1111
+1_rou,all_1_rou,E14 E12 -E9,20,40.9,0,-47.6,38.6667
+1_rou,all_1_rou,E14 E20 E19,19,276.105,0,-314.938,69
+1_rou,all_1_rou,-E5 -E13 E12 -E11 -E18,17,202.706,0,-474,89.6667

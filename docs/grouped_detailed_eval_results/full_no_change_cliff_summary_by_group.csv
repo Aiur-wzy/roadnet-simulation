@@ -1,0 +1,13 @@
+dataset,group,underCliffCount,underCliffRatio,overCliffCount,overCliffRatio,topUnderCliffVehicles,topOverCliffVehicles,topUnderCliffRoutePatterns,topOverCliffRoutePatterns,topUnderCliffDepartBins,topOverCliffDepartBins
+full_no_change,ALL,1776,0.0372929,278,0.00583752,oversat_all_veh_002607;oversat_all_veh_002812;oversat_all_veh_002648;oversat_all_veh_002853;oversat_all_veh_001951,oversat_all_veh_002590;oversat_all_veh_003082;oversat_all_veh_004189;oversat_all_veh_002713;oversat_all_veh_004681,-E3 -E15 -E16 -E17;-E5 -E13 E12 -E11 -E18;-E19 -E16 E11 -E10;-E2 -E13 E12 -E11 -E17;-E2 -E13 E20 E19,-E19 E15 E4;E10 -E12 E13 E5,"[62700,63000);[62400,62700);[60600,60900);[67200,67500);[60900,61200)","[60000,60300);[60300,60600);[60600,60900);[60900,61200);[61200,61500)"
+full_no_change,east_bottleneck,0,0,0,0,,,,,,
+full_no_change,free_all,0,0,0,0,,,,,,
+full_no_change,heavy_all,0,0,0,0,,,,,,
+full_no_change,light_all_seed1,0,0,0,0,,,,,,
+full_no_change,light_all_seed2,0,0,0,0,,,,,,
+full_no_change,medium_core,0,0,0,0,,,,,,
+full_no_change,north_bottleneck,0,0,0,0,,,,,,
+full_no_change,oversat_all,1776,0.129692,278,0.0203009,oversat_all_veh_002607;oversat_all_veh_002812;oversat_all_veh_002648;oversat_all_veh_002853;oversat_all_veh_001951,oversat_all_veh_002590;oversat_all_veh_003082;oversat_all_veh_004189;oversat_all_veh_002713;oversat_all_veh_004681,-E3 -E15 -E16 -E17;-E5 -E13 E12 -E11 -E18;-E19 -E16 E11 -E10;-E2 -E13 E12 -E11 -E17;-E2 -E13 E20 E19,-E19 E15 E4;E10 -E12 E13 E5,"[62700,63000);[62400,62700);[60600,60900);[67200,67500);[60900,61200)","[60000,60300);[60300,60600);[60600,60900);[60900,61200);[61200,61500)"
+full_no_change,south_bottleneck,0,0,0,0,,,,,,
+full_no_change,southwest_bottleneck,0,0,0,0,,,,,,
+full_no_change,west_bottleneck,0,0,0,0,,,,,,
