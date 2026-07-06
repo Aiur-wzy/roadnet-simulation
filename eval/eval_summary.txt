@@ -1,0 +1,138 @@
+[Coverage]
+simulatedVehicles=483
+truthVehicles=483
+comparedVehicles=483
+missingTruth=0
+invalidSkipped=0
+etaMissingSkipped=0
+truthNotSimulated=0
+coverageByTruth=1
+coverageBySimulation=1
+
+[Per-Vehicle Duration Error]
+MAE=276.567
+MSE=229772
+RMSE=479.345
+MAPE=126.903
+Bias=111.358
+Median absolute error=108
+P90 absolute error=640
+P95 absolute error=725.9
+
+[Per-Vehicle Arrival Error]
+MAE=394.3
+MSE=373456
+RMSE=611.111
+Bias=232.416
+Median absolute error=262
+P90 absolute error=1065.6
+P95 absolute error=1250.6
+
+[Aggregate Travel-Time Error]
+meanPredDuration=402.137
+meanTruthDuration=290.778
+meanDurationDiff=111.358
+relativeMeanDurationDiff=0.382966
+sumPredDuration=194232
+sumTruthDuration=140446
+sumDurationDiff=53786
+relativeSumDurationDiff=0.382966
+meanPredArrival=1064.63
+meanTruthArrival=832.211
+meanArrivalDiff=232.416
+
+[Speed Error]
+meanPredSpeed=3.72414
+meanTruthSpeed=3.26135
+speedBias=0.462792
+speedMAE=1.55098
+
+[Bias Direction]
+durationBiasDirection=slower
+arrivalBiasDirection=later
+
+[Distribution-Level Duration Error]
+sortedMAE=135.81
+sortedMSE=64222.8
+sortedRMSE=253.422
+predP10=52.4
+truthP10=66
+diffP10=-13.6
+predP50=184
+truthP50=214
+diffP50=-30
+predP90=840.8
+truthP90=666.6
+diffP90=174.2
+predMean=402.137
+truthMean=290.778
+diffMean=111.358
+
+[Extreme Duration Error]
+threshold=absDurationError/truthDuration >= 3
+thresholdPercent=300
+vehicleCount=24
+routePatternCount=4
+extremeVehicleOutput=eval/eval_extreme_duration_errors.csv
+extremeRouteSummaryOutput=eval/eval_extreme_route_summary.csv
+
+[Extreme Split Evaluation]
+enabled=true
+threshold=absDurationError/truthDuration >= 3
+thresholdPercent=300
+allCount=483
+nonExtremeCount=459
+extremeCount=24
+extremeRatio=0.0496894
+splitMetricsOutput=eval/eval_extreme_split_metrics.csv
+nonExtremeGroupedMetricsOutput=eval/eval_grouped_metrics_non_extreme.csv
+nonExtremeDistributionMetricsOutput=eval/eval_distribution_metrics_non_extreme.csv
+extremeOnlyGroupedMetricsOutput=eval/eval_grouped_metrics_extreme_only.csv
+extremeOnlyDistributionMetricsOutput=eval/eval_distribution_metrics_extreme_only.csv
+membershipOutput=eval/eval_extreme_membership.csv
+
+[Non-Extreme Vehicles Metrics]
+count=459
+MAE=219.198
+MSE=109727
+RMSE=331.25
+MAPE=64.9715
+meanDurationDiff=45.3508
+meanArrivalDiff=162.166
+maeArrival=332.514
+rmseArrival=491.716
+
+[Extreme-Only Vehicles Metrics]
+count=24
+MAE=1373.75
+MSE=2.52563e+06
+RMSE=1589.22
+MAPE=1311.35
+meanDurationDiff=1373.75
+meanArrivalDiff=1575.96
+maeArrival=1575.96
+rmseArrival=1700.5
+
+[Extreme Timeline Diagnostics]
+enabled=true
+roadTimelineOutput=eval/eval_extreme_vehicle_road_timeline.csv
+movementTimelineOutput=eval/eval_extreme_vehicle_movement_timeline.csv
+roadTimeSummaryOutput=eval/eval_extreme_road_time_summary.csv
+movementTimeSummaryOutput=eval/eval_extreme_movement_time_summary.csv
+transitionTimeSummaryOutput=eval/eval_extreme_transition_time_summary.csv
+extremeTimelineVehicleCount=24
+topExtremeRoadByTotalTime=see_csv
+topExtremeRoadTotalTime=0
+topExtremeMovementByTotalWaiting=see_csv
+topExtremeMovementTotalWaiting=0
+topExtremeTransitionByTotalTime=see_csv
+topExtremeTransitionTotalTime=0
+
+[Extreme Impact]
+meanDurationDiffImpact=66.0074
+meanArrivalDiffImpact=70.2506
+maeDurationImpact=57.369
+rmseDurationImpact=148.095
+maeArrivalImpact=61.786
+rmseArrivalImpact=119.395
+

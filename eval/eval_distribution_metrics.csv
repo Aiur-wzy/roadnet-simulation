@@ -1,0 +1,16 @@
+metric,value
+sortedMAE,135.81
+sortedMSE,64222.8
+sortedRMSE,253.422
+predP10,52.4
+truthP10,66
+diffP10,-13.6
+predP50,184
+truthP50,214
+diffP50,-30
+predP90,840.8
+truthP90,666.6
+diffP90,174.2
+predMean,402.137
+truthMean,290.778
+diffMean,111.358

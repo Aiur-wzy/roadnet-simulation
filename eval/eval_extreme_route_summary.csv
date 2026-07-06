@@ -1,0 +1,5 @@
+routeKey,count,meanRelativeDurationError,meanRelativeDurationErrorPercent,maxRelativeDurationError,maxRelativeDurationErrorPercent,meanAbsDurationError,maxAbsDurationError,sampleVehicleIDs,routeRoadIDs,routeRoadEdges,routeMovementIDs,routeMovementEdges
+18|3|21|32,11,3.26197,326.197,3.47847,347.847,677.818,729,veh_272|veh_312|veh_314|veh_330|veh_347|veh_377|veh_385|veh_386|veh_407|veh_411,18|3|21|32,E10|-E12|E13|E5,41|7|49,41:E10->-E12:Left|7:-E12->E13:Straight|49:E13->E5:Straight
+22|21|32,8,27.879,2787.9,48.9811,4898.11,2164.5,2597,veh_117|veh_145|veh_298|veh_350|veh_364|veh_435|veh_444|veh_466,22|21|32,E14|E13|E5,53|49,53:E14->E13:Left|49:E13->E5:Straight
+22|21|17|31,3,16.5505,1655.05,17.5874,1758.74,2366.33,2515,veh_180|veh_210|veh_332,22|21|17|31,E14|E13|E0|E4,53|48|38,53:E14->E13:Left|48:E13->E0:Right|38:E0->E4:Left
+33|3|21|32,2,3.07923,307.923,3.13636,313.636,549.5,552,veh_155|veh_310,33|3|21|32,E9|-E12|E13|E5,70|7|49,70:E9->-E12:Straight|7:-E12->E13:Straight|49:E13->E5:Straight
