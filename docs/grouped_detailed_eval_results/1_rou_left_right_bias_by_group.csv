@@ -1,0 +1,3 @@
+dataset,group,underCount,underRatio,underMeanError,underMAE,underMedianAbsError,underP90AbsError,underP95AbsError,underMaxAbsError,overCount,overRatio,overMeanError,overMAE,overMedianAbsError,overP90AbsError,overP95AbsError,overMaxAbsError,severeUnderCount_absError_gt_1000,severeOverCount_absError_gt_1000,severeUnderRatioAmongSevere,severeOverRatioAmongSevere
+1_rou,ALL,316,0.654244,-181.845,181.845,88,587.5,639,1000,164,0.339545,56.8476,56.8476,59,86,89.85,175,0,0,0,0
+1_rou,all_1_rou,316,0.654244,-181.845,181.845,88,587.5,639,1000,164,0.339545,56.8476,56.8476,59,86,89.85,175,0,0,0,0

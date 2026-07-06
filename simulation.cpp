@@ -363,6 +363,21 @@ string csv_escape(const string& value)
     return "\"" + escaped + "\"";
 }
 
+string xml_escape(const string& value)
+{
+    string escaped;
+    escaped.reserve(value.size());
+    for (char c : value) {
+        if (c == '&') escaped += "&amp;";
+        else if (c == '<') escaped += "&lt;";
+        else if (c == '>') escaped += "&gt;";
+        else if (c == '"') escaped += "&quot;";
+        else if (c == '\'') escaped += "&apos;";
+        else escaped += c;
+    }
+    return escaped;
+}
+
 string join_int_vector(const vector<int>& values, const string& sep = "|")
 {
     ostringstream out;
@@ -766,6 +781,15 @@ float Graph::evaluate_sumo_tripinfo_truth(
     const string movementTimeSummaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_movement_time_summary.csv");
     const string transitionTimeSummaryPath = evalOutputPath.empty() ? "" : eval_sibling_path(evalOutputPath, "eval_extreme_transition_time_summary.csv");
 
+    ofstream predictionTripinfoXml;
+    if (!predictionTripinfoOutputPath.empty()) {
+        predictionTripinfoXml.open(predictionTripinfoOutputPath.c_str());
+        if (!predictionTripinfoXml) {
+            throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open prediction tripinfo output '" + predictionTripinfoOutputPath + "'");
+        }
+        predictionTripinfoXml << "<tripinfos>\n";
+    }
+
     ofstream csv;
     if (!evalOutputPath.empty()) {
         csv.open(evalOutputPath.c_str());
@@ -953,6 +977,24 @@ float Graph::evaluate_sumo_tripinfo_truth(
         if (isExtremeDuration) extremeOnlyRecords.push_back(record);
         else nonExtremeRecords.push_back(record);
 
+        if (predictionTripinfoXml) {
+            const double predRouteLength = truth.routeLength;
+            const double predSpeed = (predDuration > epsilon) ? (predRouteLength / predDuration) : 0.0;
+            predictionTripinfoXml << "    <tripinfo"
+                                  << " id=\"" << xml_escape(vehicleID) << "\""
+                                  << " depart=\"" << predDepart << "\""
+                                  << " arrival=\"" << predArrival << "\""
+                                  << " duration=\"" << predDuration << "\""
+                                  << " routeLength=\"" << predRouteLength << "\""
+                                  << " speed=\"" << predSpeed << "\""
+                                  << " predDepart=\"" << predDepart << "\""
+                                  << " predArrival=\"" << predArrival << "\""
+                                  << " predDuration=\"" << predDuration << "\""
+                                  << " numRoads=\"" << numRoads << "\""
+                                  << " numMovements=\"" << numMovements << "\""
+                                  << "/>\n";
+        }
+
         if (csv) {
             csv << vehicleID << ','
                 << predDepart << ','
@@ -979,6 +1021,11 @@ float Graph::evaluate_sumo_tripinfo_truth(
                 << numMovements << ','
                 << (validVehicle ? "true" : "false") << '\n';
         }
+    }
+
+    if (predictionTripinfoXml) {
+        predictionTripinfoXml << "</tripinfos>\n";
+        cout << "[SUMO Eval] Prediction tripinfo XML written to " << predictionTripinfoOutputPath << endl;
     }
 
     int truthNotSimulated = 0;

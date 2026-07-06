@@ -1,0 +1,3 @@
+dataset,group,underCliffCount,underCliffRatio,overCliffCount,overCliffRatio,topUnderCliffVehicles,topOverCliffVehicles,topUnderCliffRoutePatterns,topOverCliffRoutePatterns,topUnderCliffDepartBins,topOverCliffDepartBins
+1_rou,ALL,5,0.010352,0,0,veh_188;veh_178;veh_241;veh_292;veh_270,,-E5 -E13 E20 E19,,"[300,600);[600,900)",
+1_rou,all_1_rou,5,0.010352,0,0,veh_188;veh_178;veh_241;veh_292;veh_270,,-E5 -E13 E20 E19,,"[300,600);[600,900)",
