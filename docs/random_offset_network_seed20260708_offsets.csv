@@ -1,0 +1,7 @@
+tlID,programID,type,phaseCount,cycleLength,oldOffset,newOffset,status
+J17,0,static,8,90,45,4,randomized
+J20,0,static,8,90,0,68,randomized
+J21,0,static,8,90,36,4,randomized
+J22,0,static,8,90,72,54,randomized
+J24,0,static,8,90,0,7,randomized
+J25,0,static,8,90,0,47,randomized
