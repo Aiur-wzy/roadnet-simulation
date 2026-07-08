@@ -3,7 +3,7 @@
                xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
 
     <input>
-        <net-file value="test_random_offsets_seed20260706.net.xml "/>
+        <net-file value="test_random_offsets_seed20260708.net.xml "/>
         <route-files value="full_no_change.rou.xml"/>
     </input>
 
