@@ -1,0 +1,21 @@
+scope,vehicleID,group,routeHash,routePreview,depart,modifiedSignals,firstModifiedSignal,firstModifiedSignalDepartState,cycleLength,offset
+vehicle,oversat_all_veh_000454,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58330.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000372,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58270.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000497,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58360.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000456,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58330.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000415,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58300.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000579,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58420.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000620,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58450.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000292,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58210.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000538,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58390.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000333,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58240.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000374,oversat_all,6ee37cdd0209,E9 -> -E11 -> -E18,58270.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000290,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58210.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000413,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58300.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000495,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58360.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000536,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58390.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000331,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58240.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000577,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58420.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000618,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58450.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000659,oversat_all,d91d5067468b,E9 -> -E11 -> E16 -> E15 -> E4,58480.0,J17,J17,r,90.0,4.0
+vehicle,oversat_all_veh_000253,oversat_all,11b6fa0ab926,E10 -> -E12 -> E13 -> E5,58180.0,J17;J21;J22,J17,y,90.0,4.0
