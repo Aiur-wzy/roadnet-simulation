@@ -1,0 +1,13 @@
+dataset,group,underCliffCount,underCliffRatio,overCliffCount,overCliffRatio,topUnderCliffVehicles,topOverCliffVehicles,topUnderCliffRoutePatterns,topOverCliffRoutePatterns,topUnderCliffDepartBins,topOverCliffDepartBins
+full_no_change_random_offset_seed20260708,ALL,1108,0.0232661,85,0.00178485,oversat_all_veh_007523;oversat_all_veh_007646;oversat_all_veh_007728;oversat_all_veh_007933;oversat_all_veh_007605,oversat_all_veh_000454;oversat_all_veh_000372;oversat_all_veh_000497;oversat_all_veh_000456;oversat_all_veh_000415,-E2 -E13 E12 -E11 -E17;-E5 -E13 E12 -E11 -E18;E9 -E12 E20 E15 -E0 E5;-E5 -E13 -E14;-E3 -E0 -E13 -E14,E10 -E12 E13 E5;E9 -E11 E16 E15 E4;E9 -E11 -E18;E18 E11 -E12 -E14;E18 E11 -E12 E13 E5,"[60000,60300);[65700,66000);[62100,62400);[61200,61500);[65400,65700)","[58200,58500);[58500,58800);[62700,63000);[63000,63300);[62400,62700)"
+full_no_change_random_offset_seed20260708,east_bottleneck,0,0,0,0,,,,,,
+full_no_change_random_offset_seed20260708,free_all,0,0,0,0,,,,,,
+full_no_change_random_offset_seed20260708,heavy_all,0,0,0,0,,,,,,
+full_no_change_random_offset_seed20260708,light_all_seed1,0,0,0,0,,,,,,
+full_no_change_random_offset_seed20260708,light_all_seed2,0,0,0,0,,,,,,
+full_no_change_random_offset_seed20260708,medium_core,0,0,0,0,,,,,,
+full_no_change_random_offset_seed20260708,north_bottleneck,5,0.00187126,0,0,north_bottleneck_veh_000783;north_bottleneck_veh_000759;north_bottleneck_veh_000767;north_bottleneck_veh_000751;north_bottleneck_veh_000671,,-E2 -E13 E12 -E11 -E17,,"[84600,84900);[84300,84600);[84900,85200)",
+full_no_change_random_offset_seed20260708,oversat_all,1103,0.0805462,85,0.0062071,oversat_all_veh_007523;oversat_all_veh_007646;oversat_all_veh_007728;oversat_all_veh_007933;oversat_all_veh_007605,oversat_all_veh_000454;oversat_all_veh_000372;oversat_all_veh_000497;oversat_all_veh_000456;oversat_all_veh_000415,-E2 -E13 E12 -E11 -E17;-E5 -E13 E12 -E11 -E18;E9 -E12 E20 E15 -E0 E5;-E5 -E13 -E14;-E3 -E0 -E13 -E14,E10 -E12 E13 E5;E9 -E11 E16 E15 E4;E9 -E11 -E18;E18 E11 -E12 -E14;E18 E11 -E12 E13 E5,"[60000,60300);[65700,66000);[62100,62400);[61200,61500);[65400,65700)","[58200,58500);[58500,58800);[62700,63000);[63000,63300);[62400,62700)"
+full_no_change_random_offset_seed20260708,south_bottleneck,0,0,0,0,,,,,,
+full_no_change_random_offset_seed20260708,southwest_bottleneck,0,0,0,0,,,,,,
+full_no_change_random_offset_seed20260708,west_bottleneck,0,0,0,0,,,,,,
