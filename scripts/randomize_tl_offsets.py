@@ -32,12 +32,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", required=True, type=int, help="Deterministic random seed")
     parser.add_argument("--offset-csv", required=True, help="CSV path for generated offsets")
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow overwriting output files",
+    )
+    parser.add_argument(
         "--integer-offsets",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Use integer-second offsets by default; use --no-integer-offsets for floats",
     )
-    parser.add_argument("--force", action="store_true", help="Allow overwriting output files")
+    parser.add_argument(
+        "--min-offset",
+        type=float,
+        default=0.0,
+        help="Minimum generated offset, inclusive (default: 0)",
+    )
+    parser.add_argument(
+        "--avoid-offsets-csv",
+        help="Optional previous offset CSV whose tlID/programID newOffset values should be avoided when possible",
+    )
     return parser.parse_args()
 
 
@@ -60,11 +74,52 @@ def phase_cycle_length(phases: Iterable[ET.Element]) -> float:
     return total
 
 
+def read_offsets_to_avoid(path: Path | None) -> dict[tuple[str, str], str]:
+    if path is None:
+        return {}
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        return {
+            (row.get("tlID", ""), row.get("programID", "")): row.get("newOffset", "")
+            for row in reader
+        }
+
+
+def random_offset(
+    rng: random.Random,
+    cycle_length: float,
+    min_offset: float,
+    integer_offsets: bool,
+    avoid: str | None,
+) -> str:
+    if integer_offsets:
+        low = int(min_offset)
+        high = int(cycle_length)
+        if low >= high:
+            low = 0
+        candidates = list(range(low, high))
+        if avoid is not None and len(candidates) > 1:
+            candidates = [candidate for candidate in candidates if str(candidate) != avoid]
+        return str(rng.choice(candidates))
+
+    for _ in range(10):
+        value = rng.uniform(min_offset, cycle_length)
+        formatted = format_number(value)
+        if formatted != avoid:
+            return formatted
+    return format_number(rng.uniform(min_offset, cycle_length))
+
+
 def main() -> int:
     args = parse_args()
     input_net = Path(args.input_net)
     output_net = Path(args.output_net)
     offset_csv = Path(args.offset_csv)
+    avoid_csv = Path(args.avoid_offsets_csv) if args.avoid_offsets_csv else None
+
+    if args.min_offset < 0:
+        print("error: --min-offset must be >= 0", file=sys.stderr)
+        return 2
 
     if canonical_path(input_net) == canonical_path(output_net):
         print("error: --output-net must not be the same path as --input-net", file=sys.stderr)
@@ -80,6 +135,7 @@ def main() -> int:
     tree = ET.parse(input_net)
     root = tree.getroot()
     rng = random.Random(args.seed)
+    offsets_to_avoid = read_offsets_to_avoid(avoid_csv)
 
     rows: list[dict[str, str]] = []
     randomized_count = 0
@@ -90,13 +146,16 @@ def main() -> int:
         phases = tl.findall("phase")
         cycle_length = phase_cycle_length(phases)
         old_offset = tl.get("offset", "")
+        key = (tl.get("id", ""), tl.get("programID", ""))
 
         if cycle_length > 0:
-            if args.integer_offsets:
-                new_offset_value = rng.randrange(int(cycle_length))
-                new_offset = str(new_offset_value)
-            else:
-                new_offset = format_number(rng.uniform(0, cycle_length))
+            new_offset = random_offset(
+                rng,
+                cycle_length,
+                args.min_offset,
+                args.integer_offsets,
+                offsets_to_avoid.get(key),
+            )
             status = "randomized"
             randomized_count += 1
         else:
