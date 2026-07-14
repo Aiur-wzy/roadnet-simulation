@@ -1,0 +1,13 @@
+<?xml version="1.0" ?>
+<configuration>
+    <input>
+        <net-file value="test_random_offsets_seed20260708.net.xml"/>
+        <route-files value="east_bottleneck_no_change_random_offset_seed20260708.rou.xml"/>
+    </input>
+    <output>
+        <tripinfo-output value="tripinfo_east_bottleneck_no_change_random_offset_seed20260708.xml"/>
+    </output>
+    <time>
+        <begin value="0"/>
+    </time>
+</configuration>
