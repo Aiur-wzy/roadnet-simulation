@@ -1,5 +1,6 @@
 import argparse
 import csv
+import os
 import random
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -159,6 +160,23 @@ ALL_CONGESTION_SCENARIOS = [
         "period": 30,
     },
 ]
+
+
+GROUP_DESCRIPTIONS = {
+    "free_all": "Free-flow baseline across all expanded routes.",
+    "light_all_seed1": "Light poisson demand across all expanded routes using seed 1.",
+    "light_all_seed2": "Light poisson demand across all expanded routes using seed 2.",
+    "medium_core": "Medium periodic demand on the core route subset.",
+    "heavy_all": "Heavy periodic demand across all expanded routes.",
+    "oversat_all": "Oversaturated periodic demand across all expanded routes.",
+    "west_bottleneck": "Bottleneck demand focused on west inbound routes.",
+    "north_bottleneck": "Bottleneck demand focused on north inbound routes.",
+    "east_bottleneck": "Bottleneck demand focused on east inbound routes.",
+    "south_bottleneck": "Bottleneck demand focused on south inbound routes.",
+    "southwest_bottleneck": "Bottleneck demand focused on southwest inbound routes.",
+}
+
+GROUPS = {scenario["scenario_name"]: scenario for scenario in ALL_CONGESTION_SCENARIOS}
 
 # Also allow selecting one route by its route id.
 for route_id, route_edges in EXPANDED_ROUTES:
@@ -398,6 +416,107 @@ def build_all_congestion_routes_xml(
     return root, manifest_rows, scenario_counts, vehicles
 
 
+
+def scenario_density_label(scenario):
+    mode = scenario["mode"]
+    if mode in {"uniform", "poisson"}:
+        return f"{mode}, num_departures={scenario.get('num_departures', '')}"
+    if mode == "period":
+        return f"period={scenario['period']}s"
+    return mode
+
+
+def scenario_time_window(scenario):
+    return f"{scenario['start_time']}-{scenario['end_time']}"
+
+
+def select_group_scenarios(group_names):
+    scenarios = []
+    for group_name in group_names:
+        if group_name not in GROUPS:
+            available = ", ".join(GROUPS)
+            raise ValueError(f"Unknown group '{group_name}'. Available groups: {available}")
+        scenarios.append(GROUPS[group_name])
+    return scenarios
+
+
+def default_group_route_path(output_dir, group_name, prefix):
+    return os.path.join(output_dir, f"{group_name}_{prefix}.rou.xml")
+
+
+def default_group_sumocfg_path(output_dir, group_name, prefix):
+    return os.path.join(output_dir, f"{group_name}_{prefix}.sumocfg")
+
+
+def ensure_can_write(path, force):
+    if os.path.exists(path) and not force:
+        raise FileExistsError(f"Refusing to overwrite existing file without --force: {path}")
+
+
+def write_route_file(path, root, force=False):
+    ensure_can_write(path, force)
+    output_dir = os.path.dirname(path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(prettify_xml(root))
+
+
+def relative_value_from_config(config_path, referenced_path):
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    abs_ref = os.path.abspath(referenced_path)
+    return os.path.relpath(abs_ref, config_dir)
+
+
+def build_sumocfg_xml(net_value, route_value, tripinfo_value):
+    root = ET.Element("configuration")
+    input_elem = ET.SubElement(root, "input")
+    ET.SubElement(input_elem, "net-file", value=net_value)
+    ET.SubElement(input_elem, "route-files", value=route_value)
+    output_elem = ET.SubElement(root, "output")
+    ET.SubElement(output_elem, "tripinfo-output", value=tripinfo_value)
+    time_elem = ET.SubElement(root, "time")
+    ET.SubElement(time_elem, "begin", value="0")
+    return root
+
+
+def write_sumocfg_file(path, group_name, prefix, net_file, route_file, tripinfo_output_dir, force=False):
+    ensure_can_write(path, force)
+    output_dir = os.path.dirname(path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    tripinfo_path = os.path.join(tripinfo_output_dir, f"tripinfo_{group_name}_{prefix}.xml")
+    root = build_sumocfg_xml(
+        relative_value_from_config(path, net_file),
+        relative_value_from_config(path, route_file),
+        relative_value_from_config(path, tripinfo_path),
+    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(prettify_xml(root))
+
+
+def print_group_listing():
+    print("Available groups:")
+    for name, scenario in GROUPS.items():
+        selected_routes = ROUTE_OPTIONS[scenario["route_option"]]
+        print(
+            f"{name}: {GROUP_DESCRIPTIONS.get(name, '')} "
+            f"route_family={scenario['route_option']} routes={len(selected_routes)} "
+            f"density={scenario_density_label(scenario)} "
+            f"window={scenario_time_window(scenario)} seed={scenario.get('seed', '')}"
+        )
+
+
+def print_group_generation_summary(path, manifest_rows, vehicles):
+    print(f"Route file written to: {path}")
+    print(f"Number of scenarios: {len(manifest_rows)}")
+    print(f"Total vehicles: {len(vehicles)}")
+    if vehicles:
+        print(f"First depart: {vehicles[0]['depart']:.2f}")
+        print(f"Last depart:  {vehicles[-1]['depart']:.2f}")
+    for row in manifest_rows:
+        print(f"  {row['scenario_name']}: {row['vehicle_count']} vehicles")
+
 def write_manifest(manifest_output, manifest_rows):
     fieldnames = [
         "scenario_name",
@@ -465,6 +584,18 @@ def main():
         description="Generate SUMO route files with expanded fixed route options."
     )
     parser.add_argument("--output", type=str, default="expanded_routes.rou.xml")
+    parser.add_argument("--list-groups", action="store_true", help="Print available congestion groups and exit.")
+    parser.add_argument("--group", type=str, help="Generate one named congestion group into a single route file.")
+    parser.add_argument("--groups", type=str, help="Comma-separated congestion group names to generate as separate route files.")
+    parser.add_argument("--all-groups", action="store_true", help="Generate each known congestion group as a separate route file.")
+    parser.add_argument("--output-dir", type=str, default=".", help="Output directory for --groups or --all-groups route files.")
+    parser.add_argument("--prefix", type=str, default="no_change_random_offset_seed20260708", help="Filename suffix used for per-group generated files.")
+    parser.add_argument("--force", action="store_true", help="Allow overwriting generated route and sumocfg files.")
+    parser.add_argument("--write-sumocfg-only", action="store_true", help="Generate matching .sumocfg files only, without route XML.")
+    parser.add_argument("--sumocfg", action="store_true", help="Generate matching .sumocfg files alongside generated route files.")
+    parser.add_argument("--net-file", type=str, default="data/test_random_offsets_seed20260708.net.xml", help="Network file referenced by generated sumocfg files.")
+    parser.add_argument("--tripinfo-output-dir", type=str, default="data", help="Directory used for future tripinfo output paths in sumocfg files.")
+    parser.add_argument("--sumocfg-output-dir", type=str, default="data", help="Directory where generated sumocfg files are written.")
     parser.add_argument(
         "--profile",
         type=str,
@@ -517,6 +648,76 @@ def main():
     parser.add_argument("--depart-pos", type=str, default="base")
 
     args = parser.parse_args()
+
+    if args.list_groups:
+        print_group_listing()
+        return
+
+    selected_group_names = []
+    if args.group:
+        selected_group_names.extend([args.group])
+    if args.groups:
+        selected_group_names.extend([name.strip() for name in args.groups.split(",") if name.strip()])
+    if args.all_groups:
+        selected_group_names.extend(GROUPS.keys())
+
+    if selected_group_names:
+        # Preserve declaration order while avoiding duplicate writes if options overlap.
+        selected_group_names = list(dict.fromkeys(selected_group_names))
+        scenarios = select_group_scenarios(selected_group_names)
+
+        if args.write_sumocfg_only:
+            route_paths = {
+                name: default_group_route_path(args.sumocfg_output_dir, name, args.prefix)
+                for name in selected_group_names
+            }
+        elif args.group and len(selected_group_names) == 1:
+            route_paths = {selected_group_names[0]: args.output}
+        else:
+            route_paths = {
+                name: default_group_route_path(args.output_dir, name, args.prefix)
+                for name in selected_group_names
+            }
+
+        if args.write_sumocfg_only:
+            for name in selected_group_names:
+                sumocfg_path = default_group_sumocfg_path(args.sumocfg_output_dir, name, args.prefix)
+                write_sumocfg_file(
+                    sumocfg_path,
+                    name,
+                    args.prefix,
+                    args.net_file,
+                    route_paths[name],
+                    args.tripinfo_output_dir,
+                    force=args.force,
+                )
+                print(f"SUMO configuration written to: {sumocfg_path}")
+            return
+
+        for scenario in scenarios:
+            name = scenario["scenario_name"]
+            root, manifest_rows, scenario_counts, vehicles = build_all_congestion_routes_xml(
+                [scenario],
+                depart_lane=args.depart_lane,
+                depart_speed=args.depart_speed,
+                depart_pos=args.depart_pos,
+                lane_change_mode=args.lane_change_mode,
+            )
+            write_route_file(route_paths[name], root, force=args.force)
+            print_group_generation_summary(route_paths[name], manifest_rows, vehicles)
+            if args.sumocfg:
+                sumocfg_path = default_group_sumocfg_path(args.sumocfg_output_dir, name, args.prefix)
+                write_sumocfg_file(
+                    sumocfg_path,
+                    name,
+                    args.prefix,
+                    args.net_file,
+                    route_paths[name],
+                    args.tripinfo_output_dir,
+                    force=args.force,
+                )
+                print(f"SUMO configuration written to: {sumocfg_path}")
+        return
 
     if args.profile == "all-congestion":
         root, manifest_rows, scenario_counts, vehicles = build_all_congestion_routes_xml(
