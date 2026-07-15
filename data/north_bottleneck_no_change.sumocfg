@@ -5,7 +5,7 @@
         <route-files value="north_bottleneck_no_change.rou.xml"/>
     </input>
     <output>
-        <tripinfo-output value="tripinfo_north_bottleneck_no_change.xml"/>
+        <tripinfo-output value="tripinfo_north_bottleneck_no_change_random_net.xml"/>
     </output>
     <time>
         <begin value="0"/>
