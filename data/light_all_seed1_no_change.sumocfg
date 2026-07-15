@@ -5,7 +5,7 @@
         <route-files value="light_all_seed1_no_change.rou.xml"/>
     </input>
     <output>
-        <tripinfo-output value="tripinfo_light_all_seed1_no_change_random_offset_seed20260708.xml"/>
+        <tripinfo-output value="tripinfo_light_all_seed1_no_change_random_net.xml"/>
     </output>
     <time>
         <begin value="0"/>
