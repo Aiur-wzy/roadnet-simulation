@@ -2,7 +2,7 @@
 <configuration>
     <input>
         <net-file value="test_random_offsets_seed20260708.net.xml"/>
-        <route-files value="medium_core_no_change_random_offset_seed20260708.rou.xml"/>
+        <route-files value="medium_core_no_change.rou.xml"/>
     </input>
     <output>
         <tripinfo-output value="tripinfo_medium_core_no_change_random_offset_seed20260708.xml"/>
