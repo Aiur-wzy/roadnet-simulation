@@ -19,6 +19,8 @@ New CLI options:
 - `--output <path>`: output route path for `--group`.
 - `--output-dir <path>`: output directory for `--groups` or `--all-groups` route files.
 - `--prefix <prefix>`: filename suffix used for per-group generated files.
+- `--group-start-time <float>`: rebase independent group scenario windows to this start time; default is `0.0`.
+- `--preserve-group-times`: keep the original staged absolute scenario window for compatibility/debugging; this cannot be combined with `--group-start-time`.
 - `--force`: allow overwriting generated route and sumocfg files.
 - `--write-sumocfg-only`: write matching `.sumocfg` files without generating route XML.
 - `--sumocfg`: write matching `.sumocfg` files alongside generated route XML.
@@ -34,6 +36,14 @@ python3 generate_route_on_test_net_full.py \
   --output data/full_no_change.rou.xml \
   --manifest-output data/all_congestion_manifest.csv
 ```
+
+## Independent group time rebasing
+
+The combined `--profile all-congestion` output retains the original staged timeline from `ALL_CONGESTION_SCENARIOS`; for example, `free_all` remains `0-10000`, `oversat_all` remains `58000-68000`, and `southwest_bottleneck` remains `118000-128000`.
+
+The independent generation options `--group`, `--groups`, and `--all-groups` create one route file per group. By default, each independent file is now rebased so the scenario window begins at simulation time `0.0`. Use `--group-start-time 1` to generate the same independent scenario over `1-10001`, or use `--preserve-group-times` to retain the old staged absolute times for compatibility and debugging. `--preserve-group-times` and `--group-start-time` are mutually exclusive to avoid ambiguous output.
+
+Rebasing only translates timestamps. Density, headway sequence, duration, route family, vehicle count, route assignment, vehicle IDs, and Poisson seeds remain unchanged. For Poisson groups, the scenario effective window begins at `0.0` by default, but the first actual vehicle departure may be later than `0.0` because the first exponential headway is sampled after the window begins.
 
 ## Available groups
 
@@ -67,21 +77,41 @@ python3 generate_route_on_test_net_full.py \
 
 ## Commands for future route generation
 
-Generate all group route files locally:
+Generate all independent group route files locally, each rebased to start at time `0`:
 
 ```bash
 python3 generate_route_on_test_net_full.py \
   --all-groups \
+  --group-start-time 0 \
   --output-dir data \
   --prefix no_change_random_offset_seed20260708
 ```
 
-Generate one selected group locally:
+Generate one independent group locally from time `0`:
 
 ```bash
 python3 generate_route_on_test_net_full.py \
   --group oversat_all \
+  --group-start-time 0 \
   --output data/oversat_all_no_change_random_offset_seed20260708.rou.xml
+```
+
+Generate one independent group locally from time `1`:
+
+```bash
+python3 generate_route_on_test_net_full.py \
+  --group oversat_all \
+  --group-start-time 1 \
+  --output data/oversat_all_no_change_random_offset_seed20260708.rou.xml
+```
+
+Preserve the old staged absolute time for compatibility/debugging:
+
+```bash
+python3 generate_route_on_test_net_full.py \
+  --group oversat_all \
+  --preserve-group-times \
+  --output /tmp/oversat_all_original_time.rou.xml
 ```
 
 Generate selected groups locally:
@@ -111,7 +141,7 @@ python3 generate_route_on_test_net_full.py \
   --tripinfo-output-dir data
 ```
 
-Generated `.rou.xml` files from the route-generation commands above can be used locally for experiments, but they should not be committed if they are too large for review.
+Generated `.rou.xml` files from the route-generation commands above can be used locally for experiments, but large generated route XML files should remain local and should not be committed when they exceed PR limits.
 
 ## Latest random-offset network
 

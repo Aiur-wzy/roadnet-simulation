@@ -372,11 +372,26 @@ def build_all_congestion_routes_xml(
                 )
                 vehicle_idx += 1
 
+        original_start_time = scenario.get("original_start_time", scenario["start_time"])
+        original_end_time = scenario.get("original_end_time", scenario["end_time"])
+        effective_start_time = scenario["start_time"]
+        effective_end_time = scenario["end_time"]
+        time_rebased = (
+            float(original_start_time) != float(effective_start_time)
+            or float(original_end_time) != float(effective_end_time)
+        )
+
         manifest_rows.append(
             {
                 "scenario_name": scenario_name,
-                "start_time": scenario["start_time"],
-                "end_time": scenario["end_time"],
+                "start_time": effective_start_time,
+                "end_time": effective_end_time,
+                "original_start_time": original_start_time,
+                "original_end_time": original_end_time,
+                "effective_start_time": effective_start_time,
+                "effective_end_time": effective_end_time,
+                "time_rebased": str(time_rebased).lower(),
+                "rebase_target": effective_start_time if time_rebased else "",
                 "route_option": route_option,
                 "mode": scenario["mode"],
                 "num_departures": scenario.get("num_departures", ""),
@@ -428,6 +443,19 @@ def scenario_density_label(scenario):
 
 def scenario_time_window(scenario):
     return f"{scenario['start_time']}-{scenario['end_time']}"
+
+
+def rebase_scenario_time(scenario, new_start_time):
+    original_start = float(scenario["start_time"])
+    original_end = float(scenario["end_time"])
+    duration = original_end - original_start
+
+    rebased = dict(scenario)
+    rebased["original_start_time"] = original_start
+    rebased["original_end_time"] = original_end
+    rebased["start_time"] = float(new_start_time)
+    rebased["end_time"] = float(new_start_time) + duration
+    return rebased
 
 
 def select_group_scenarios(group_names):
@@ -515,13 +543,31 @@ def print_group_generation_summary(path, manifest_rows, vehicles):
         print(f"First depart: {vehicles[0]['depart']:.2f}")
         print(f"Last depart:  {vehicles[-1]['depart']:.2f}")
     for row in manifest_rows:
-        print(f"  {row['scenario_name']}: {row['vehicle_count']} vehicles")
+        print(f"Scenario: {row['scenario_name']}")
+        print(
+            f"Original window: {float(row['original_start_time']):.2f}-"
+            f"{float(row['original_end_time']):.2f}"
+        )
+        print(
+            f"Effective window: {float(row['effective_start_time']):.2f}-"
+            f"{float(row['effective_end_time']):.2f}"
+        )
+        print(f"Time rebased: {'yes' if row['time_rebased'] == 'true' else 'no'}")
+        print(f"First depart: {row['first_depart']}")
+        print(f"Last depart: {row['last_depart']}")
+        print(f"Total vehicles: {row['vehicle_count']}")
 
 def write_manifest(manifest_output, manifest_rows):
     fieldnames = [
         "scenario_name",
         "start_time",
         "end_time",
+        "original_start_time",
+        "original_end_time",
+        "effective_start_time",
+        "effective_end_time",
+        "time_rebased",
+        "rebase_target",
         "route_option",
         "mode",
         "num_departures",
@@ -590,6 +636,17 @@ def main():
     parser.add_argument("--all-groups", action="store_true", help="Generate each known congestion group as a separate route file.")
     parser.add_argument("--output-dir", type=str, default=".", help="Output directory for --groups or --all-groups route files.")
     parser.add_argument("--prefix", type=str, default="no_change_random_offset_seed20260708", help="Filename suffix used for per-group generated files.")
+    parser.add_argument(
+        "--group-start-time",
+        type=float,
+        default=None,
+        help="Rebase independently generated group scenario windows to start at this time (default: 0.0).",
+    )
+    parser.add_argument(
+        "--preserve-group-times",
+        action="store_true",
+        help="Retain original absolute group start/end times instead of rebasing independent group files.",
+    )
     parser.add_argument("--force", action="store_true", help="Allow overwriting generated route and sumocfg files.")
     parser.add_argument("--write-sumocfg-only", action="store_true", help="Generate matching .sumocfg files only, without route XML.")
     parser.add_argument("--sumocfg", action="store_true", help="Generate matching .sumocfg files alongside generated route files.")
@@ -649,6 +706,9 @@ def main():
 
     args = parser.parse_args()
 
+    if args.preserve_group_times and args.group_start_time is not None:
+        parser.error("--preserve-group-times cannot be combined with --group-start-time.")
+
     if args.list_groups:
         print_group_listing()
         return
@@ -694,10 +754,17 @@ def main():
                 print(f"SUMO configuration written to: {sumocfg_path}")
             return
 
+        group_start_time = 0.0 if args.group_start_time is None else args.group_start_time
+
         for scenario in scenarios:
+            effective_scenario = (
+                scenario
+                if args.preserve_group_times
+                else rebase_scenario_time(scenario, group_start_time)
+            )
             name = scenario["scenario_name"]
             root, manifest_rows, scenario_counts, vehicles = build_all_congestion_routes_xml(
-                [scenario],
+                [effective_scenario],
                 depart_lane=args.depart_lane,
                 depart_speed=args.depart_speed,
                 depart_pos=args.depart_pos,
