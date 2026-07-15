@@ -2,10 +2,10 @@
 <configuration>
     <input>
         <net-file value="test_random_offsets_seed20260708.net.xml"/>
-        <route-files value="south_bottleneck_no_change_random_offset_seed20260708.rou.xml"/>
+        <route-files value="south_bottleneck_no_chang.rou.xml"/>
     </input>
     <output>
-        <tripinfo-output value="tripinfo_south_bottleneck_no_change_random_offset_seed20260708.xml"/>
+        <tripinfo-output value="tripinfo_south_bottleneck_no_change_random_net.xml"/>
     </output>
     <time>
         <begin value="0"/>
