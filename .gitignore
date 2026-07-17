@@ -1,2 +1,5 @@
 diag_*/
 *.log
+
+# Local CAMS single-group evaluation outputs
+eval_results/single_group/
