@@ -50,9 +50,9 @@ if [[ -z "$RUN_ID" ]]; then
   RUN_ID="$(date +%Y%m%d_%H%M%S)"
 fi
 if [[ -n "$GROUPS_CSV" ]]; then
-  IFS=',' read -r -a GROUPS <<< "$GROUPS_CSV"
+  IFS=',' read -r -a SELECTED_GROUPS <<< "$GROUPS_CSV"
 else
-  GROUPS=("${ALL_GROUPS[@]}")
+  SELECTED_GROUPS=("${ALL_GROUPS[@]}")
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,7 +60,7 @@ SINGLE_SCRIPT="$SCRIPT_DIR/run_single_group_cams_eval.sh"
 successes=()
 failures=()
 
-for group in "${GROUPS[@]}"; do
+for group in "${SELECTED_GROUPS[@]}"; do
   printf '\n=== Running group: %s (run_id=%s) ===\n' "$group" "$RUN_ID"
   cmd=("$SINGLE_SCRIPT" --group "$group" --run-id "$RUN_ID" --output-root "$OUTPUT_ROOT" --travel-time-mode "$TRAVEL_TIME_MODE" --lane-discharge-interval "$LANE_DISCHARGE_INTERVAL")
   if [[ "$DRY_RUN" == "true" ]]; then cmd+=(--dry-run); fi

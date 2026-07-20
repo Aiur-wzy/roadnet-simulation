@@ -1,0 +1,12 @@
+group,underCliffCount,overCliffCount,underNearCliffCount,overNearCliffCount,severeUnderCount,severeOverCount,worstUnderVehicle,worstOverVehicle,worstAbsVehicle
+free_all,0,0,0,0,0,0,free_all_veh_000862,free_all_veh_000315,free_all_veh_000862
+light_all_seed1,0,3,0,20,0,28,light_all_seed1_veh_001357,light_all_seed1_veh_001112,light_all_seed1_veh_001112
+light_all_seed2,0,0,0,0,0,0,light_all_seed2_veh_002256,light_all_seed2_veh_001276,light_all_seed2_veh_002256
+medium_core,0,0,0,0,0,0,medium_core_veh_001301,medium_core_veh_000635,medium_core_veh_001301
+heavy_all,0,0,0,0,0,0,heavy_all_veh_005946,heavy_all_veh_002548,heavy_all_veh_005946
+oversat_all,341,36,1056,138,2008,414,oversat_all_veh_002175,oversat_all_veh_000251,oversat_all_veh_000251
+west_bottleneck,0,18,0,65,0,308,west_bottleneck_veh_000680,west_bottleneck_veh_000057,west_bottleneck_veh_000057
+north_bottleneck,0,0,0,0,0,0,north_bottleneck_veh_000999,north_bottleneck_veh_000032,north_bottleneck_veh_000999
+east_bottleneck,0,0,0,0,0,0,east_bottleneck_veh_001087,east_bottleneck_veh_000114,east_bottleneck_veh_001087
+south_bottleneck,0,0,0,0,0,0,south_bottleneck_veh_000008,south_bottleneck_veh_001080,south_bottleneck_veh_000008
+southwest_bottleneck,0,0,0,0,35,0,southwest_bottleneck_veh_002267,southwest_bottleneck_veh_000305,southwest_bottleneck_veh_002267
