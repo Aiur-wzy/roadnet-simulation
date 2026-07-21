@@ -146,6 +146,7 @@ class Vehicle:
 
 
 MovementKey = Tuple[str, int]
+CycleIdentity = Tuple[str, int, int]
 
 
 @dataclass
@@ -167,6 +168,7 @@ class CamsConfig:
     waiting_region_length: float
     stop_speed_threshold: float
     queue_speed_threshold: float
+    min_green_opportunity_time: float
     downstream_block_occupancy_threshold: float
     training_output: str
     low_speed_threshold: float
@@ -241,6 +243,13 @@ class VehicleMovementEvent:
     green_queue_wait_time: float = 0.0
     downstream_block_wait_time: float = 0.0
     cycles_waited: int = 0
+    # Historical/debug counter only; it is not the missed-green metric below.
+    missed_green_rounds: int = 0
+    last_missed_green_cycle: Optional[CycleIdentity] = None
+    queued_at_green_start_cycle: Optional[CycleIdentity] = None
+    missed_green_cycle_ids: List[CycleIdentity] = field(default_factory=list)
+    missed_green_due_to_queue: int = 0
+    missed_green_due_to_downstream_block: int = 0
     queue_rank_at_arrival: Optional[int] = None
     queue_at_green_start: Optional[int] = None
     pass_cycle_id: Optional[int] = None
@@ -282,6 +291,7 @@ class MovementCycleSummary:
     discharged_in_green: int = 0
     residual_queue_after_green: int = 0
     downstream_blocked_vehicle_ids: Set[str] = field(default_factory=set)
+    missed_green_vehicle_ids: Set[str] = field(default_factory=set)
     max_queue_length_in_cycle: int = 0
     queue_length_sum: int = 0
     queue_sample_count: int = 0
@@ -306,6 +316,12 @@ class MovementCycleSummary:
         """Return unique vehicles blocked by downstream storage in this green."""
 
         return len(self.downstream_blocked_vehicle_ids)
+
+    @property
+    def missed_green_count(self) -> int:
+        """Return unique vehicles that missed this specific green window."""
+
+        return len(self.missed_green_vehicle_ids)
 
 
 
@@ -391,6 +407,15 @@ def parse_args() -> CamsConfig:
         help="Speed <= this value inside the waiting region is treated as queued, in m/s.",
     )
     parser.add_argument(
+        "--min-green-opportunity-time",
+        type=float,
+        default=2.0,
+        help=(
+            "Minimum seconds of green exposure required for a vehicle that arrives "
+            "during green to be considered to have had a valid release opportunity."
+        ),
+    )
+    parser.add_argument(
         "--downstream-block-occupancy-threshold",
         type=float,
         default=85.0,
@@ -429,6 +454,7 @@ def parse_args() -> CamsConfig:
         waiting_region_length=args.waiting_region_length,
         stop_speed_threshold=args.stop_speed_threshold,
         queue_speed_threshold=args.queue_speed_threshold,
+        min_green_opportunity_time=args.min_green_opportunity_time,
         downstream_block_occupancy_threshold=args.downstream_block_occupancy_threshold,
         training_output=args.training_output,
         low_speed_threshold=args.low_speed_threshold,
@@ -745,6 +771,7 @@ def update_waiting_region_entry(
     active_cycles: Dict[MovementKey, MovementCycleSummary],
     config: CamsConfig,
     current_time: float,
+    need_arrival_debug: bool = True,
 ) -> None:
     """Set the first time the vehicle reaches the downstream waiting region."""
 
@@ -755,18 +782,93 @@ def update_waiting_region_entry(
 
     event.waiting_region_enter_time = current_time
     event.signal_state_at_arrival = snapshot.signal_state
-    event.queue_rank_at_arrival = compute_queue_rank_at_arrival(snapshot, snapshots, config)
-    event.downstream_occupancy_at_arrival = snapshot.downstream_occupancy
-    event.available_storage_meter_at_arrival = snapshot.available_storage_meter
+    if need_arrival_debug:
+        event.queue_rank_at_arrival = compute_queue_rank_at_arrival(snapshot, snapshots, config)
+        event.downstream_occupancy_at_arrival = snapshot.downstream_occupancy
+        event.available_storage_meter_at_arrival = snapshot.available_storage_meter
 
     key = movement_key(snapshot)
     if key in active_cycles:
         active_cycles[key].arrivals_during_green += 1
         event.queue_at_green_start = active_cycles[key].queue_at_green_start
-        if event.cycles_waited == 0:
-            # The vehicle arrived during an already-green wave. We still count
-            # this green as its first opportunity if it has not passed yet.
-            event.cycles_waited = 1
+
+
+def cycle_identity(cycle: MovementCycleSummary) -> CycleIdentity:
+    """Return a movement-qualified identity for a green window."""
+
+    return cycle.tls_id, cycle.link_index, cycle.cycle_id
+
+
+def is_queued_in_waiting_region(snapshot: VehicleSnapshot, config: CamsConfig) -> bool:
+    return (
+        snapshot.tls_distance <= config.waiting_region_length
+        and snapshot.speed <= config.queue_speed_threshold
+    )
+
+
+def mark_queued_at_green_start(
+    key: MovementKey,
+    cycle: MovementCycleSummary,
+    snapshots: Dict[str, VehicleSnapshot],
+    active_events: Dict[str, VehicleMovementEvent],
+    config: CamsConfig,
+) -> None:
+    """Mark vehicles already queued when this movement's green starts."""
+
+    identity = cycle_identity(cycle)
+    for vehicle_id, event in active_events.items():
+        snapshot = snapshots.get(vehicle_id)
+        if (
+            snapshot is not None
+            and movement_key(snapshot) == key
+            and event.pass_stopline_time is None
+            and is_queued_in_waiting_region(snapshot, config)
+        ):
+            event.queued_at_green_start_cycle = identity
+            if event.queue_at_green_start is None:
+                event.queue_at_green_start = cycle.queue_at_green_start
+
+
+def count_missed_green_at_cycle_end(
+    key: MovementKey,
+    cycle: MovementCycleSummary,
+    snapshots: Dict[str, VehicleSnapshot],
+    active_events: Dict[str, VehicleMovementEvent],
+    config: CamsConfig,
+    current_time: float,
+) -> None:
+    """Count queued vehicles that did not use an actual green opportunity.
+
+    This function is deliberately invoked only for a real green-to-non-green
+    transition.  It uses the current snapshot, so a vehicle crossing on the
+    transition step cannot be counted as residual queue.
+    """
+
+    identity = cycle_identity(cycle)
+    for vehicle_id, event in active_events.items():
+        snapshot = snapshots.get(vehicle_id)
+        if snapshot is None or movement_key(snapshot) != key:
+            continue
+        if event.pass_stopline_time is not None or not is_queued_in_waiting_region(snapshot, config):
+            continue
+        if identity in event.missed_green_cycle_ids:
+            continue
+        queued_at_start = event.queued_at_green_start_cycle == identity
+        entered_at = event.waiting_region_enter_time
+        green_exposure = 0.0 if entered_at is None else max(
+            0.0, current_time - max(cycle.green_start_time, entered_at)
+        )
+        if not queued_at_start and green_exposure < config.min_green_opportunity_time:
+            continue
+
+        event.missed_green_rounds += 1
+        event.last_missed_green_cycle = identity
+        event.missed_green_cycle_ids.append(identity)
+        cycle.missed_green_vehicle_ids.add(vehicle_id)
+        if vehicle_id in cycle.downstream_blocked_vehicle_ids:
+            event.missed_green_due_to_downstream_block += 1
+        else:
+            event.missed_green_due_to_queue += 1
 
 
 def accumulate_waiting_time(
@@ -856,15 +958,9 @@ def update_cycle_states(
                 queue_at_green_start=queue_length,
                 max_queue_length_in_cycle=queue_length,
             )
-
-            for event in active_events.values():
-                if (event.tls_id, event.link_index) != key:
-                    continue
-                if event.waiting_region_enter_time is None or event.pass_stopline_time is not None:
-                    continue
-                event.cycles_waited += 1
-                if event.queue_at_green_start is None:
-                    event.queue_at_green_start = queue_length
+            mark_queued_at_green_start(
+                key, active_cycles[key], snapshots, active_events, config
+            )
 
         if is_green and key in active_cycles:
             active_cycles[key].update_queue(queue_length)
@@ -873,6 +969,9 @@ def update_cycle_states(
             cycle = active_cycles.pop(key)
             cycle.green_end_time = current_time
             cycle.residual_queue_after_green = queue_length
+            count_missed_green_at_cycle_end(
+                key, cycle, snapshots, active_events, config, current_time
+            )
             completed_cycles.append(cycle)
 
         previous_green_states[key] = is_green
@@ -905,6 +1004,10 @@ def write_vehicle_events(
         "green_queue_wait_time",
         "downstream_block_wait_time",
         "cycles_waited",
+        "missed_green_rounds",
+        "missed_green_cycle_ids",
+        "missed_green_due_to_queue",
+        "missed_green_due_to_downstream_block",
         "queue_rank_at_arrival",
         "queue_at_green_start",
         "discharged_in_green",
@@ -946,6 +1049,13 @@ def write_vehicle_events(
                     "green_queue_wait_time": round(event.green_queue_wait_time, 2),
                     "downstream_block_wait_time": round(event.downstream_block_wait_time, 2),
                     "cycles_waited": event.cycles_waited,
+                    "missed_green_rounds": event.missed_green_rounds,
+                    "missed_green_cycle_ids": ";".join(
+                        f"{tls_id}:{link_index}:{cycle_id}"
+                        for tls_id, link_index, cycle_id in event.missed_green_cycle_ids
+                    ),
+                    "missed_green_due_to_queue": event.missed_green_due_to_queue,
+                    "missed_green_due_to_downstream_block": event.missed_green_due_to_downstream_block,
                     "queue_rank_at_arrival": event.queue_rank_at_arrival,
                     "queue_at_green_start": event.queue_at_green_start,
                     "discharged_in_green": cycle.discharged_in_green if cycle else "",
@@ -1006,6 +1116,11 @@ def write_training_rows(output_path: str, completed_events: List[VehicleMovement
     The main turn_type feature is the downstream outgoing movement from
     current_edge/from_edge to outgoing_to_edge/to_edge. incoming_turn_type is
     retained only as an explicit previous-edge debugging/future-feature column.
+
+    Missed-green fields are outcome labels/analysis fields, not entry features
+    for predicting this movement's travel time; using them as such leaks future
+    information. A future previous_missed_green_rounds feature must be sampled
+    separately for the next road.
     """
 
     fieldnames = [
@@ -1019,6 +1134,8 @@ def write_training_rows(output_path: str, completed_events: List[VehicleMovement
         "downstream_block_wait_time", "total_before_stopline_time",
         "waiting_region_enter_time", "incoming_from_edge", "current_edge",
         "outgoing_to_edge", "tls_id", "link_index",
+        "missed_green_rounds", "missed_green_due_to_queue",
+        "missed_green_due_to_downstream_block",
     ]
     with open(output_path, mode="w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
@@ -1067,6 +1184,9 @@ def write_training_rows(output_path: str, completed_events: List[VehicleMovement
                 "outgoing_to_edge": event.to_edge,
                 "tls_id": event.tls_id,
                 "link_index": event.link_index,
+                "missed_green_rounds": event.missed_green_rounds,
+                "missed_green_due_to_queue": event.missed_green_due_to_queue,
+                "missed_green_due_to_downstream_block": event.missed_green_due_to_downstream_block,
             })
 
 def write_cycle_summaries(output_path: str, completed_cycles: List[MovementCycleSummary]) -> None:
@@ -1084,6 +1204,7 @@ def write_cycle_summaries(output_path: str, completed_cycles: List[MovementCycle
         "discharged_in_green",
         "residual_queue_after_green",
         "downstream_blocked_count",
+        "missed_green_count",
         "max_queue_length_in_cycle",
         "mean_queue_length_in_cycle",
     ]
@@ -1105,6 +1226,7 @@ def write_cycle_summaries(output_path: str, completed_cycles: List[MovementCycle
                     "discharged_in_green": cycle.discharged_in_green,
                     "residual_queue_after_green": cycle.residual_queue_after_green,
                     "downstream_blocked_count": cycle.downstream_blocked_count,
+                    "missed_green_count": cycle.missed_green_count,
                     "max_queue_length_in_cycle": cycle.max_queue_length_in_cycle,
                     "mean_queue_length_in_cycle": round(cycle.mean_queue_length_in_cycle, 4),
                 }
@@ -1123,8 +1245,11 @@ def main():
     want_training = "training" in config.outputs
     want_events = "events" in config.outputs
     want_cycles = "cycles" in config.outputs
-    need_cycle_debug = want_events or want_cycles
-    need_waiting_region_debug = want_events or want_cycles
+    # Training rows include missed-green outcomes, so cycle and basic waiting
+    # region tracking are required even without verbose event/cycle CSVs.
+    need_cycle_tracking = want_events or want_cycles or want_training
+    need_waiting_region_tracking = need_cycle_tracking
+    need_arrival_debug = want_events or want_cycles
 
     network_info = parse_network_info(config.net_file)
     traci.start([config.sumo_binary, "-c", config.sumo_config])
@@ -1132,6 +1257,7 @@ def main():
     print("simulation start")
     print(f"waiting_region_length={config.waiting_region_length} m")
     print(f"queue_speed_threshold={config.queue_speed_threshold} m/s")
+    print(f"min_green_opportunity_time={config.min_green_opportunity_time} s")
     print(f"downstream_block_occupancy_threshold={config.downstream_block_occupancy_threshold}%")
 
     active_events: Dict[str, VehicleMovementEvent] = {}
@@ -1161,32 +1287,9 @@ def main():
                 previous_release_waiting[vehicle_id] = (1 if release_waiting_duration > 0 else 0, release_waiting_duration)
                 finalize_event(event, current_time, completed_events)
 
-        snapshots: Dict[str, VehicleSnapshot] = {}
-        for vehicle_id in vehicle_ids:
-            snapshot = get_vehicle_snapshot(vehicle_id, network_info)
-            if snapshot is not None:
-                snapshots[vehicle_id] = snapshot
-
-        if need_cycle_debug:
-            queue_counts = compute_queue_counts(snapshots, config)
-
-            # Update signal-cycle states before vehicle discharge is counted.
-            # A green wave is movement-specific: same traffic light, but a
-            # different link_index means a different controlled movement.
-            update_cycle_states(
-                snapshots=snapshots,
-                active_events=active_events,
-                queue_counts=queue_counts,
-                previous_green_states=previous_green_states,
-                cycle_counters=cycle_counters,
-                active_cycles=active_cycles,
-                completed_cycles=completed_cycles,
-                config=config,
-                current_time=current_time,
-            )
-        else:
-            queue_counts = {}
-
+        # Detect stop-line/downstream transitions before sampling snapshots or
+        # ending green windows. This makes a same-step crossing ineligible for
+        # missed-green counting.
         for vehicle_id in vehicle_ids:
             current_edge = traci.vehicle.getRoadID(vehicle_id)
             previous_edge = previous_vehicle_edges.get(vehicle_id)
@@ -1199,7 +1302,7 @@ def main():
                 event = active_events[vehicle_id]
                 if current_edge.startswith(":") and event.pass_stopline_time is None:
                     event.pass_stopline_time = current_time
-                    if need_cycle_debug:
+                    if need_cycle_tracking:
                         active_cycle = active_cycles.get((event.tls_id, event.link_index))
                         if active_cycle is not None:
                             active_cycle.discharged_in_green += 1
@@ -1207,7 +1310,7 @@ def main():
                 elif current_edge == event.to_edge:
                     if event.pass_stopline_time is None:
                         event.pass_stopline_time = current_time
-                        if need_cycle_debug:
+                        if need_cycle_tracking:
                             active_cycle = active_cycles.get((event.tls_id, event.link_index))
                             if active_cycle is not None:
                                 active_cycle.discharged_in_green += 1
@@ -1220,12 +1323,18 @@ def main():
 
             previous_vehicle_edges[vehicle_id] = current_edge
 
+        snapshots: Dict[str, VehicleSnapshot] = {}
+        for vehicle_id in vehicle_ids:
+            snapshot = get_vehicle_snapshot(vehicle_id, network_info)
+            if snapshot is not None:
+                snapshots[vehicle_id] = snapshot
+
         for vehicle_id, snapshot in snapshots.items():
             if vehicle_id not in active_events:
                 active_events[vehicle_id] = make_vehicle_event(snapshot, current_time, network_info, previous_release_waiting, config)
 
             event = active_events[vehicle_id]
-            if need_waiting_region_debug:
+            if need_waiting_region_tracking:
                 update_waiting_region_entry(
                     event=event,
                     snapshot=snapshot,
@@ -1233,15 +1342,12 @@ def main():
                     active_cycles=active_cycles,
                     config=config,
                     current_time=current_time,
+                    need_arrival_debug=need_arrival_debug,
                 )
-            accumulate_waiting_time(
-                event=event,
-                snapshot=snapshot,
-                config=config,
-                current_time=current_time,
-            )
 
-            if need_cycle_debug:
+            # Record blocking before a possible green-end transition so its
+            # missed-green reason includes the entire just-finished window.
+            if need_cycle_tracking:
                 active_cycle = active_cycles.get((event.tls_id, event.link_index))
                 if (
                     active_cycle is not None
@@ -1251,11 +1357,29 @@ def main():
                     and is_green_state(snapshot.signal_state)
                 ):
                     active_cycle.downstream_blocked_vehicle_ids.add(vehicle_id)
+
+        if need_cycle_tracking:
+            queue_counts = compute_queue_counts(snapshots, config)
+            update_cycle_states(
+                snapshots=snapshots,
+                active_events=active_events,
+                queue_counts=queue_counts,
+                previous_green_states=previous_green_states,
+                cycle_counters=cycle_counters,
+                active_cycles=active_cycles,
+                completed_cycles=completed_cycles,
+                config=config,
+                current_time=current_time,
+            )
+
+        for vehicle_id, snapshot in snapshots.items():
+            event = active_events[vehicle_id]
+            accumulate_waiting_time(event, snapshot, config, current_time)
     current_time = traci.simulation.getTime()
     for event in list(active_events.values()):
         finalize_event(event, current_time, completed_events)
 
-    if need_cycle_debug:
+    if need_cycle_tracking:
         for cycle in list(active_cycles.values()):
             cycle.green_end_time = current_time
             completed_cycles.append(cycle)
