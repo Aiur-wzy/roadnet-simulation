@@ -1,0 +1,305 @@
+# SUMO 均衡训练数据生成方案（Conservative V1）
+
+## 1. 目标与边界
+
+本方案在现有 90 条训练专用均衡路线的基础上，生成独立、可复现、可审计的 SUMO 训练 episode。核心目标不是单纯增加车辆数，而是同时扩大以下覆盖：
+
+- 10 个边界入口与 10 个边界出口；
+- 90 个非回返 OD；
+- 72/72 个真实受控 Movement；
+- 左转、直行、右转；
+- 从自由流到高负载但尚未崩坏的 `road_flow`、`lane_flow` 状态；
+- 不同随机到达次序与 SUMO 随机种子；
+- 与原测试路网不同的路口 offset 组合。
+
+首批数据不使用旧 `oversat_all`、`west_bottleneck`、`southwest_bottleneck` 的生成方式。为避免空间位置与拥堵标签绑定，Conservative V1 也暂不加入其他单区域高压场景。旧 11 组保持不变，用作外部回归测试和压力测试。
+
+## 2. 原数据规模与主要问题
+
+按照旧生成器的实际 departure 数计算，11 个测试组共有：
+
+| 指标 | 旧 11 组 |
+|---|---:|
+| 车辆数 | 47,623 |
+| 预计 Movement 训练行数 | 129,201 |
+| 独立场景数 | 11 |
+| Movement 覆盖 | 57/72 |
+
+旧生成方式在每个 departure 时刻为整组路线各发一辆车，因此存在两个问题：
+
+1. 同一时刻会产生多车同步发车脉冲；
+2. 41 条人工路线没有覆盖的 15 个 Movement 永远没有训练数据。
+
+此外，旧 `oversat_all` 的需求窗口为 0～10,000 秒，但约 20,000 秒才清空，清空比约为 2.0。这种数据已经包含持续回堵和仿真失真，不应作为首批训练数据的最高档。
+
+## 3. 首批需求梯度
+
+正式训练档采用 16 个总需求等级：
+
+```text
+600, 800, 1000, 1200,
+1400, 1600, 1800, 2000,
+2200, 2400, 2600, 2800,
+3000, 3200, 3500, 3800 veh/h
+```
+
+选择 3,800 veh/h 作为首批上限的原因：
+
+- 旧 `heavy_all` 实际约为 2,966.8 veh/h；
+- 旧 `oversat_all` 实际约为 4,929.8 veh/h；
+- 3,800 位于两者之间，距 heavy 约 833，距 oversat 约 1,130，更偏向 heavy；
+- 新路线池将车辆分散到 90 个 OD，3,800 veh/h 下的最大静态 Movement V/C 代理值约为 0.53；
+- 生成器另设 4,000 veh/h 总需求硬上限和 0.65 静态 V/C 硬上限。
+
+这里的 V/C 仅用于生成前阻止明显危险配置，不能代替 SUMO 实测。新路线比旧路线更均衡，因此相同总流量不代表相同实际拥堵程度。
+
+## 4. 两阶段生成计划
+
+### 4.1 Pilot：先确认安全边界
+
+`pilot-conservative-v1` 使用：
+
+- 9 个需求等级：600、1,000、1,400、1,800、2,200、2,600、3,000、3,400、3,800 veh/h；
+- 每个等级 3 个 seed；
+- 每个 episode 3,600 秒；
+- 共 27 个独立 episode；
+- 共 59,400 辆车；
+- 预计约 161,040 条 Movement 训练行。
+
+Pilot 的定位是标定 `Q → 实际拥堵状态`，不是最终训练集。必须先检查高档位是否能正常清空，再决定是否生成完整 V1。
+
+### 4.2 正式 Conservative V1
+
+`train-conservative-v1` 使用：
+
+- 16 个需求等级；
+- 每个等级 5 个 seed；
+- 每个 episode 7,200 秒；
+- 共 80 个独立 episode；
+- 共 339,000 辆车；
+- 静态生成结果约 919,048 条 Movement 训练行。
+
+与旧 11 组相比：
+
+| 指标 | 旧 11 组 | Conservative V1 | 倍数 |
+|---|---:|---:|---:|
+| 车辆数 | 47,623 | 339,000 | 7.12× |
+| 预计 Movement 行数 | 129,201 | 919,048 | 7.11× |
+| 独立 episode | 11 | 80 | 7.27× |
+| Movement 覆盖 | 57/72 | 72/72 | 完整覆盖 |
+
+每个等级的 5 个 seed 中，前 4 个标记为 `train`，最后 1 个标记为 `validation`。原 11 组继续作为独立 `external_test`，不与新 episode 行级混合拆分。
+
+## 5. 车辆与 departure 生成算法
+
+### 5.1 不再随机独立抽取 90 条路线
+
+90 个 OD 可以表示为一个“10 个入口 × 10 个出口、排除返回原边界”的二部图。生成器将其分解为 9 个完美匹配：
+
+- 每个完美匹配含 10 条路线；
+- 每个入口恰好出现一次；
+- 每个出口恰好出现一次；
+- 9 个匹配合并后，90 个 OD 各出现一次。
+
+因此：
+
+- 每完成 90 辆车的路线循环，90 个 OD 各获得 1 辆车；
+- 剩余车辆通过若干完整匹配和最多一个部分匹配分配；
+- 整个 episode 中，各入口车辆数之差不超过 1；
+- 整个 episode 中，各出口车辆数之差不超过 1；
+- 各路线车辆数保持近似相等。
+
+### 5.2 300 秒分块与累计取整
+
+每个 episode 被划分为 300 秒时间块。第 `k` 个块结束时的累计车辆目标为：
+
+```text
+round_half_up(Q × block_end / 3600)
+```
+
+当前块车辆数由“本块结束累计目标减去之前已分配数量”得到，因此：
+
+- 整个 episode 的车辆总数与目标严格一致；
+- 非整除流量不会因逐块独立四舍五入产生累计误差；
+- 每个 300 秒块的入口与出口数量差最多为 2。
+
+### 5.3 分层随机 departure
+
+同一入口在一个时间块内的车辆被放入等宽时间槽，每辆车在自己的槽内使用 seed 控制的随机抖动：
+
+```text
+depart = block_start + (slot_index + U[0.15, 0.85]) × slot_width
+```
+
+这样既保留随机性，又避免旧方法中多条路线在完全相同时间同步发车。脚本静态验收要求同一入口的三位小数 departure 不得重复。
+
+## 6. 独立 episode 与数据切分
+
+每个“需求等级 × seed”生成独立 `.rou.xml` 和 `.sumocfg`。不同需求档不得串在同一个仿真中，原因是：
+
+- 高档位残余队列会污染后续低档位；
+- 接近过饱和后，路网可能无法在短暂间隔内恢复；
+- 独立 episode 便于按 seed 划分训练集与验证集；
+- 失败 episode 可以单独重跑，不影响其他数据。
+
+最终模型训练时应按 episode 合并数据，并保留 episode 级 split。不要再对所有相邻车辆行做随机 `train_test_split`，否则同一秒附近的交通状态会同时进入训练集和验证集。
+
+## 7. 生成器静态验收
+
+每个 episode 生成完成后自动检查：
+
+- 目标车辆数精确一致；
+- 10 个入口总量差不超过 1；
+- 10 个出口总量差不超过 1；
+- 每个 300 秒块入口/出口数量差不超过 2；
+- 90/90 路线均有车辆；
+- 72/72 Movement 均有车辆；
+- 同一入口不存在重复 departure；
+- 需求不超过 4,000 veh/h；
+- 最大静态 Movement V/C 不超过 0.65；
+- 所有路线 edge 和 connection 合法；
+- 路网真实 Movement 都至少具有一个绿灯相位。
+
+每个 episode 的 JSON manifest 还记录：
+
+- 入口、出口、OD、路线车辆数；
+- edge 与 Movement 预计通过量；
+- 左转、直行、右转事件数；
+- Movement 容量代理值和 V/C；
+- 全局重复 departure、同入口最小发车间隔；
+- 预期 TraCI、tripinfo 和日志输出路径。
+
+## 8. SUMO Pilot 验收与后续扩容
+
+静态检查通过不代表实际仿真一定稳定。Pilot 的每个 episode 运行后，至少验收：
+
+| 指标 | 首批建议门槛 |
+|---|---|
+| teleport | 0 |
+| unfinished vehicle | 0 |
+| 清空比 `simulation_end / demand_end` | ≤ 1.25 |
+| departDelay | P95 和最大值不出现随档位突增 |
+| lane occupancy | 不出现长期接近满占用或持续 spillback |
+| trip duration/timeLoss | P90、P95 随 Q 增长连续，不出现断崖式爆炸 |
+| TraCI 完整性 | 无卡死、无缺失输出、全部车辆事件可关闭 |
+
+只有当 3,400 和 3,800 两个最高档的全部 seed 均通过，才考虑增加密度。每轮最多增加 200 veh/h，例如先增加 4,000，再根据实测决定是否继续。任何 episode 出现以下现象时停止加密：
+
+- teleport 或未完成车辆；
+- 清空比超过 1.25；
+- departure 插入被长时间阻塞；
+- P95 lane occupancy 持续接近 85%；
+- 仿真完成时间开始呈现类似旧 oversat 的非线性增长。
+
+后续若需要局部拥堵数据，应采用 west、north、east、south、southwest 对称轮换的小幅 boost，并先从 1.10 倍开始，不直接复用旧 west/southwest 的高压 period。
+
+## 9. 使用方法
+
+### 9.1 查看正式计划，不写文件
+
+```bash
+python3 generate_balanced_training_data.py \
+  --net-file data/test_new.net.xml \
+  --route-catalog data/training_balanced_routes.rou.xml \
+  --profile train-conservative-v1 \
+  --plan-only
+```
+
+### 9.2 先生成 Pilot
+
+```bash
+python3 generate_balanced_training_data.py \
+  --net-file data/test_new.net.xml \
+  --route-catalog data/training_balanced_routes.rou.xml \
+  --profile pilot-conservative-v1 \
+  --output-dir data/train_balanced_pilot_v1 \
+  --traci-script TraCI_Python_Adjusted.py \
+  --traci-outputs all
+```
+
+随后运行：
+
+```bash
+bash data/train_balanced_pilot_v1/commands/run_traci.sh
+```
+
+Pilot 默认也会选择 `--outputs all`，以保留 Movement event 和 cycle summary 供排队、占有率与清空过程验收；正式 V1 默认只生成轻量 `legacy` 训练表，避免调试输出成倍膨胀。
+
+如果 TraCI 脚本不在当前目录：
+
+```bash
+TRACI_SCRIPT=/absolute/path/TraCI_Python_Adjusted.py \
+bash data/train_balanced_pilot_v1/commands/run_traci.sh
+```
+
+### 9.3 Pilot 通过后生成正式 V1
+
+```bash
+python3 generate_balanced_training_data.py \
+  --net-file data/test_new.net.xml \
+  --route-catalog data/training_balanced_routes.rou.xml \
+  --profile train-conservative-v1 \
+  --output-dir data/train_balanced_v1 \
+  --traci-script TraCI_Python_Adjusted.py
+```
+
+### 9.4 Pilot 后增加单独候选档
+
+默认安全上限为 4,000 veh/h。若需要只生成 4,000 档：
+
+```bash
+python3 generate_balanced_training_data.py \
+  --net-file data/test_new.net.xml \
+  --route-catalog data/training_balanced_routes.rou.xml \
+  --demand-levels 4000 \
+  --seeds-per-level 3 \
+  --duration-seconds 3600 \
+  --output-dir data/train_balanced_pilot_q4000
+```
+
+继续超过 4,000 时必须显式提高 `--safety-cap-vph`，这用于防止无意间直接生成 oversat 级别数据。
+
+## 10. 输出结构
+
+```text
+train_balanced_v1/
+  inputs/
+    test_new.net.xml
+    training_balanced_routes.rou.xml
+  routes/
+    level_00_q0600_seed_01.rou.xml
+    ...
+  sumocfg/
+    level_00_q0600_seed_01.sumocfg
+    ...
+  manifests/
+    dataset_summary.json
+    episodes.csv
+    level_00_q0600_seed_01.json
+    ...
+  commands/
+    traci_jobs.tsv
+    run_traci.sh
+  outputs/
+    tripinfo/
+    traci/
+    logs/
+```
+
+## 11. 生成后仍需进行的数据验收
+
+正式训练前还需从真实 CSV 检查：
+
+- `road_flow` 与 `lane_flow` 的直方分布和高分位数；
+- `turn_type` 各类别样本量；
+- 各 edge、Movement 的实际样本数；
+- `has_waiting` 的正负样本比例；
+- `travel_time_label` 的 P50、P90、P95、P99；
+- 各需求等级的有效完成车辆比例；
+- 训练/验证 episode 之间是否存在文件或 seed 泄漏。
+
+如果高流量 episode 因持续时间更长而产生过多相似行，最终合并训练 CSV 时应按“episode + edge/Movement + flow bin”分层采样或加权，而不是无条件拼接全部行。
+
+## 12. 当前验证范围
+
+脚本已经完成 Python 编译、完整 80-episode 静态生成、XML 解析、数量汇总、OD/Movement 覆盖、流量门槛和重复生成一致性验证。当前环境没有 SUMO 可执行程序，因此尚未执行 SUMO 启动级验证；Pilot 运行结果仍是正式生成前的必要门禁。
