@@ -2,7 +2,7 @@
 <configuration>
     <input>
         <net-file value="test_random_offsets_seed20260708.net.xml"/>
-        <route-files value="south_bottleneck_no_chang.rou.xml"/>
+        <route-files value="south_bottleneck_no_change.rou.xml"/>
     </input>
     <output>
         <tripinfo-output value="tripinfo_south_bottleneck_no_change_random_net.xml"/>
