@@ -5,16 +5,20 @@ set -Eeuo pipefail
 #
 # Expected layout (all paths may be overridden with environment variables):
 #   current-directory/
+#   ├── data/test_new.net.xml
 #   ├── TraCI_Python_Adjusted.py
 #   ├── run_all_training_traci.sh
-#   └── train_balanced_v1/
+#   └── train_data/
 #       ├── commands/traci_jobs.tsv
-#       ├── inputs/*.net.xml
 #       ├── sumocfg/*.sumocfg
 #       └── outputs/
 #
 # Basic usage:
 #   bash ./run_all_training_traci.sh
+#
+# Start from an explicit 1-based episode number (inclusive):
+#   bash ./run_all_training_traci.sh 37
+#   bash ./run_all_training_traci.sh --start-index 37
 #
 # Resume completed episodes after an interruption (default behavior):
 #   RESUME=1 bash ./run_all_training_traci.sh
@@ -23,16 +27,19 @@ set -Eeuo pipefail
 #   DRY_RUN=1 bash ./run_all_training_traci.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATASET_DIR="${DATASET_DIR:-$SCRIPT_DIR/train_balanced_v1}"
+DATASET_DIR="${DATASET_DIR:-$SCRIPT_DIR/train_data}"
 TRACI_SCRIPT="${TRACI_SCRIPT:-$SCRIPT_DIR/TraCI_Python_Adjusted.py}"
 SUMO_BINARY="${SUMO_BINARY:-sumo}"
 TRACI_OUTPUTS="${TRACI_OUTPUTS:-legacy}"
+NET_FILE="${NET_FILE:-$SCRIPT_DIR/data/test_new.net.xml}"
 EXPECTED_EPISODES="${EXPECTED_EPISODES:-80}"
 RESUME="${RESUME:-1}"
 DRY_RUN="${DRY_RUN:-0}"
+START_INDEX="${START_INDEX:-1}"
 
 DATASET_DIR="$(realpath -m "$DATASET_DIR")"
 TRACI_SCRIPT="$(realpath -m "$TRACI_SCRIPT")"
+NET_FILE="$(realpath -m "$NET_FILE")"
 JOB_FILE="$DATASET_DIR/commands/traci_jobs.tsv"
 STATUS_DIR="$DATASET_DIR/outputs/status"
 
@@ -41,22 +48,70 @@ die() {
     exit 1
 }
 
+usage() {
+    cat <<'EOF'
+Usage:
+  bash ./run_all_training_traci.sh [START_INDEX]
+  bash ./run_all_training_traci.sh --start-index START_INDEX
+
+START_INDEX is a 1-based, inclusive row number in commands/traci_jobs.tsv.
+For example, START_INDEX=37 runs episodes 37 through 80 and leaves 1-36
+untouched. Successfully completed episodes in the selected range are still
+skipped when RESUME=1 (the default).
+
+The same value may be supplied through the environment:
+  START_INDEX=37 bash ./run_all_training_traci.sh
+EOF
+}
+
+case "$#" in
+    0)
+        ;;
+    1)
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                START_INDEX="$1"
+                ;;
+        esac
+        ;;
+    2)
+        case "$1" in
+            --start|--start-index)
+                START_INDEX="$2"
+                ;;
+            *)
+                usage >&2
+                die "unknown option: $1"
+                ;;
+        esac
+        ;;
+    *)
+        usage >&2
+        die "too many arguments"
+        ;;
+esac
+
 [[ "$RESUME" == "0" || "$RESUME" == "1" ]] || die "RESUME must be 0 or 1"
 [[ "$DRY_RUN" == "0" || "$DRY_RUN" == "1" ]] || die "DRY_RUN must be 0 or 1"
 [[ "$EXPECTED_EPISODES" =~ ^[0-9]+$ ]] || die "EXPECTED_EPISODES must be a non-negative integer"
+[[ "$START_INDEX" =~ ^[1-9][0-9]*$ ]] || die "START_INDEX must be a positive integer (1 = first episode)"
 [[ -d "$DATASET_DIR" ]] || die "dataset directory not found: $DATASET_DIR"
 [[ -f "$JOB_FILE" ]] || die "TraCI job manifest not found: $JOB_FILE"
 [[ -f "$TRACI_SCRIPT" ]] || die "TraCI collector not found: $TRACI_SCRIPT"
-
-mapfile -t NET_FILES < <(find "$DATASET_DIR/inputs" -maxdepth 1 -type f -name '*.net.xml' -print | sort)
-[[ "${#NET_FILES[@]}" -eq 1 ]] || die "expected exactly one .net.xml in $DATASET_DIR/inputs, found ${#NET_FILES[@]}"
-NET_FILE="${NET_FILES[0]}"
+[[ -f "$NET_FILE" ]] || die "network file not found: $NET_FILE (set NET_FILE to override)"
 
 ACTUAL_EPISODES="$(( $(wc -l < "$JOB_FILE") - 1 ))"
 [[ "$ACTUAL_EPISODES" -ge 1 ]] || die "job manifest contains no episodes: $JOB_FILE"
 if [[ "$EXPECTED_EPISODES" -ne 0 && "$ACTUAL_EPISODES" -ne "$EXPECTED_EPISODES" ]]; then
     die "expected $EXPECTED_EPISODES episodes, but manifest contains $ACTUAL_EPISODES"
 fi
+[[ "$START_INDEX" -le "$ACTUAL_EPISODES" ]] \
+    || die "START_INDEX=$START_INDEX is outside the available range 1-$ACTUAL_EPISODES"
+SELECTED_EPISODES=$((ACTUAL_EPISODES - START_INDEX + 1))
 
 if [[ "$DRY_RUN" == "0" ]]; then
     [[ -n "${SUMO_HOME:-}" ]] || die "SUMO_HOME is not set"
@@ -71,9 +126,12 @@ total=0
 succeeded=0
 failed=0
 skipped=0
+job_index=0
 
 echo "Dataset:       $DATASET_DIR"
 echo "Episodes:      $ACTUAL_EPISODES"
+echo "Start index:   $START_INDEX (inclusive)"
+echo "Selected:      $SELECTED_EPISODES"
 echo "Network:       $NET_FILE"
 echo "TraCI script:  $TRACI_SCRIPT"
 echo "SUMO binary:   $SUMO_BINARY"
@@ -86,6 +144,14 @@ while IFS=$'\t' read -r episode_id split sumocfg legacy full events cycles log_f
     # Python's csv module commonly writes CRLF. Strip the trailing CR from
     # the final TSV field so Linux does not create log filenames containing ^M.
     log_file="${log_file%$'\r'}"
+    job_index=$((job_index + 1))
+
+    # START_INDEX is deliberately checked before any input/output validation.
+    # Episodes before the requested breakpoint are left completely untouched.
+    if [[ "$job_index" -lt "$START_INDEX" ]]; then
+        continue
+    fi
+
     total=$((total + 1))
 
     sumocfg_abs="$DATASET_DIR/$sumocfg"
@@ -130,11 +196,11 @@ while IFS=$'\t' read -r episode_id split sumocfg legacy full events cycles log_f
             fi
         done
         if [[ "$outputs_complete" == "1" ]]; then
-            echo "[SKIP $total/$ACTUAL_EPISODES] $episode_id already completed"
+            echo "[SKIP $job_index/$ACTUAL_EPISODES] $episode_id already completed"
             skipped=$((skipped + 1))
             continue
         fi
-        echo "[RETRY $total/$ACTUAL_EPISODES] $episode_id has an incomplete output set"
+        echo "[RETRY $job_index/$ACTUAL_EPISODES] $episode_id has an incomplete output set"
     fi
 
     command=(
@@ -149,7 +215,7 @@ while IFS=$'\t' read -r episode_id split sumocfg legacy full events cycles log_f
         --cycle-summary-output "$cycles_abs"
     )
 
-    echo "[RUN $total/$ACTUAL_EPISODES] $episode_id split=$split"
+    echo "[RUN $job_index/$ACTUAL_EPISODES] $episode_id split=$split"
     if [[ "$DRY_RUN" == "1" ]]; then
         printf '  '
         printf '%q ' "${command[@]}"
@@ -175,18 +241,18 @@ while IFS=$'\t' read -r episode_id split sumocfg legacy full events cycles log_f
 
     if [[ "$collector_status" -eq 0 && "$tee_status" -eq 0 && "${#missing_outputs[@]}" -eq 0 ]]; then
         printf 'SUCCESS\nfinished_at=%s\n' "$(date --iso-8601=seconds)" > "$status_file"
-        echo "[OK $total/$ACTUAL_EPISODES] $episode_id"
+        echo "[OK $job_index/$ACTUAL_EPISODES] $episode_id"
         succeeded=$((succeeded + 1))
     else
         printf 'FAILED\nfinished_at=%s\ncollector_exit=%s\ntee_exit=%s\nmissing_outputs=%s\n' \
             "$(date --iso-8601=seconds)" "$collector_status" "$tee_status" \
             "${missing_outputs[*]:-none}" > "$status_file"
-        echo "[FAIL $total/$ACTUAL_EPISODES] $episode_id collector=$collector_status tee=$tee_status missing=${#missing_outputs[@]}" >&2
+        echo "[FAIL $job_index/$ACTUAL_EPISODES] $episode_id collector=$collector_status tee=$tee_status missing=${#missing_outputs[@]}" >&2
         failed=$((failed + 1))
     fi
 done < <(tail -n +2 "$JOB_FILE")
 
-echo "Summary: total=$total succeeded=$succeeded skipped=$skipped failed=$failed"
+echo "Summary: start_index=$START_INDEX selected=$total succeeded=$succeeded skipped=$skipped failed=$failed"
 
 if [[ "$failed" -ne 0 ]]; then
     exit 1
