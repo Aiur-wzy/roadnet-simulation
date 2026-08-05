@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Run TraCI episodes concurrently with a fixed-size worker pool.
 # Whenever one episode finishes, the next queued episode is started automatically.
 #
-# Expected layout (all paths may be overridden with environment variables):
+# Expected input layout (all paths may be overridden with environment variables):
 #   current-directory/
 #   ├── data/test_new.net.xml
 #   ├── TraCI_Python_Adjusted.py
@@ -12,17 +12,25 @@ set -Eeuo pipefail
 #   └── train_data/
 #       ├── commands/traci_jobs.tsv
 #       ├── sumocfg/*.sumocfg
-#       └── outputs/
+#       └── variants/<RUN_TAG>/        # created by this script
+#
+# A run tag or an explicit output root is required so a new strategy never
+# writes into the existing train_data/outputs tree.
 #
 # Basic usage (parallelism defaults to the number of available CPU cores):
-#   bash ./run_all_training_traci.sh
+#   bash ./run_all_training_traci.sh \
+#     --run-tag low3p0 \
+#     --low-speed-threshold 3.0
 #
 # Run at most 8 episodes at the same time:
-#   bash ./run_all_training_traci.sh --jobs 8
-#   MAX_PARALLEL=8 bash ./run_all_training_traci.sh
+#   bash ./run_all_training_traci.sh --run-tag low3p0 --jobs 8
+#   RUN_TAG=low3p0 MAX_PARALLEL=8 bash ./run_all_training_traci.sh
 #
 # Resume from an explicit 1-based episode number (inclusive):
-#   bash ./run_all_training_traci.sh --start-index 37 --jobs 8
+#   bash ./run_all_training_traci.sh \
+#     --run-tag low3p0 \
+#     --start-index 37 \
+#     --jobs 8
 #
 # Completed episodes are skipped by default when their status and all requested
 # outputs are complete. Use RESUME=0 to rerun them.
@@ -55,6 +63,19 @@ Options:
   -j, --jobs N             Maximum concurrent TraCI episodes.
                            Default: number of available CPU cores.
   --start, --start-index N Start from 1-based manifest row N (inclusive).
+  --run-tag TAG            Store this strategy under
+                           train_data/variants/TAG/.
+  --output-root DIR        Store this strategy under an explicit directory.
+                           Use either --run-tag or --output-root, not both.
+  --stop-speed-threshold MPS
+                           Forward the stopped/low-speed boundary to TraCI.
+                           Default: 0.1.
+  --low-speed-threshold MPS
+                           Forward the low-speed/normal-speed boundary to TraCI.
+                           Default: 2.0.
+  --queue-speed-threshold MPS
+                           Forward the independent queue-speed boundary to TraCI.
+                           Default: 2.0.
   --poll-interval SECONDS  Seconds between worker-pool checks. Default: 1.
   --resume                 Skip completed episodes (default).
   --no-resume              Rerun completed episodes in the selected range.
@@ -64,13 +85,27 @@ Options:
 Environment equivalents:
   MAX_PARALLEL, START_INDEX, POLL_INTERVAL, RESUME, DRY_RUN,
   DATASET_DIR, TRACI_SCRIPT, SUMO_BINARY, TRACI_OUTPUTS, NET_FILE,
-  EXPECTED_EPISODES
+  EXPECTED_EPISODES, RUN_TAG, OUTPUT_ROOT, STOP_SPEED_THRESHOLD,
+  LOW_SPEED_THRESHOLD, QUEUE_SPEED_THRESHOLD
 
 Examples:
-  bash ./run_all_training_traci.sh --jobs 8
-  bash ./run_all_training_traci.sh --start-index 37 --jobs 12
-  MAX_PARALLEL=8 RESUME=1 bash ./run_all_training_traci.sh
-  DRY_RUN=1 bash ./run_all_training_traci.sh --start-index 37
+  bash ./run_all_training_traci.sh \
+    --run-tag low3p0 \
+    --low-speed-threshold 3.0 \
+    --jobs 8
+
+  bash ./run_all_training_traci.sh \
+    --run-tag low3p0 \
+    --low-speed-threshold 3.0 \
+    --start-index 37 \
+    --jobs 12
+
+  RUN_TAG=low3p0 LOW_SPEED_THRESHOLD=3.0 MAX_PARALLEL=8 \
+    bash ./run_all_training_traci.sh
+
+  DRY_RUN=1 bash ./run_all_training_traci.sh \
+    --run-tag low3p0 \
+    --low-speed-threshold 3.0
 EOF
 }
 
@@ -86,6 +121,11 @@ DRY_RUN="${DRY_RUN:-0}"
 START_INDEX="${START_INDEX:-1}"
 MAX_PARALLEL="${MAX_PARALLEL:-$(detect_cpu_count)}"
 POLL_INTERVAL="${POLL_INTERVAL:-1}"
+RUN_TAG="${RUN_TAG:-}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-}"
+STOP_SPEED_THRESHOLD="${STOP_SPEED_THRESHOLD:-0.1}"
+LOW_SPEED_THRESHOLD="${LOW_SPEED_THRESHOLD:-2.0}"
+QUEUE_SPEED_THRESHOLD="${QUEUE_SPEED_THRESHOLD:-2.0}"
 
 positional_start_seen=0
 while [[ "$#" -gt 0 ]]; do
@@ -99,6 +139,31 @@ while [[ "$#" -gt 0 ]]; do
             [[ "$#" -ge 2 ]] || die "$1 requires a value"
             START_INDEX="$2"
             positional_start_seen=1
+            shift 2
+            ;;
+        --run-tag)
+            [[ "$#" -ge 2 ]] || die "$1 requires a value"
+            RUN_TAG="$2"
+            shift 2
+            ;;
+        --output-root)
+            [[ "$#" -ge 2 ]] || die "$1 requires a value"
+            OUTPUT_ROOT="$2"
+            shift 2
+            ;;
+        --stop-speed-threshold)
+            [[ "$#" -ge 2 ]] || die "$1 requires a value"
+            STOP_SPEED_THRESHOLD="$2"
+            shift 2
+            ;;
+        --low-speed-threshold)
+            [[ "$#" -ge 2 ]] || die "$1 requires a value"
+            LOW_SPEED_THRESHOLD="$2"
+            shift 2
+            ;;
+        --queue-speed-threshold)
+            [[ "$#" -ge 2 ]] || die "$1 requires a value"
+            QUEUE_SPEED_THRESHOLD="$2"
             shift 2
             ;;
         --poll-interval)
@@ -149,12 +214,44 @@ done
     || die "POLL_INTERVAL must be a positive number"
 awk -v value="$POLL_INTERVAL" 'BEGIN { exit !(value > 0) }' \
     || die "POLL_INTERVAL must be greater than zero"
+[[ -n "$STOP_SPEED_THRESHOLD" ]] || die "STOP_SPEED_THRESHOLD must not be empty"
+[[ -n "$LOW_SPEED_THRESHOLD" ]] || die "LOW_SPEED_THRESHOLD must not be empty"
+[[ -n "$QUEUE_SPEED_THRESHOLD" ]] || die "QUEUE_SPEED_THRESHOLD must not be empty"
+[[ -n "$RUN_TAG" || -n "$OUTPUT_ROOT" ]] \
+    || die "set --run-tag TAG or --output-root DIR to keep this run separate"
+[[ -z "$RUN_TAG" || -z "$OUTPUT_ROOT" ]] \
+    || die "use either --run-tag or --output-root, not both"
+if [[ -n "$RUN_TAG" ]]; then
+    [[ "$RUN_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+        || die "RUN_TAG may contain only letters, numbers, dot, underscore, and hyphen"
+fi
 
 DATASET_DIR="$(realpath -m "$DATASET_DIR")"
 TRACI_SCRIPT="$(realpath -m "$TRACI_SCRIPT")"
 NET_FILE="$(realpath -m "$NET_FILE")"
+if [[ -n "$RUN_TAG" ]]; then
+    OUTPUT_ROOT="$DATASET_DIR/variants/$RUN_TAG"
+else
+    OUTPUT_ROOT="$(realpath -m "$OUTPUT_ROOT")"
+fi
 JOB_FILE="$DATASET_DIR/commands/traci_jobs.tsv"
-STATUS_DIR="$DATASET_DIR/outputs/status"
+BASELINE_OUTPUT_ROOT="$(realpath -m "$DATASET_DIR/outputs")"
+[[ "$OUTPUT_ROOT" != "$BASELINE_OUTPUT_ROOT" ]] \
+    || die "OUTPUT_ROOT must not be the existing baseline directory: $BASELINE_OUTPUT_ROOT"
+[[ "$OUTPUT_ROOT" != "$DATASET_DIR" ]] \
+    || die "OUTPUT_ROOT must not be the dataset directory itself: $DATASET_DIR"
+
+TRACI_OUTPUT_DIR="$OUTPUT_ROOT/traci"
+TRAINING_OUTPUT_DIR="$OUTPUT_ROOT/training"
+EVENTS_OUTPUT_DIR="$OUTPUT_ROOT/events"
+CYCLES_OUTPUT_DIR="$OUTPUT_ROOT/cycles"
+ANALYSIS_OUTPUT_DIR="$OUTPUT_ROOT/analysis"
+TRIPINFO_OUTPUT_DIR="$OUTPUT_ROOT/tripinfo"
+LOG_OUTPUT_DIR="$OUTPUT_ROOT/logs"
+STATUS_DIR="$OUTPUT_ROOT/status"
+RUNTIME_DIR="$OUTPUT_ROOT/runtime"
+RUN_CONFIG_FILE="$OUTPUT_ROOT/run_config.env"
+SUMO_WRAPPER="$RUNTIME_DIR/sumo_with_tripinfo_override.sh"
 
 [[ -d "$DATASET_DIR" ]] || die "dataset directory not found: $DATASET_DIR"
 [[ -f "$JOB_FILE" ]] || die "TraCI job manifest not found: $JOB_FILE"
@@ -170,26 +267,108 @@ fi
     || die "START_INDEX=$START_INDEX is outside the available range 1-$ACTUAL_EPISODES"
 SELECTED_EPISODES=$((ACTUAL_EPISODES - START_INDEX + 1))
 
+REAL_SUMO_BINARY="$SUMO_BINARY"
 if [[ "$DRY_RUN" == "0" ]]; then
     [[ -n "${SUMO_HOME:-}" ]] || die "SUMO_HOME is not set"
     [[ -d "$SUMO_HOME/tools" ]] || die "SUMO tools directory not found: $SUMO_HOME/tools"
-    command -v "$SUMO_BINARY" >/dev/null 2>&1 || die "SUMO binary not found: $SUMO_BINARY"
+    REAL_SUMO_BINARY="$(command -v "$SUMO_BINARY" 2>/dev/null)" \
+        || die "SUMO binary not found: $SUMO_BINARY"
+    REAL_SUMO_BINARY="$(realpath -m "$REAL_SUMO_BINARY")"
     python3 "$TRACI_SCRIPT" --help >/dev/null
 fi
 
 NORMALIZED_OUTPUTS="$(printf '%s' "$TRACI_OUTPUTS" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+
+render_run_config() {
+    printf 'schema_version=1\n'
+    printf 'dataset_dir=%q\n' "$DATASET_DIR"
+    printf 'net_file=%q\n' "$NET_FILE"
+    printf 'traci_script=%q\n' "$TRACI_SCRIPT"
+    printf 'sumo_binary=%q\n' "$SUMO_BINARY"
+    printf 'traci_outputs=%q\n' "$NORMALIZED_OUTPUTS"
+    printf 'expected_episodes=%q\n' "$EXPECTED_EPISODES"
+    printf 'stop_speed_threshold=%q\n' "$STOP_SPEED_THRESHOLD"
+    printf 'low_speed_threshold=%q\n' "$LOW_SPEED_THRESHOLD"
+    printf 'queue_speed_threshold=%q\n' "$QUEUE_SPEED_THRESHOLD"
+}
+
+check_output_root() {
+    if [[ -f "$RUN_CONFIG_FILE" ]]; then
+        if ! cmp -s <(render_run_config) "$RUN_CONFIG_FILE"; then
+            echo "[ERROR] output root belongs to a different run configuration:" >&2
+            echo "        $OUTPUT_ROOT" >&2
+            echo "        Choose a new --run-tag/--output-root for different thresholds or outputs." >&2
+            return 1
+        fi
+        return 0
+    fi
+
+    if [[ -d "$OUTPUT_ROOT" ]] \
+        && [[ -n "$(find "$OUTPUT_ROOT" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+        die "OUTPUT_ROOT is non-empty but has no run_config.env: $OUTPUT_ROOT"
+    fi
+}
+
+write_sumo_wrapper() {
+    local temp_wrapper="${SUMO_WRAPPER}.tmp.${BASHPID}"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'set -Eeuo pipefail' \
+        ': "${TRACI_REAL_SUMO_BINARY:?TRACI_REAL_SUMO_BINARY is required}"' \
+        ': "${TRACI_TRIPINFO_OUTPUT:?TRACI_TRIPINFO_OUTPUT is required}"' \
+        'exec "$TRACI_REAL_SUMO_BINARY" "$@" --tripinfo-output "$TRACI_TRIPINFO_OUTPUT"' \
+        > "$temp_wrapper"
+    chmod 700 "$temp_wrapper"
+    mv -f "$temp_wrapper" "$SUMO_WRAPPER"
+}
+
+initialize_output_root() {
+    local temp_config="${RUN_CONFIG_FILE}.tmp.${BASHPID}"
+    mkdir -p \
+        "$TRACI_OUTPUT_DIR" \
+        "$TRAINING_OUTPUT_DIR" \
+        "$EVENTS_OUTPUT_DIR" \
+        "$CYCLES_OUTPUT_DIR" \
+        "$ANALYSIS_OUTPUT_DIR" \
+        "$TRIPINFO_OUTPUT_DIR" \
+        "$LOG_OUTPUT_DIR" \
+        "$STATUS_DIR" \
+        "$RUNTIME_DIR"
+    if [[ ! -f "$RUN_CONFIG_FILE" ]]; then
+        render_run_config > "$temp_config"
+        mv -f "$temp_config" "$RUN_CONFIG_FILE"
+    fi
+    write_sumo_wrapper
+}
+
+check_output_root
+if [[ "$DRY_RUN" == "0" ]]; then
+    initialize_output_root
+fi
 
 output_enabled() {
     local output_name="$1"
     [[ ",$NORMALIZED_OUTPUTS," == *",all,"* || ",$NORMALIZED_OUTPUTS," == *",$output_name,"* ]]
 }
 
+analysis_outputs_complete() {
+    local episode_id="$1"
+    [[ -s "$ANALYSIS_OUTPUT_DIR/vehicle_trips_$episode_id.csv" ]] || return 1
+    [[ -s "$ANALYSIS_OUTPUT_DIR/vehicle_segments_$episode_id.csv" ]] || return 1
+    [[ -s "$ANALYSIS_OUTPUT_DIR/movement_tail_summary_$episode_id.csv" ]] || return 1
+    [[ -s "$ANALYSIS_OUTPUT_DIR/extreme_vehicle_cases_$episode_id.csv" ]] || return 1
+    [[ -s "$ANALYSIS_OUTPUT_DIR/extreme_segment_cases_$episode_id.csv" ]] || return 1
+    [[ -s "$ANALYSIS_OUTPUT_DIR/scenario_summary_$episode_id.csv" ]] || return 1
+    return 0
+}
+
 outputs_complete() {
-    local tripinfo_abs="$1"
-    local legacy_abs="$2"
-    local full_abs="$3"
-    local events_abs="$4"
-    local cycles_abs="$5"
+    local episode_id="$1"
+    local tripinfo_abs="$2"
+    local legacy_abs="$3"
+    local full_abs="$4"
+    local events_abs="$5"
+    local cycles_abs="$6"
 
     [[ -s "$tripinfo_abs" ]] || return 1
     if output_enabled legacy; then
@@ -203,6 +382,9 @@ outputs_complete() {
     fi
     if output_enabled cycles; then
         [[ -s "$cycles_abs" ]] || return 1
+    fi
+    if output_enabled analysis; then
+        analysis_outputs_complete "$episode_id" || return 1
     fi
     return 0
 }
@@ -243,6 +425,10 @@ echo "Network:       $NET_FILE"
 echo "TraCI script:  $TRACI_SCRIPT"
 echo "SUMO binary:   $SUMO_BINARY"
 echo "Outputs:       $TRACI_OUTPUTS"
+echo "Output root:   $OUTPUT_ROOT"
+echo "Stop speed:    $STOP_SPEED_THRESHOLD m/s"
+echo "Low speed:     $LOW_SPEED_THRESHOLD m/s"
+echo "Queue speed:   $QUEUE_SPEED_THRESHOLD m/s"
 echo "Resume:        $RESUME"
 echo "Dry run:       $DRY_RUN"
 
@@ -263,19 +449,19 @@ while IFS=$'\t' read -r episode_id split sumocfg legacy full events cycles log_f
     SEEN_EPISODE_IDS["$episode_id"]=1
 
     sumocfg_abs="$DATASET_DIR/$sumocfg"
-    legacy_abs="$DATASET_DIR/$legacy"
-    full_abs="$DATASET_DIR/$full"
-    events_abs="$DATASET_DIR/$events"
-    cycles_abs="$DATASET_DIR/$cycles"
-    log_abs="$DATASET_DIR/$log_file"
-    tripinfo_abs="$DATASET_DIR/outputs/tripinfo/tripinfo_$episode_id.xml"
+    legacy_abs="$TRACI_OUTPUT_DIR/$(basename "$legacy")"
+    full_abs="$TRAINING_OUTPUT_DIR/$(basename "$full")"
+    events_abs="$EVENTS_OUTPUT_DIR/$(basename "$events")"
+    cycles_abs="$CYCLES_OUTPUT_DIR/$(basename "$cycles")"
+    log_abs="$LOG_OUTPUT_DIR/$(basename "$log_file")"
+    tripinfo_abs="$TRIPINFO_OUTPUT_DIR/tripinfo_$episode_id.xml"
     status_file="$STATUS_DIR/$episode_id.status"
 
     [[ -f "$sumocfg_abs" ]] || die "missing sumocfg for $episode_id: $sumocfg_abs"
 
     if [[ "$RESUME" == "1" && -f "$status_file" ]] \
         && head -n 1 "$status_file" | grep -qx 'SUCCESS'; then
-        if outputs_complete "$tripinfo_abs" "$legacy_abs" "$full_abs" "$events_abs" "$cycles_abs"; then
+        if outputs_complete "$episode_id" "$tripinfo_abs" "$legacy_abs" "$full_abs" "$events_abs" "$cycles_abs"; then
             echo "[SKIP $manifest_index/$ACTUAL_EPISODES] $episode_id already completed"
             skipped=$((skipped + 1))
             continue
@@ -285,15 +471,24 @@ while IFS=$'\t' read -r episode_id split sumocfg legacy full events cycles log_f
 
     if [[ "$DRY_RUN" == "1" ]]; then
         command=(
+            env
+            "TRACI_REAL_SUMO_BINARY=$REAL_SUMO_BINARY"
+            "TRACI_TRIPINFO_OUTPUT=$tripinfo_abs"
             python3 "$TRACI_SCRIPT"
             --sumo-config "$sumocfg_abs"
             --net-file "$NET_FILE"
-            --sumo-binary "$SUMO_BINARY"
+            --sumo-binary "$SUMO_WRAPPER"
             --outputs "$TRACI_OUTPUTS"
             --legacy-edge-output "$legacy_abs"
             --training-output "$full_abs"
             --vehicle-event-output "$events_abs"
             --cycle-summary-output "$cycles_abs"
+            --episode-id "$episode_id"
+            --analysis-output-dir "$ANALYSIS_OUTPUT_DIR"
+            --tripinfo-file "$tripinfo_abs"
+            --stop-speed-threshold "$STOP_SPEED_THRESHOLD"
+            --low-speed-threshold "$LOW_SPEED_THRESHOLD"
+            --queue-speed-threshold "$QUEUE_SPEED_THRESHOLD"
         )
         echo "[DRY-RUN $manifest_index/$ACTUAL_EPISODES] $episode_id split=$split"
         printf '  '
@@ -359,15 +554,24 @@ run_job() {
     local finished_at=""
     local -a missing_outputs=()
     local -a command=(
+        env
+        "TRACI_REAL_SUMO_BINARY=$REAL_SUMO_BINARY"
+        "TRACI_TRIPINFO_OUTPUT=$tripinfo_abs"
         python3 "$TRACI_SCRIPT"
         --sumo-config "$sumocfg_abs"
         --net-file "$NET_FILE"
-        --sumo-binary "$SUMO_BINARY"
+        --sumo-binary "$SUMO_WRAPPER"
         --outputs "$TRACI_OUTPUTS"
         --legacy-edge-output "$legacy_abs"
         --training-output "$full_abs"
         --vehicle-event-output "$events_abs"
         --cycle-summary-output "$cycles_abs"
+        --episode-id "$episode_id"
+        --analysis-output-dir "$ANALYSIS_OUTPUT_DIR"
+        --tripinfo-file "$tripinfo_abs"
+        --stop-speed-threshold "$STOP_SPEED_THRESHOLD"
+        --low-speed-threshold "$LOW_SPEED_THRESHOLD"
+        --queue-speed-threshold "$QUEUE_SPEED_THRESHOLD"
     )
 
     trap 'worker_abort TERM 143' TERM
@@ -380,7 +584,8 @@ run_job() {
         "$(dirname "$cycles_abs")" \
         "$(dirname "$log_abs")" \
         "$(dirname "$tripinfo_abs")" \
-        "$(dirname "$status_file")"
+        "$(dirname "$status_file")" \
+        "$ANALYSIS_OUTPUT_DIR"
 
     write_status_file "$status_file" \
         "RUNNING" \
@@ -421,6 +626,20 @@ run_job() {
     fi
     if output_enabled cycles && [[ ! -s "$cycles_abs" ]]; then
         missing_outputs+=("$cycles_abs")
+    fi
+    if output_enabled analysis; then
+        local analysis_abs
+        for analysis_abs in \
+            "$ANALYSIS_OUTPUT_DIR/vehicle_trips_$episode_id.csv" \
+            "$ANALYSIS_OUTPUT_DIR/vehicle_segments_$episode_id.csv" \
+            "$ANALYSIS_OUTPUT_DIR/movement_tail_summary_$episode_id.csv" \
+            "$ANALYSIS_OUTPUT_DIR/extreme_vehicle_cases_$episode_id.csv" \
+            "$ANALYSIS_OUTPUT_DIR/extreme_segment_cases_$episode_id.csv" \
+            "$ANALYSIS_OUTPUT_DIR/scenario_summary_$episode_id.csv"; do
+            if [[ ! -s "$analysis_abs" ]]; then
+                missing_outputs+=("$analysis_abs")
+            fi
+        done
     fi
 
     finished_at="$(date --iso-8601=seconds)"

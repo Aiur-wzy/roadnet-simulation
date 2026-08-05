@@ -1,0 +1,13 @@
+正确性：
+首先假设在不拥堵且waiting_buffer无车的情况下，travel_time接近truth，这样在可以快速通过的情况下仿真是接近truth的
+而后在拥堵的情况下，实际上车辆的通过时间由该车辆被交通信号灯放行的时间决定，所以只需要在保证被放行顺序无误的情况下，pred_t小于实际用时（行驶+等待），车辆就会在真正需要被放行之前就到达waiting_buffer进入待放行状态，最终被交通信号灯放行，最终的通过时间点就是正确的。
+
+
+feature:
+1. traget: travel_time, 除去waiting_time后，在进入一个道路后到下一个路口前的行驶时间
+这里的travel_time仍然是大于车辆达到waiting_buffer的所需时间，因为除此以外在waiting_buffer内慢速向前进的时间也会被计算在内travel_time中
+2. has_wait: 在通过上个信号灯的时候是否有等待（即是否是从路口是0速度启动）
+3. road_flow: 当前道路的车流量
+4. lane_flow: 当前车道的车流量
+5. road_length: 道路长度
+打表->越少越好

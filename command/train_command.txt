@@ -1,0 +1,255 @@
+chmod +x run_train_14.sh
+nohup bash run_train_14.sh \
+  > training_logs/train_all_14.log 2>&1 &
+echo $! > training_logs/train_all_14.pid
+
+
+
+
+
+
+#!/usr/bin/env bash
+set -u
+TRAIN_SCRIPT='model_training_sumo_v1.py'
+DEFAULT_NET_FILE='data/net/test_random_offsets_seed20260708.net.xml'
+
+TIME_LIMIT=7200
+TEST_SIZE=0.2
+RANDOM_STATE=42
+
+run_training() {
+    GROUP_NAME="$1"
+    NET_FILE="${2:-${DEFAULT_NET_FILE}}"
+    OUTPUT_NAME="${3:-${GROUP_NAME}_no_change}"
+    CSV_FILE="data/traci/TraCI_output_adjusted_${OUTPUT_NAME}.csv"
+    MODEL_PATH="models/${OUTPUT_NAME}"
+    LOG_FILE="training_logs/train_${OUTPUT_NAME}.log"
+
+    echo "=================================================="
+    echo "Starting training: ${GROUP_NAME}"
+    echo "CSV: ${CSV_FILE}"
+    echo "Model: ${MODEL_PATH}"
+    echo "Log: ${LOG_FILE}"
+    echo "Start time: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "=================================================="
+
+    if python3 "${TRAIN_SCRIPT}" \
+        --csv "${CSV_FILE}" \
+        --net "${NET_FILE}" \
+        --save_path "${MODEL_PATH}" \
+        --time_limit "${TIME_LIMIT}" \
+        --test_size "${TEST_SIZE}" \
+        --random_state "${RANDOM_STATE}" \
+        > "${LOG_FILE}" 2>&1
+    then
+        echo "[SUCCESS] ${GROUP_NAME} completed at $(date '+%Y-%m-%d %H:%M:%S')"
+    else
+        EXIT_CODE=$?
+        echo "[FAILED] ${GROUP_NAME}, exit code: ${EXIT_CODE}"
+        echo "[FAILED] Check log: ${LOG_FILE}"
+    fi
+
+    echo
+}
+
+
+
+
+
+# 1. free_all
+run_training "free_all"
+
+# 2. light_all_seed1
+run_training "light_all_seed1"
+
+# 3. light_all_seed2
+run_training "light_all_seed2"
+
+# 4. medium_core
+run_training "medium_core"
+
+# 5. heavy_all
+run_training "heavy_all"
+
+# 6. oversat_all
+run_training "oversat_all"
+
+# 7. west_bottleneck
+run_training "west_bottleneck"
+
+# 8. north_bottleneck
+run_training "north_bottleneck"
+
+# 9. east_bottleneck
+run_training "east_bottleneck"
+
+# 10. south_bottleneck
+run_training "south_bottleneck"
+
+# 11. southwest_bottleneck
+run_training "southwest_bottleneck"
+
+# 12. free
+run_training "free" "data/net/test_new.net.xml" "free"
+
+# 13. tight
+run_training "tight" "data/net/test_new.net.xml" "tight"
+
+# 14. congested
+run_training "congested" "data/net/test_new.net.xml" "congested"
+
+echo "=================================================="
+echo "All 14 training tasks have been processed."
+echo "Finish time: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "=================================================="
+# 1. free_all
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_free_all_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/free_all_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_free_all_no_change.log 2>&1 &
+
+
+# 2. light_all_seed1
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_light_all_seed1_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/light_all_seed1_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_light_all_seed1_no_change.log 2>&1 &
+
+
+# 3. light_all_seed2
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_light_all_seed2_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/light_all_seed2_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_light_all_seed2_no_change.log 2>&1 &
+
+
+# 4. medium_core
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_medium_core_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/medium_core_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_medium_core_no_change.log 2>&1 &
+
+
+# 5. heavy_all
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_heavy_all_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/heavy_all_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_heavy_all_no_change.log 2>&1 &
+
+
+# 6. oversat_all
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_oversat_all_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/oversat_all_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_oversat_all_no_change.log 2>&1 &
+
+
+# 7. west_bottleneck
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_west_bottleneck_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/west_bottleneck_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_west_bottleneck_no_change.log 2>&1 &
+
+
+# 8. north_bottleneck
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_north_bottleneck_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/north_bottleneck_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_north_bottleneck_no_change.log 2>&1 &
+
+
+# 9. east_bottleneck
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_east_bottleneck_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/east_bottleneck_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_east_bottleneck_no_change.log 2>&1 &
+
+
+# 10. south_bottleneck
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_south_bottleneck_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/south_bottleneck_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_south_bottleneck_no_change.log 2>&1 &
+
+
+# 11. southwest_bottleneck
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_southwest_bottleneck_no_change.csv \
+  --net data/net/test_random_offsets_seed20260708.net.xml \
+  --save_path models/southwest_bottleneck_no_change \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_southwest_bottleneck_no_change.log 2>&1 &
+
+# 12. free
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_free.csv \
+  --net data/net/test_new.net.xml \
+  --save_path models/free \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_free.log 2>&1 &
+
+
+# 13. tight
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_tight.csv \
+  --net data/net/test_new.net.xml \
+  --save_path models/tight \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_tight.log 2>&1 &
+
+
+# 14. congested
+nohup python3 model_training_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_congested.csv \
+  --net data/net/test_new.net.xml \
+  --save_path models/congested \
+  --time_limit 7200 \
+  --test_size 0.2 \
+  --random_state 42 \
+  > training_logs/train_congested.log 2>&1 &

@@ -23,7 +23,7 @@ test.net.xml
     -> model_catching_sumo_v1.py
     -> model_catching_sumo_v1.txt
     -> C++ Simulation_Prediction with --travel-time-mode table
-    -> sumo_eval.csv / eval_summary.txt / grouped metrics / distribution metrics
+    -> sumo_eval.csv / eval_summary.txt / grouped metrics / distribution and MAE histogram
 ```
 
 Optional TraCI debug outputs:
@@ -430,17 +430,29 @@ sumo_eval.csv
 eval_summary.txt
 eval_grouped_metrics.csv
 eval_distribution_metrics.csv
+eval_mae_histogram.csv
+eval_mae_histogram.svg
 ```
 
 ## 11. Travel-Time Modes
 
 The C++ simulator supports these travel-time modes:
 
-- `speed-net`: computes `length / speed_limit` with safety clamping and a minimum return value.
+- `speed-net`: combines a cruise-time baseline with independently optional acceleration-from-rest and bounded same-lane following corrections. Select `none`, `acceleration`, `following`, or `both` with `--speed-net-components`.
 - `min-time`: uses precomputed `minTravelTime` when available, otherwise uses `speed-net`.
 - `table`: loads either a legacy RoadKey table or a SUMO_V1 table depending on the first-line header. SUMO_V1 is the recommended mode for the trained AutoGluon lookup table produced by `model_catching_sumo_v1.py`.
 - `kinematic`: uses a formula-based road travel-time approximation.
 - `model`: reserved; currently not a full external model-service path unless implemented in the C++ runtime. Use `table` for the caught AutoGluon model.
+
+`--speed-net-components none` replaces the former `speed-net-legacy` mode.
+The old mode name remains accepted as a deprecated command-line alias for
+compatibility, but the simulator now has only one internal speed-net mode.
+
+The current acceleration component assumes zero initial speed on every road
+entry. This is intentionally available for ablation, but it can over-penalize
+multi-road routes: a small road-time increase may move a vehicle past a green
+boundary and then propagate through FIFO buffers, lane storage, and spillback.
+Evaluate `acceleration` and `following` separately before enabling `both`.
 
 ## 12. SUMO_V1 Lookup Table Schema
 
@@ -536,6 +548,8 @@ python model_catching_sumo_v1.py \
 | `eval_summary.txt` | C++ simulator | Overall evaluation summary. |
 | `eval_grouped_metrics.csv` | C++ simulator | Grouped error analysis. |
 | `eval_distribution_metrics.csv` | C++ simulator | Distribution-level error analysis. |
+| `eval_mae_histogram.csv` | C++ simulator | Per-vehicle `abs(predDuration-truthDuration)` counts in fixed 10-second bins, including percentages and cumulative percentages. |
+| `eval_mae_histogram.svg` | C++ simulator | Bar chart of the same 10-second absolute-duration-error bins. |
 
 ## 15. Troubleshooting and Sanity Checks
 
@@ -636,15 +650,19 @@ Sanity check: start with a small `--read-num`, such as `1000`, before running th
 | `--sumo-net <path>` | SUMO `.net.xml` input path. | `./test.net.xml` | SUMO |
 | `--sumo-route <path>` | SUMO `.rou.xml` route file for full SUMO simulation. | Empty | SUMO |
 | `--sumo-tripinfo <path>` | SUMO `tripinfo.xml` ground-truth output used for evaluation. | Empty | SUMO |
-| `--eval-output <path>` | CSV path for per-vehicle SUMO prediction-vs-truth rows. Sibling summary/grouped/distribution files are also written. | Empty | SUMO |
+| `--eval-output <path>` | CSV path for per-vehicle SUMO prediction-vs-truth rows. Sibling summary, grouped, distribution, and 10-second MAE histogram CSV/SVG files are also written. | Empty | SUMO |
+| `--eval-trajectory-details` | Record full per-road travel, per-movement waiting, per-vehicle accounting, movement wait statistics, and downstream-release competition labels. Requires `--eval-output` to write sibling CSV files. | Off | SUMO |
 | `--travel-time-mode <speed-net|min-time|table|model|kinematic>` | Select the single-road travel-time predictor. | `min-time` | Both |
 | `--travel-time-table <path>` | Dictionary path for table-mode lookups. Supports legacy RoadKey tables and SUMO_V1 tables. | Derived default table path | Both |
+| `--speed-net-components <none|acceleration|following|both>` | Select independent speed-net corrections. `none` is the former legacy calculation. | `both` | Both |
+| `--speed-net-headway <seconds>` | Per-vehicle same-lane following delay when the `following` component is active; must be non-negative. | `0.8` | Both |
+| `--speed-net-delay-max <seconds>` | Upper bound on total same-lane following delay when the component is active; must be non-negative. | `6.0` | Both |
 | `--tt-fallback <speed-net|min-time>` | Fallback predictor for table misses or unimplemented model mode. | `speed-net` | Both |
 | `--model-host <host>` | Host reserved for an external model service path if implemented. | `127.0.0.1` | Both |
 | `--model-port <port>` | Port reserved for an external model service path if implemented. | `9000` | Both |
 | `--verbose-travel-time` | Print per-miss or diagnostic travel-time messages. | Off | Both |
 | `--kinematic-congestion-alpha <value>` | Congestion multiplier for `kinematic` mode; negative values clamp to `0`. | `1.0` | Both |
-| `--lane-discharge-interval <k>` | Global seconds per movement lane-discharge slot; values `<=0` clamp to `1`. | `1` | Both |
+| `--lane-discharge-interval <seconds>` | Floating-point minimum headway for each movement capacity lane; must be finite and greater than `0`. | `1.0` | Both |
 | `--read-num <n>` | Number of query/route/time records to read. In SUMO route mode, this limits valid vehicles when greater than zero. | `192484` | Both |
 | `--no-eval` | Skip final MSE/evaluation, including SUMO tripinfo evaluation. | Evaluation enabled | Both |
 | `--bj <path>` | Legacy BJ graph file. | `<base>/Manhattan_network_BJ.txt` | Legacy |
@@ -661,6 +679,12 @@ Environment variables are supported as a lower-priority fallback only:
 ```bash
 USE_SUMO_NET=1 SUMO_NET_PATH=test.net.xml ./roadnet_sim
 ```
+
+The simulator advances its outer clock in integer half-open windows `[k, k+1)`.
+Inside each window, departures, signal boundaries, movement labels, road travel
+times, waiting times, and ETA records retain `double` precision. Movement
+capacity is tracked by a floating next-available timestamp per capacity lane, so
+headways also remain continuous across integer-window boundaries.
 
 ### Route-generator options
 

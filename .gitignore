@@ -1,5 +1,60 @@
-diag_*/
-*.log
+# Operating-system and editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.agents/
 
-# Local CAMS single-group evaluation outputs
-eval_results/single_group/
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# CMake and compiler outputs
+/build/
+/cmake-build-*/
+/.cmake/
+/cmake_install.cmake
+/Makefile
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.exe
+
+# Runtime logs and temporary diagnostics
+*.log
+diag_*/
+/garbage/
+/data/--*
+/data/1.txt
+/data/*.net.xml
+/data/*.rou.xml
+/data/*.sumocfg
+/data/TraCI_output*.csv
+/data/tripinfo*.xml
+
+# Reproducible experiment outputs (keep locally, regenerate from configs)
+/eval/
+/eval_results/single_group/
+/data/traci/
+/data/tripinfo/
+/train_data/outputs/
+/train_data/routes/
+/train_data/variants/
+/tripinfo*.xml
+
+# Model and notebook caches
+.ipynb_checkpoints/
+*.pkl
+*.joblib
+
+# A nested repository is not part of the top-level project history.
+/data/.git/

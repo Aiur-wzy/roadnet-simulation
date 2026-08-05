@@ -1,3 +1,0 @@
-/root/roadnet-simulation/build/CMakeFiles/Simulation_Prediction.dir
-/root/roadnet-simulation/build/CMakeFiles/edit_cache.dir
-/root/roadnet-simulation/build/CMakeFiles/rebuild_cache.dir

@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='utf-8'?>
+<configuration>
+    <input>
+        <net-file value="../../data/test_new.net.xml" />
+        <route-files value="../routes/level_05_q1600_seed_04.rou.xml" />
+    </input>
+    <output>
+        <tripinfo-output value="../outputs/tripinfo/tripinfo_level_05_q1600_seed_04.xml" />
+    </output>
+    <time>
+        <begin value="0" />
+    </time>
+    <random_number>
+        <seed value="20265914" />
+    </random_number>
+    <report>
+        <duration-log.statistics value="true" />
+        <no-step-log value="true" />
+    </report>
+</configuration>

@@ -24,7 +24,7 @@ void Graph::read_graph()
     roadID2NodeID.clear();
     vector<pair<int,int>> vecp;
     vecp.clear();
-    vector<pair<int, float>> vecp_float;
+    vector<pair<int, double>> vecp_float;
     vecp_float.clear();
     graphLength.assign(nodenum, vecp_float);         //ID1, ID2, Length
     graphRoadID.assign(nodenum, vecp);         //ID1, ID2, RoadID
@@ -32,7 +32,7 @@ void Graph::read_graph()
     set<int> setp; setp.clear();
     adjNodes.assign(nodenum, setp);            //ID1, ID2
     int ID1, ID2, edgeID;
-    float length;
+    double length;
     // Avoid Redundant Edge
     set<pair<int,int>> edgeRedun;              //ID1, ID2
     // Read Graph Length as Weight
@@ -68,8 +68,8 @@ void Graph::read_graph()
     int nodenum, edgenum;
     IFTime>>nodenum>>edgenum; // 296710
     //Variable Initialization
-    vector<pair<int,int>> vecpTIme; vecpTIme.clear();
-    graphTime.assign(nodenum, vecp);
+    vector<pair<int,double>> vecpTIme; vecpTIme.clear();
+    graphTime.assign(nodenum, vecpTIme);
     int ID1Time, ID2Time;
     double minTime;
     // Avoid Redundant Information
@@ -77,7 +77,6 @@ void Graph::read_graph()
     // Read Graph Min Travel Time as Weight
     for(int i=0;i<edgenum;i++){
         IFTime>>ID1>>ID2>>minTime;
-        minTime = (int) minTime;
         // Construct Maps
         nodeID2minTime.insert(make_pair(make_pair(ID1, ID2), minTime));  //<ID1, ID2> -> Min Travel Time
         // Check Redundant
@@ -99,9 +98,9 @@ void Graph::read_road_info()
     int nodeID1;
     int nodeID2;
     int routeIDLei;
-    int length;
+    double length;
     int direction;
-    int speedLimit;
+    double speedLimit;
     int laneNum;
     int width;
     int kindNumber;
@@ -284,6 +283,7 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
     routeMovementID.clear();
     sumoVehicleIDs.clear();
     vehicleTypeIDs.clear();
+    vehicleDepartureTimes.clear();
     sumoVehicleTypes.clear();
     sumoVehicleTypes["car"] = VehicleType();
 
@@ -336,8 +336,8 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
     int skippedVehicles = 0;
     int previewPrinted = 0;
     bool haveDepart = false;
-    int firstDepart = 0;
-    int lastDepart = 0;
+    double firstDepart = 0.0;
+    double lastDepart = 0.0;
 
     auto process_vehicle = [&](const string &vehicleID,
                                const string &routeRef,
@@ -401,12 +401,15 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
             return true;
         }
 
-        int departTime = static_cast<int>(round(depart));
+        // queryDataRaw retains the integer outer-window index for legacy callers.
+        // The exact SUMO departure is stored separately and drives all events.
+        int departWindow = static_cast<int>(floor(depart));
         int startNode = roads[firstRoad].fromNode;
         int endNode = roads[lastRoad].toNode;
-        queryDataRaw.push_back({startNode, endNode, departTime});
+        queryDataRaw.push_back({startNode, endNode, departWindow});
         routeRoadID.push_back(roadIDSequence);
         sumoVehicleIDs.push_back(vehicleID);
+        vehicleDepartureTimes.push_back(depart);
         string resolvedTypeID = vehicleTypeID.empty() ? "car" : vehicleTypeID;
         if (sumoVehicleTypes.find(resolvedTypeID) == sumoVehicleTypes.end()) {
             sumoVehicleTypes[resolvedTypeID] = VehicleType();
@@ -415,14 +418,14 @@ void Graph::read_sumo_route_xml(const string& routeXmlPath, int maxVehicles)
         vehicleTypeIDs.push_back(resolvedTypeID);
         ++validVehicles;
         if (!haveDepart) {
-            firstDepart = departTime;
+            firstDepart = depart;
             haveDepart = true;
         }
-        lastDepart = departTime;
+        lastDepart = depart;
 
         if (previewPrinted < 5) {
             cout << "[SUMO Route Preview] vehicle=" << vehicleID
-                 << " depart=" << departTime;
+                 << " depart=" << depart;
             if (!routeRef.empty()) cout << " route=" << routeRef;
             else cout << " route=<inline>";
             cout << endl;
@@ -672,7 +675,7 @@ void Graph::read_sumo_net_xml(const string& netXmlPath)
             p.tlID = to_string_attr(tag.attrs, "id");
             p.type = to_string_attr(tag.attrs, "type");
             p.programID = to_string_attr(tag.attrs, "programID");
-            p.offset = to_int_attr(tag.attrs, "offset", 0);
+            p.offset = to_double_attr(tag.attrs, "offset", 0.0);
             sumoSignalPrograms.push_back(p);
             currentTL = &sumoSignalPrograms.back();
             if (tag.selfClosing) currentTL = nullptr;
@@ -680,7 +683,7 @@ void Graph::read_sumo_net_xml(const string& netXmlPath)
             currentTL = nullptr;
         } else if (tag.name == "phase" && !tag.closing && currentTL != nullptr) {
             SumoSignalPhase phase;
-            phase.duration = to_int_attr(tag.attrs, "duration", 0);
+            phase.duration = to_double_attr(tag.attrs, "duration", 0.0);
             phase.startTime = currentTL->cycleLength;
             phase.endTime = phase.startTime + phase.duration;
             phase.state = to_string_attr(tag.attrs, "state");
@@ -697,7 +700,7 @@ void Graph::read_sumo_net_xml(const string& netXmlPath)
         ++nodeID;
     }
     nodenum = nodeID;
-    graphLength.assign(nodenum, vector<pair<int, float>>());
+    graphLength.assign(nodenum, vector<pair<int, double>>());
     graphRoadID.assign(nodenum, vector<pair<int, int>>());
     adjNodes.assign(nodenum, set<int>());
     nodes.resize(nodenum);
@@ -732,10 +735,10 @@ void Graph::read_sumo_net_xml(const string& netXmlPath)
         legacy.roadID = roadID;
         legacy.ID1 = fromNode;
         legacy.ID2 = toNode;
-        legacy.length = static_cast<int>(round(length));
-        legacy.travelTime = max(1, static_cast<int>(round(length / max(0.1, speed))));
+        legacy.length = length;
+        legacy.travelTime = max(1.0, length / max(0.1, speed));
         legacy.direction = 0;
-        legacy.speedLimit = static_cast<int>(round(speed));
+        legacy.speedLimit = speed;
         legacy.laneNum = max(1, static_cast<int>(edge.lanes.size()));
         legacy.width = 0;
         legacy.kindNumber = edge.priority;
@@ -758,7 +761,7 @@ void Graph::read_sumo_net_xml(const string& netXmlPath)
         nodeID2RoadID[make_pair(fromNode, toNode)] = roadID;
         roadID2NodeID[roadID] = make_pair(fromNode, toNode);
         nodeID2minTime[make_pair(fromNode, toNode)] = legacy.travelTime;
-        graphLength[fromNode].push_back(make_pair(toNode, static_cast<float>(length)));
+        graphLength[fromNode].push_back(make_pair(toNode, length));
         graphRoadID[fromNode].push_back(make_pair(toNode, roadID));
         adjNodes[fromNode].insert(toNode);
         nodes[fromNode].outgoingRoads.push_back(roadID);
@@ -971,7 +974,7 @@ void Graph::build_new_graph_structures_from_sumo()
 
 // Signal helper used by dispatch logic: evaluates movement signal state at time t.
 // SignalEventPQ schedules phase transitions; this helper does not discharge vehicles.
-SignalState Graph::signalStateAtMovement(int movementID, int t)
+SignalState Graph::signalStateAtMovement(int movementID, double t)
 {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return SignalState::Red;
     const Movement &m = movements[movementID];
@@ -981,8 +984,8 @@ SignalState Graph::signalStateAtMovement(int movementID, int t)
             const SignalController &s = signals[m.signalID];
             if (s.alwaysOpen) return SignalState::AlwaysOpen;
             if (s.cycleLength <= 0) return SignalState::Red;
-            int local = (t - s.offset) % s.cycleLength;
-            if (local < 0) local += s.cycleLength;
+            double local = fmod(t - s.offset, s.cycleLength);
+            if (local < 0.0) local += s.cycleLength;
             if (s.greenStart <= s.greenEnd) {
                 return (local >= s.greenStart && local < s.greenEnd) ? SignalState::Green : SignalState::Red;
             }
@@ -997,8 +1000,8 @@ SignalState Graph::signalStateAtMovement(int movementID, int t)
     }
     const SignalProgram &p = signalPrograms[programIt->second];
     if (p.cycleLength <= 0 || p.phases.empty()) return SignalState::Red;
-    int local = (t - p.offset) % p.cycleLength;
-    if (local < 0) local += p.cycleLength;
+    double local = fmod(t - p.offset, p.cycleLength);
+    if (local < 0.0) local += p.cycleLength;
     for (const auto &phase : p.phases) {
         if (local >= phase.startTime && local < phase.endTime) {
             if (m.linkIndex < 0 || m.linkIndex >= static_cast<int>(phase.state.size())) {
@@ -1305,9 +1308,9 @@ void Graph::build_signal_controllers_assume_default()
     signals.clear();
     signalIDsByIntersection.clear();
     int signalID = 0;
-    constexpr int kDefaultCycleLength = 60;
-    constexpr int kDefaultGreenStart = 0;
-    constexpr int kDefaultGreenEnd = 30;
+    constexpr double kDefaultCycleLength = 60.0;
+    constexpr double kDefaultGreenStart = 0.0;
+    constexpr double kDefaultGreenEnd = 30.0;
 
     for (auto &movement : movements) {
         if (movement.intersectionID < 0 || movement.intersectionID >= intersections.size()) {
@@ -1325,7 +1328,7 @@ void Graph::build_signal_controllers_assume_default()
             signal.cycleLength = kDefaultCycleLength;
             signal.greenStart = kDefaultGreenStart;
             signal.greenEnd = kDefaultGreenEnd;
-            signal.offset = 0;
+            signal.offset = 0.0;
             signal.currentState = SignalState::Red;
         }
         signals.push_back(signal);
@@ -1506,7 +1509,8 @@ vector<vector<int>> Graph::read_query(string filename, int num)
     vector<vector<int>> Q;
     int DepartureID;
     int DestinationID;
-    int DepartureTime;
+    double DepartureTime;
+    vehicleDepartureTimes.clear();
     // Read Query Data
     ifstream file_name(filename);
     require_open(file_name, filename, "read_query query data");
@@ -1521,7 +1525,12 @@ vector<vector<int>> Graph::read_query(string filename, int num)
     // Read Query Data
     for (int i=0;i<input_num;i++){
         file_name >> DepartureID >> DestinationID >> DepartureTime;
-        Q.push_back({DepartureID,DestinationID,DepartureTime});
+        Q.push_back({
+                DepartureID,
+                DestinationID,
+                static_cast<int>(floor(DepartureTime))
+        });
+        vehicleDepartureTimes.push_back(DepartureTime);
     }
     // Close File
     file_name.close();
@@ -1598,13 +1607,17 @@ vector<vector<int>> Graph::read_route(string filename, int num)
 }
 
 // Read time data with defined number
-vector<vector<int>> Graph::read_time(string filename, int num, vector<vector<int>> query)
+vector<vector<double>> Graph::read_time(
+        string filename,
+        int num,
+        const vector<vector<int>>& query)
 {
     // Variable Initialization
-    vector<vector<int>> T;
+    vector<vector<double>> T;
     int input_num;
-    int timeNum, time;
-    vector<int> t;
+    int timeNum;
+    double time;
+    vector<double> t;
     // Read Route Data
     ifstream file_name(filename);
     require_open(file_name, filename, "read_time time data");
@@ -1763,11 +1776,13 @@ vector<vector<int>> Graph::cut_query_data(vector<vector<int>> &queryDataRaw, vec
 }
 
 // Cut time data
-vector<vector<int>> Graph::cut_time_data(vector<vector<int>> &timeDataRaw, int avg_length)
+vector<vector<double>> Graph::cut_time_data(
+        const vector<vector<double>>& timeDataRaw,
+        int avg_length)
 {
     // Variable Initialization
-    vector<vector<int>> timeData;
-    vector<int> placeHolder;
+    vector<vector<double>> timeData;
+    vector<double> placeHolder;
     timeData.assign(timeDataRaw.size(), placeHolder);
 
     // Go Through Route Data and Select Parts
@@ -1777,9 +1792,9 @@ vector<vector<int>> Graph::cut_time_data(vector<vector<int>> &timeDataRaw, int a
             timeData[i] = timeDataRaw[i];
         }
         else{
-            vector<int>::const_iterator start = timeDataRaw[i].begin();
-            vector<int>::const_iterator end = timeDataRaw[i].begin() + avg_length;
-            vector<int> cutVector(start, end);
+            vector<double>::const_iterator start = timeDataRaw[i].begin();
+            vector<double>::const_iterator end = timeDataRaw[i].begin() + avg_length;
+            vector<double> cutVector(start, end);
             timeData[i] = cutVector;
         }
     }

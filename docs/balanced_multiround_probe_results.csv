@@ -1,0 +1,41 @@
+phase,network_length_vs_original,scenario,demand_profile,average_demand_vph,vehicles,sumo_end_s,mean_duration_s,mean_waiting_s,mean_depart_delay_s,teleports,status,decision
+old_baseline,1x,heavy_all,41 routes every 50 s,2966.76,8241,,,,,0,baseline,Too few missed-green samples
+old_baseline,1x,old_40s_projection,41 routes every 40 s,3704.76,10291,,,,,,projection,Intermediate demand only for old 41-route catalog
+old_baseline,1x,oversat_all,41 routes every 30 s,4929.84,13694,,,,,55,rejected,Localized extreme congestion; max 30 missed rounds
+uniform_scan,2x,q2800,constant,2800,7778,10242,148.19,64.67,0.50,0,stable,Low-pressure candidate
+uniform_scan,2x,q3600,constant,3600,10000,10240,149.21,64.93,0.50,0,stable,Probe
+uniform_scan,2x,q4000,constant,4000,11111,10317,150.91,66.14,0.50,0,stable,Probe
+uniform_scan,2x,q4800,constant,4800,13333,10241,153.21,67.44,0.50,0,stable,Probe
+uniform_scan,2x,q5600,constant,5600,15556,10276,156.64,69.89,0.50,0,stable,Probe
+uniform_scan,2x,q6400,constant,6400,17778,10313,163.15,74.85,0.50,0,stable,Too few multi-round samples under old metric
+uniform_scan,2x,q6600,constant,6600,18333,10246,165.26,76.50,0.50,0,stable,Probe
+uniform_scan,2x,q6800,constant,6800,18889,10313,168.68,79.30,0.50,0,stable,Probe
+uniform_scan,2x,q7000,constant,7000,19444,10298,179.96,88.56,0.50,0,stable,Too few multi-round samples under old metric
+uniform_scan,2x,q7200,constant separate high probe,7200,20000,16345,238.53,137.40,237.86,3,rejected,Capacity cliff; late clearance and teleports
+threshold_scan,2x,q7050,constant,7050,19583,10518,183.91,91.62,4.41,0,stable,Probe
+threshold_scan,2x,q7100,constant,7100,19722,10398,188.70,95.42,5.00,0,stable,Probe
+threshold_scan,2x,q7150,constant,7150,19861,11366,196.77,101.86,31.33,0,rejected,Clears after 11000 s
+threshold_scan,2x,q7175,constant,7175,19931,11094,191.82,97.88,13.62,0,rejected,Slightly exceeds clearance limit
+threshold_scan,2x,q7190,constant,7190,19972,14280,218.89,121.02,103.46,3,rejected,Unstable
+threshold_scan,2x,q7200,constant same-seed threshold run,7200,20000,,,,,,rejected,Run did not complete cleanly
+length_scan,2.5x,q7150,constant,7150,19861,10293,198.12,89.77,0.50,0,stable,Probe
+length_scan,2.5x,q7200,constant,7200,20000,13198,226.37,113.18,44.85,2,rejected,Late clearance and teleports
+length_scan,3x,q7150,constant,7150,19861,10307,216.51,91.17,0.50,0,stable,Probe
+length_scan,3x,q7200,constant,7200,20000,10381,219.70,93.78,0.50,0,warning,Vehicle removal or teleport warnings
+profile_scan,3x,uncongested,constant 2800,2800,7778,10316,182.05,65.58,0.50,0,accepted_candidate,Low-pressure reference
+profile_scan,3x,tight_v1,4x(1200@8100+1200@4700)+400@6400,6400,17778,10388,228.76,101.12,0.50,0,accepted_candidate,Moderate multi-round pressure
+profile_scan,3x,tight_v2,3x(1500@8100+1500@4700)+1000@6400,6400,17778,10316,241.87,111.43,0.63,0,candidate,Heavier tail than desired for tight class
+profile_scan,3x,congested_v1,long 8100/5900 windows,7000,19444,15907,313.66,169.95,231.69,5,rejected,Entry-gridlock
+profile_scan,3x,congested_v2,3x(1500@8000+1500@6000)+tail,7000,19444,15906,312.21,169.19,286.89,6,rejected,Entry-gridlock
+profile_scan,3x,congested_v3,4x(1200@7800+1200@6200)+tail,7000,19444,12666,243.69,113.53,31.12,1,rejected,Late clearance and teleport
+profile_scan,3x,congested_v4,4x(1200@7700+1200@6300)+tail,7000,19444,10324,218.93,93.15,0.50,0,rejected,Insufficient multi-round samples
+profile_scan,3x,congested_v5,6x(900@8100+600@5300)+tail,7000,19444,10316,226.35,99.40,0.50,0,rejected,Peaks too short; insufficient multi-round samples
+profile_scan,3x,congested_v6,4x(1500@8100+700@4700)+1200@6866.67,7000,19444,16160,301.20,162.22,215.64,7,rejected_on_3x,Insufficient storage at 3x length
+profile_scan,3x,congested_v7,4x(1500@8100+900@4700)+400@6200,6800,18889,15073,292.90,154.62,149.67,4,rejected_on_3x,Insufficient storage at 3x length
+profile_scan,3x,congested_v8,4x(1350@8100+1050@5128.57)+tail,6800,18889,15720,292.79,154.76,204.33,1,rejected,Entry-gridlock
+profile_scan,3x,congested_v9,4x(1200@8100+900@5066.67)+tail,6800,18889,10389,227.40,99.93,0.50,0,rejected,Insufficient multi-round samples
+length_profile_scan,4x,tight_v2,3x(1500@8100+1500@4700)+1000@6400,6400,17778,10401,267.68,105.52,0.50,0,candidate,Stable but tail heavier than final tight target
+length_profile_scan,4x,congested_v7,4x(1500@8100+900@4700)+400@6200,6800,18889,12011,304.55,133.63,30.25,0,rejected,Clears after 11000 s
+final,4x,free,constant 2800,2800,7778,10402,216.89,67.37,0.50,0,accepted,Low-pressure control
+final,4x,tight,4x(1200@8100+1200@4700)+400@6400,6400,17778,10409,260.20,99.91,0.50,0,accepted,8.865% miss at least one green
+final,4x,congested,4x(1500@8100+700@4700)+1200@6866.67,7000,19444,10386,275.50,111.82,0.50,0,accepted,15.136% miss at least one green

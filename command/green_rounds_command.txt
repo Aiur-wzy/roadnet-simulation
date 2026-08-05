@@ -1,0 +1,35 @@
+# Collect whole-approach missed-green rounds for datasets 12-14.
+mkdir -p data/traci
+
+# 12. free
+python3 scripts/collect_vehicle_green_rounds.py \
+  --sumo-config data/sumocfg/free.sumocfg \
+  --sumo-binary sumo \
+  --waiting-region-length 600 \
+  --tripinfo-output data/tripinfo/tripinfo_free.xml \
+  --vehicle-output data/traci/TraCI_vehicle_green_rounds_free.csv \
+  --event-output data/traci/TraCI_vehicle_movement_green_rounds_free.csv \
+  --distribution-output data/traci/TraCI_green_rounds_distribution_free.csv \
+  --summary-output data/traci/TraCI_green_rounds_summary_free.txt
+
+# 13. tight
+python3 scripts/collect_vehicle_green_rounds.py \
+  --sumo-config data/sumocfg/tight.sumocfg \
+  --sumo-binary sumo \
+  --waiting-region-length 600 \
+  --tripinfo-output data/tripinfo/tripinfo_tight.xml \
+  --vehicle-output data/traci/TraCI_vehicle_green_rounds_tight.csv \
+  --event-output data/traci/TraCI_vehicle_movement_green_rounds_tight.csv \
+  --distribution-output data/traci/TraCI_green_rounds_distribution_tight.csv \
+  --summary-output data/traci/TraCI_green_rounds_summary_tight.txt
+
+# 14. congested
+python3 scripts/collect_vehicle_green_rounds.py \
+  --sumo-config data/sumocfg/congested.sumocfg \
+  --sumo-binary sumo \
+  --waiting-region-length 600 \
+  --tripinfo-output data/tripinfo/tripinfo_congested.xml \
+  --vehicle-output data/traci/TraCI_vehicle_green_rounds_congested.csv \
+  --event-output data/traci/TraCI_vehicle_movement_green_rounds_congested.csv \
+  --distribution-output data/traci/TraCI_green_rounds_distribution_congested.csv \
+  --summary-output data/traci/TraCI_green_rounds_summary_congested.txt

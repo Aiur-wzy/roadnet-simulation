@@ -16,43 +16,14 @@
 #include <unordered_set>
 #include <ctime>
 #include <functional>
+#include <iomanip>
 #include <utility>
 #include <string>
 #include <algorithm>
 #include <map>
 #include <deque>
-#include <thread>
-#include <future>
-#include <memory>
 #include <limits>
 #include <cstdlib>
-#if defined(__has_include)
-#  if __has_include(<boost/thread/thread.hpp>) && __has_include(<boost/thread.hpp>)
-#    include <boost/thread/thread.hpp>
-#    include <boost/thread.hpp>
-#    define ROADNET_HAS_BOOST_THREAD 1
-#  endif
-#endif
-#ifndef ROADNET_HAS_BOOST_THREAD
-namespace boost {
-    using std::ref;
-    using thread = std::thread;
-    class thread_group {
-    public:
-        ~thread_group() { join_all(); }
-        void add_thread(std::thread *t) { threads.emplace_back(t); }
-        void join_all() {
-            for (auto &t : threads) {
-                if (t && t->joinable()) t->join();
-            }
-            threads.clear();
-        }
-    private:
-        std::vector<std::unique_ptr<std::thread>> threads;
-    };
-}
-#endif
-#include <semaphore.h>
 #include <time.h>
 #include <cstdlib>
 #include <random>
@@ -68,42 +39,10 @@ namespace boost {
 #include <string.h>
 #include <set>
 #include <sstream>
-#define INF 999999999
+constexpr double INF = 1.0e15;
+constexpr double TIME_EPSILON = 1.0e-9;
 
 using namespace std;
-
-// Parallel Computation
-
-class Semaphore
-{
-public:
-    Semaphore (int count_ = 0)
-            : count(count_) {}
-
-    inline void Signal()
-    {
-        unique_lock<std::mutex> lock(mtx);
-        count++;
-        cv.notify_one();
-    }
-
-    inline void Wait()
-    {
-        unique_lock<std::mutex> lock(mtx);
-
-        while(count == 0)
-        {
-            cv.wait(lock);
-
-        }
-        count--;
-    }
-
-
-    mutex mtx;
-    condition_variable cv;
-    int count;
-};
 
 // 定义一个用作词典键的结构体
 struct RoadKey {
@@ -155,10 +94,10 @@ typedef struct ROAD
 {
     int roadID;
     int ID1, ID2;
-    int length;
-    int travelTime;
+    double length;
+    double travelTime;
     int direction;
-    int speedLimit;
+    double speedLimit;
     int laneNum;
     int width;
     int kindNumber;
@@ -171,9 +110,9 @@ typedef struct ROADMORE
     int nodeID1;
     int nodeID2;
     int routeID;
-    int length;
+    double length;
     int direction;
-    int speedLimit;
+    double speedLimit;
     int laneNum;
     int width;
     int kindNumber;
@@ -265,9 +204,9 @@ struct SumoConnectionRaw {
 };
 
 struct SumoSignalPhase {
-    int duration = 0;
-    int startTime = 0;
-    int endTime = 0;
+    double duration = 0.0;
+    double startTime = 0.0;
+    double endTime = 0.0;
     string state;
 };
 
@@ -275,8 +214,8 @@ struct SumoSignalProgram {
     string tlID;
     string type;
     string programID;
-    int offset = 0;
-    int cycleLength = 0;
+    double offset = 0.0;
+    double cycleLength = 0.0;
     vector<SumoSignalPhase> phases;
 };
 
@@ -297,7 +236,7 @@ struct VehicleType {
 // extra is reserved for deliberate future advanced features. Do not confuse this
 // feature path with the legacy table-only RoadKey lookup key.
 struct BasicRoadModelFeatures {
-    int time = 0;
+    double time = 0.0;
     int vehicleID = -1;
     int roadID = -1;
     int movementID = -1;
@@ -319,7 +258,7 @@ struct BasicRoadModelFeatures {
     // Vehicle-level waiting state carried into the road being predicted.
     // 0/1 integer encoding is kept to match Python model feature columns.
     int has_waiting = 0;
-    int waiting_duration = 0;
+    double waiting_duration = 0.0;
 
     unordered_map<string, double> extra;
 };
@@ -362,15 +301,15 @@ struct SumoTripInfoTruth {
 };
 
 struct SignalPhase {
-    int startTime = 0;
-    int endTime = 0;
+    double startTime = 0.0;
+    double endTime = 0.0;
     string state;
 };
 
 struct SignalProgram {
     string tlID;
-    int offset = 0;
-    int cycleLength = 0;
+    double offset = 0.0;
+    double cycleLength = 0.0;
     vector<SignalPhase> phases;
 };
 
@@ -429,7 +368,8 @@ struct LaneGroup {
 // Core dispatch unit: a legal transition from fromRoadID to toRoadID through an intersection.
 // Movement candidates, not vehicles, are ordered in the dispatch priority queue;
 // signal eligibility is bound by tlID/linkIndex or alwaysOpen. laneDischargeCapacity
-// limits per-slot discharge. This is not a vehicle; FIFO vehicle order stays in WaitingBuffer.
+// is the number of independent headway channels. This is not a vehicle; FIFO
+// vehicle order stays in WaitingBuffer.
 struct Movement {
     int movementID = -1;
     int fromRoadID = -1;
@@ -477,10 +417,10 @@ struct SignalController {
     int intersectionID = -1;
     int movementID = -1;
     bool alwaysOpen = false;
-    int cycleLength = 0;
-    int greenStart = 0;
-    int greenEnd = 0;
-    int offset = 0;
+    double cycleLength = 0.0;
+    double greenStart = 0.0;
+    double greenEnd = 0.0;
+    double offset = 0.0;
     SignalState currentState = SignalState::Red;
 };
 
@@ -491,7 +431,7 @@ struct Intersection {
     vector<int> outgoingRoads;
     vector<int> movementIDs;
     vector<int> signalIDs;
-    int dischargeInterval = 1;
+    double dischargeInterval = 1.0;
     unordered_map<int, int> roundRobinPointerByToRoad;
 };
 
@@ -509,8 +449,8 @@ struct VehicleLabel {
 
     int roadIndex = 0;
     int currentRoadID = -1;
-    int arrivalTime = 0;
-    int scheduledDepartTime = 0;
+    double arrivalTime = 0.0;
+    double scheduledDepartTime = 0.0;
     int assignedEntryRoadID = -1;
     int assignedEntryLaneIndex = -1;
     bool queuedForEntry = false;
@@ -520,7 +460,7 @@ struct VehicleLabel {
     // travel-time prediction can use them as vehicle-level model inputs.
     bool hasWaitingBeforeCurrentRoad = false;
     bool lastDischargeHadWaiting = false;
-    int lastWaitingDuration = 0;
+    double lastWaitingDuration = 0.0;
 
     int currentMovementID = -1;
     int currentBufferID = -1;
@@ -541,14 +481,14 @@ struct VehicleLabel {
 // Event stream 1/3: signal phase transitions.
 // Separate from DepartureEvent (vehicle entry) and DispatchCandidate (movement discharge attempt).
 struct SignalEvent {
-    int time = 0;
+    double time = 0.0;
     int signalID = -1;
 };
 
 // Event stream 2/3: vehicle departures into the simulated road network.
 // Separate from SignalEvent and movement-based DispatchCandidate.
 struct DepartureEvent {
-    int time = 0;
+    double time = 0.0;
     int vehicleID = -1;
 };
 
@@ -581,9 +521,35 @@ struct VehicleMovementTimelineRecord {
     double movementWaitingTime = 0.0;
 };
 
+// Optional evaluation trace captured whenever a vehicle frees lane storage.
+// The dispatch queue compares candidateFirstLabel before frontArrivalSecondLabel,
+// so recording both values makes cross-movement priority decisions auditable.
+struct DownstreamReleaseCompetitionRecord {
+    long long releaseSequence = 0;
+    double releaseTime = 0.0;
+    int releasedByVehicleID = -1;
+    int releasedByMovementID = -1;
+    int freedRoadID = -1;
+    int freedLaneIndex = -1;
+    int movementID = -1;
+    int frontVehicleID = -1;
+    int queueSize = 0;
+    double movementLabelBefore = INF;
+    double frontArrivalSecondLabel = INF;
+    bool signalActiveAtRelease = false;
+    double nextGreenTime = INF;
+    double nextCapacityTime = INF;
+    double candidateFirstLabel = INF;
+    bool downstreamStorageAvailable = false;
+    int candidateLane = -1;
+    bool wasBlockedByDownstream = false;
+    bool wasInDispatchQueue = false;
+    bool reactivated = false;
+};
+
 struct DispatchCandidate {
-    int timeLabel = 0;
-    int firstCarArriveTime = INF;
+    double timeLabel = 0.0;
+    double firstCarArriveTime = INF;
     int movementID = -1;
     int frontVehicleID = -1;
     int version = 0;
@@ -591,7 +557,7 @@ struct DispatchCandidate {
 
 // Classification result for why a movement cannot discharge at candidate time.
 // Reasons map to different rescheduling actions: RedSignal -> next green,
-// Capacity -> next capacity slot, NotArrived -> front vehicle label,
+// Capacity -> earliest capacity-lane timestamp, NotArrived -> front vehicle label,
 // DownstreamFull -> deactivate until downstream storage is freed.
 enum class DischargeBlockReason {
     None,
@@ -608,7 +574,7 @@ enum class DischargeBlockReason {
 // applying downstream-road round-robin ordering within each ready group.
 struct ReadyDispatchCandidate {
     int movementID = -1;
-    int time = 0;
+    double time = 0.0;
     int bufferID = -1;
     int frontVehicleID = -1;
     int chosenLane = -1;
@@ -624,8 +590,8 @@ struct DischargeResult {
     int intersectionID = -1;
     int fromRoadID = -1;
     int toRoadID = -1;
-    int dischargeTime = 0;
-    int newArrivalTime = 0;
+    double dischargeTime = 0.0;
+    double newArrivalTime = 0.0;
     bool finished = false;
     int nextMovementID = -1;
     int nextBufferID = -1;
@@ -667,8 +633,6 @@ public:
 
     // Step 1: Data Cleaning
     // -----------------------------------------------------------------------------
-
-    Semaphore* smGlobal = new Semaphore(1);
 
     // Step 2: Data Preparation
     // -----------------------------------------------------------------------------
@@ -712,16 +676,16 @@ public:
     string BJ = join_path(Base, "Manhattan_network_BJ.txt");                // ID1, ID2, Weight (Length in Meters)
     int nodenum;                                    // Node Number (296710)
     int edgenum;                                    // Edge Number (774660 or 651748) 387587
-    vector<vector<pair<int, float>>> graphLength;      // ID1, ID2, Length
+    vector<vector<pair<int, double>>> graphLength;   // ID1, ID2, Length
     vector<vector<pair<int, int>>> graphRoadID;     // ID1, ID2, RoadID
     vector<Road> roadInfor;                         // Road Info (ID1, ID2, RoadID, Length, Time
     vector<set<int>> adjNodes;                      // ID1, ID2
     map<pair<int, int>, int> nodeID2RoadID;         // <ID1, ID2> -> RoadID
     map<int, pair<int, int>> roadID2NodeID;         // RoadID -> <ID1, ID2>
-    map<pair<int, int>, int> nodeID2minTime;        // <ID1, ID2> -> Min Travel Time
+    map<pair<int, int>, double> nodeID2minTime;     // <ID1, ID2> -> Min Travel Time
     string BJ_minTravleTime = join_path(Base,                // ID1, ID2, Weight (Min Travel Time in s)
                               "Manhattan_network_min_Travel_Time.txt");
-    vector<vector<pair<int,int>>> graphTime;        // ID1, ID2, Weight (Min Travel Time)
+    vector<vector<pair<int, double>>> graphTime;    // ID1, ID2, Weight (Min Travel Time)
     // Read Road Information
     void read_road_info();
     vector<roadMore> roadInforMore;
@@ -735,9 +699,9 @@ public:
     string route_path = join_path(Base, "route.txt");
     vector<vector<int>> routeDataRaw;
     unordered_map<int, unordered_map<int, vector<int>>> route_time_Dict;
-    vector<vector<int>> read_time(string filename, int num, vector<vector<int>> query);
+    vector<vector<double>> read_time(string filename, int num, const vector<vector<int>>& query);
     string time_path = join_path(Base, "time.txt");
-    vector<vector<int>> timeDataRaw;
+    vector<vector<double>> timeDataRaw;
 
     // SUMO .net.xml input and adaptation
     string sumoNetPath = roadnet_defaults::DEFAULT_SUMO_NET_PATH;
@@ -747,17 +711,18 @@ public:
     string predictionTripinfoOutputPath;
     bool evalSplitExtreme = false;
     bool evalExtremeTimeline = false;
+    bool evalTrajectoryDetails = false;
     double evalExtremeRelativeDurationThreshold = 3.0;
     void read_sumo_net_xml(const string& netXmlPath);
     void read_sumo_route_xml(const string& routeXmlPath, int maxVehicles);
     void read_sumo_tripinfo_xml(const string& tripinfoPath);
-    float evaluate_sumo_tripinfo_truth(const vector<vector<pair<int, float>>>& ETA);
+    double evaluate_sumo_tripinfo_truth(const vector<vector<pair<int, double>>>& ETA);
     void classify_node_types_from_sumo_junctions();
     void build_movements_from_sumo_connections();
     void build_lane_groups_from_sumo_connections();
     void build_signal_programs_from_sumo_tllogic();
     void build_new_graph_structures_from_sumo();
-    SignalState signalStateAtMovement(int movementID, int t);
+    SignalState signalStateAtMovement(int movementID, double t);
     void validate_sumo_network();
     void validate_sumo_connections();
     void validate_sumo_signal_programs();
@@ -777,6 +742,7 @@ public:
     unordered_map<string, VehicleType> sumoVehicleTypes;
     vector<string> sumoVehicleIDs;
     vector<string> vehicleTypeIDs;
+    vector<double> vehicleDepartureTimes;
     vector<SignalProgram> signalPrograms;
     unordered_map<string, int> movementKeyToID;
     // Check if route data, query data, and time data size are same
@@ -786,7 +752,7 @@ public:
     // Cut query data
     vector<vector<int>> cut_query_data(vector<vector<int>> &queryDataRaw, vector<vector<int>> &routeData, int avg_length);
     // Cut time data
-    vector<vector<int>> cut_time_data(vector<vector<int>> &timeDataRaw, int avg_length);
+    vector<vector<double>> cut_time_data(const vector<vector<double>>& timeDataRaw, int avg_length);
 
     // Convert Route from "Node ID Pair" to "Road ID"
     void route_nodeID_2_roadID(vector<vector<int>> &routeData);
@@ -846,14 +812,16 @@ public:
     priority_queue<SignalEvent, vector<SignalEvent>, SignalEventCompare> signalEventPQ;
     priority_queue<DepartureEvent, vector<DepartureEvent>, DepartureEventCompare> departurePQ;
     priority_queue<DispatchCandidate, vector<DispatchCandidate>, DispatchCandidateCompare> dispatchPQ;
-    vector<vector<pair<int, float>>> ETA_result_cycle_aware;
+    vector<vector<pair<int, double>>> ETA_result_cycle_aware;
     vector<vector<VehicleRoadTimelineRecord>> vehicleRoadTimeline;
     vector<vector<VehicleMovementTimelineRecord>> vehicleMovementTimeline;
+    vector<DownstreamReleaseCompetitionRecord> downstreamReleaseCompetitionTimeline;
+    long long downstreamReleaseSequence = 0;
     int finishedVehicleCount = 0;
     int invalidVehicleCount = 0;
-    int defaultDischargeInterval = 1;
-    map<tuple<int, int>, int> usedMovementDischargeCapacity;
-    vector<int> movementTimeLabel;
+    double defaultDischargeInterval = 1.0;
+    vector<vector<double>> movementLaneNextAvailableTime;
+    vector<double> movementTimeLabel;
     vector<int> movementPQVersion;
     vector<bool> movementBlockedByDownstream;
     vector<bool> movementInDispatchPQ;
@@ -880,47 +848,57 @@ public:
     int modelPort = 9000;
     bool modelWarningPrinted = false;
     bool debugMovement53Enabled = false;
-    int debugCurrentTime = -1;
+    double debugCurrentTime = -1.0;
     mutable ofstream debugMovement53Timeline;
     mutable ofstream debugE13Occupancy;
     mutable ofstream debugLane53;
     void initMovement53DebugIfNeeded();
-    void debugMovement53Event(int time, const string& eventType, int movementID, int frontVehicleID, int chosenLane, const string& blockReason, const string& note);
-    void debugE13OccupancyEvent(int time, const string& eventType, int vehicleID, int roadID, int laneIndex, int movementID, const string& note, int laneFlowBefore=-1, int roadFlowBefore=-1, double occupiedBefore=-1.0);
-    void debugMovement53LaneCheck(int time, int movementID, int vehicleID, const vector<int>& toLanes, const vector<int>& nextFromLanes, const vector<int>& intersected, const vector<int>& candidateLanes, int chosenLane, bool result);
+    void debugMovement53Event(double time, const string& eventType, int movementID, int frontVehicleID, int chosenLane, const string& blockReason, const string& note);
+    void debugE13OccupancyEvent(double time, const string& eventType, int vehicleID, int roadID, int laneIndex, int movementID, const string& note, int laneFlowBefore=-1, int roadFlowBefore=-1, double occupiedBefore=-1.0);
+    void debugMovement53LaneCheck(double time, int movementID, int vehicleID, const vector<int>& toLanes, const vector<int>& nextFromLanes, const vector<int>& intersected, const vector<int>& candidateLanes, int chosenLane, bool result);
     int travelTimeTableHit = 0;
     int travelTimeTableMiss = 0;
+    double speedNetHeadway = 0.8;
+    double speedNetDelayMax = 6.0;
+    bool speedNetUseAcceleration = true;
+    bool speedNetUseFollowing = true;
     double kinematicCongestionAlpha = 1.0;
     bool enableBasicFeatureLogging = false;
     vector<BasicRoadModelFeatures> basicFeatureSnapshots;
     void exportBasicFeatureSnapshots(const string& path) const;
     // 现行新算法主入口：基于 signal event + waiting buffer + discharge capacity 的仿真
-    vector<vector<pair<int, float>>> cycle_aware_signal_driven_records(
+    vector<vector<pair<int, double>>> cycle_aware_signal_driven_records(
             vector<vector<int>> &Q, vector<vector<int>> &routeRoadID);
     void initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vector<int>>& routeRoadID);
-    void initialize_signal_event_queue(int simStartTime);
+    void initialize_signal_event_queue(double simStartTime);
+    void initializeMovementDischargeTimes(double initialTime);
     void initializeEntryLaneDepartureQueues();
     bool hasPendingEntryDepartureQueues() const;
-    void processScheduledDeparturesUntil(int t);
-    void process_departures_until(int windowStart, int windowEnd);
-    bool enqueueDepartingVehicle(int vehicleID, int scheduledTime);
-    bool tryStartVehicleFromEntryQueue(int vehicleID, int actualDepartTime, int firstRoad, int laneIndex);
-    void processEntryDepartureQueuesAtTime(int t);
-    bool departVehicle(int vehicleID, int departTime);
-    void process_discharge_window(int windowStart, int windowEnd);
-    void rebuildActiveDispatchPQ(int currentTime, int windowEnd);
-    bool isMovementActive(int movementID, int t);
-    DischargeResult dischargeOneVehicle(int movementID, int dischargeTime);
-    void pushCandidateIfPossible(int movementID, int currentTime, int windowEnd);
+    bool processScheduledDeparturesUntil(double t);
+    bool enqueueDepartingVehicle(int vehicleID, double scheduledTime);
+    bool tryStartVehicleFromEntryQueue(int vehicleID, double actualDepartTime, int firstRoad, int laneIndex);
+    void processEntryDepartureQueueForRoadAtTime(int roadID, double t);
+    void processEntryDepartureQueuesAtTime(double t);
+    bool departVehicle(int vehicleID, double departTime);
+    void process_discharge_window(double windowStart, double windowEnd);
+    void rebuildActiveDispatchPQ(double currentTime, double windowEnd);
+    bool isMovementActive(int movementID, double t);
+    DischargeResult dischargeOneVehicle(int movementID, double dischargeTime);
+    void pushCandidateIfPossible(int movementID, double currentTime, double windowEnd);
     bool isDispatchCandidateValid(const DispatchCandidate& c);
     int getMovementBufferID(int movementID) const;
     int getFrontVehicleForMovement(int movementID) const;
-    int computeMovementAttemptTime(int movementID, int lowerBoundTime);
-    int nextGreenTimeForMovement(int movementID, int t);
-    DischargeBlockReason getDischargeBlockReason(int movementID, int t, int &frontVehicleID, int &chosenLane);
-    void scheduleMovementCandidate(int movementID, int time);
+    double computeMovementAttemptTime(int movementID, double lowerBoundTime);
+    double nextGreenTimeForMovement(int movementID, double t);
+    DischargeBlockReason getDischargeBlockReason(int movementID, double t, int &frontVehicleID, int &chosenLane);
+    void scheduleMovementCandidate(int movementID, double time);
     void deactivateMovementForDownstreamBlock(int movementID);
-    void reactivateMovementsBlockedByRoad(int freedRoadID, int currentTime);
+    void reactivateMovementsBlockedByRoad(
+            int freedRoadID,
+            double currentTime,
+            int freedLaneIndex = -1,
+            int releasedByVehicleID = -1,
+            int releasedByMovementID = -1);
     vector<int> orderMovementsByDownstreamRoundRobin(
             int intersectionID,
             int toRoadID,
@@ -929,78 +907,79 @@ public:
     void markDownstreamRoundRobinServed(int movementID);
     void handleSuccessfulDischargePostUpdate(
             int movementID,
-            int t,
-            int oldLabel,
+            double t,
+            double oldLabel,
             int bufferID,
             const DischargeResult& result
     );
-    bool hasDischargeCapacity(int movementID, int t);
-    void consumeDischargeCapacity(int movementID, int t);
-    int nextAvailableCapacityTime(int movementID, int t);
+    bool hasDischargeCapacity(int movementID, double t);
+    void consumeDischargeCapacity(int movementID, double t);
+    double nextAvailableCapacityTime(int movementID, double t);
     BasicRoadModelFeatures buildBasicRoadModelFeatures(
             int roadID,
             int vehicleID,
             int movementID,
-            int currentTime,
+            double currentTime,
             int preferredLaneIndex = -1
     ) const;
     BasicRoadModelFeatures buildBasicRoadModelFeaturesWithEnteringVehicle(
             int roadID,
             int vehicleID,
             int movementID,
-            int currentTime,
+            double currentTime,
             int preferredLaneIndex = -1
     ) const;
     int encodeTurnDirForModel(TurnDir turn) const;
-    int predictRoadTravelTimeFromFeatures(
+    double predictRoadTravelTimeFromFeatures(
             int roadID,
             const BasicRoadModelFeatures& features
     );
-    int predictRoadTravelTime(
+    double predictRoadTravelTime(
             int roadID,
             int vehicleID,
             int movementID,
-            int currentTime,
+            double currentTime,
             int preferredLaneIndex = -1
     );
-    int predictRoadTravelTimeWithEnteringVehicle(
+    double predictRoadTravelTimeWithEnteringVehicle(
             int roadID,
             int vehicleID,
             int movementID,
-            int currentTime,
+            double currentTime,
             int preferredLaneIndex = -1
     );
-    int predictRoadTravelTime(int roadID, int vehicleID);
-    int predictRoadTravelTimeSpeedNet(int roadID) const;
-    int predictRoadTravelTimeMinTime(int roadID) const;
-    int predictRoadTravelTimeTable(const BasicRoadModelFeatures& features);
-    int predictRoadTravelTimeTable(int roadID, int vehicleID);
-    int predictRoadTravelTimeModel(const BasicRoadModelFeatures& features);
-    int predictRoadTravelTimeModel(int roadID, int vehicleID);
-    int predictRoadTravelTimeKinematic(const BasicRoadModelFeatures& features) const;
-    int predictRoadTravelTimeKinematic(int roadID, int vehicleID) const;
+    double predictRoadTravelTime(int roadID, int vehicleID);
+    double predictRoadTravelTimeSpeedNet(const BasicRoadModelFeatures& features) const;
+    double predictRoadTravelTimeSpeedNet(int roadID) const;
+    double predictRoadTravelTimeMinTime(int roadID) const;
+    double predictRoadTravelTimeTable(const BasicRoadModelFeatures& features);
+    double predictRoadTravelTimeTable(int roadID, int vehicleID);
+    double predictRoadTravelTimeModel(const BasicRoadModelFeatures& features);
+    double predictRoadTravelTimeModel(int roadID, int vehicleID);
+    double predictRoadTravelTimeKinematic(const BasicRoadModelFeatures& features) const;
+    double predictRoadTravelTimeKinematic(int roadID, int vehicleID) const;
     RoadKey buildRoadKeyForPrediction(const BasicRoadModelFeatures& features) const;
     SumoV1TravelTimeKey buildSumoV1TravelTimeKeyForPrediction(const BasicRoadModelFeatures& features) const;
     RoadKey buildRoadKeyForPrediction(int roadID, int vehicleID) const;
     bool queryExternalTravelTimeModel(const BasicRoadModelFeatures& features, double& predictedTime);
     void insertVehicleToBufferOrdered(int bufferID, int vehicleID);
     void handle_signal_change_event(const SignalEvent& e);
-    int nextSignalChangeTime(int signalID, int afterTime);
+    double nextSignalChangeTime(int signalID, double afterTime);
     bool allVehiclesFinished() const;
-    void recordFinalETA(int vehicleID, int finalTime);
+    void recordFinalETA(int vehicleID, double finalTime);
     float percent;
     int small, big;
 
-    float MSE_estimation_cycle_aware_total(
-            vector<vector<int>> &timeData,
-            vector<vector<pair<int, float>>> &ETA);
+    double MSE_estimation_cycle_aware_total(
+            vector<vector<double>> &timeData,
+            vector<vector<pair<int, double>>> &ETA);
     // Find previous or next edge of current one.
     int find_direction(vector<vector<int>> &routeData, vector<vector<int>> &routeDataEdge,
                        int routeID, int nodeStart, int nodeEnd);
     // Export record information on each edge for further analysis
     void export_time_records(string route_num, vector<vector<int>> &routeData,
-                             vector<vector<int>> &routeDataEdge, vector<vector<int>> &timeData,
-                             vector<vector<pair<int,int>>> &ETA);
+                             vector<vector<int>> &routeDataEdge, vector<vector<double>> &timeData,
+                             vector<vector<pair<int,double>>> &ETA);
     string file_path_time_records = join_path(Base, "time_records_out.txt");
 
     // Legacy BJ setup helper used by the cycle-aware workflow.

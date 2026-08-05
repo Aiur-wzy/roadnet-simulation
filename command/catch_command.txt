@@ -1,0 +1,138 @@
+# 1. free_all
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_free_all_no_change.csv \
+  --model_path models/free_all_no_change \
+  --output_txt catch/model_catching_sumo_free_all_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 2. light_all_seed1
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_light_all_seed1_no_change.csv \
+  --model_path models/light_all_seed1_no_change \
+  --output_txt catch/model_catching_sumo_light_all_seed1_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 3. light_all_seed2
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_light_all_seed2_no_change.csv \
+  --model_path models/light_all_seed2_no_change \
+  --output_txt catch/model_catching_sumo_light_all_seed2_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 4. medium_core
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_medium_core_no_change.csv \
+  --model_path models/medium_core_no_change \
+  --output_txt catch/model_catching_sumo_medium_core_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 5. heavy_all
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_heavy_all_no_change.csv \
+  --model_path models/heavy_all_no_change \
+  --output_txt catch/model_catching_sumo_heavy_all_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 6. oversat_all
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_oversat_all_no_change.csv \
+  --model_path models/oversat_all_no_change \
+  --output_txt catch/model_catching_sumo_oversat_all_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 7. west_bottleneck
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_west_bottleneck_no_change.csv \
+  --model_path models/west_bottleneck_no_change \
+  --output_txt catch/model_catching_sumo_west_bottleneck_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 8. north_bottleneck
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_north_bottleneck_no_change.csv \
+  --model_path models/north_bottleneck_no_change \
+  --output_txt catch/model_catching_sumo_north_bottleneck_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 9. east_bottleneck
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_east_bottleneck_no_change.csv \
+  --model_path models/east_bottleneck_no_change \
+  --output_txt catch/model_catching_sumo_east_bottleneck_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 10. south_bottleneck
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_south_bottleneck_no_change.csv \
+  --model_path models/south_bottleneck_no_change \
+  --output_txt catch/model_catching_sumo_south_bottleneck_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 11. southwest_bottleneck
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_southwest_bottleneck_no_change.csv \
+  --model_path models/southwest_bottleneck_no_change \
+  --output_txt catch/model_catching_sumo_southwest_bottleneck_no_change.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 12. free
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_free.csv \
+  --model_path models/free \
+  --output_txt catch/model_catching_sumo_free.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 13. tight
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_tight.csv \
+  --model_path models/tight \
+  --output_txt catch/model_catching_sumo_tight.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1
+
+
+# 14. congested
+python model_catching_sumo_v1.py \
+  --csv data/traci/TraCI_output_adjusted_congested.csv \
+  --model_path models/congested \
+  --output_txt catch/model_catching_sumo_congested.txt \
+  --max_road_flow 200 \
+  --max_lane_flow 80 \
+  --lane_flow_step 1

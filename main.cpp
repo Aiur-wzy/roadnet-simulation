@@ -9,7 +9,7 @@ struct RunConfig {
 
     int readNum = 192484;
     int avgLength = 30;
-    int laneDischargeInterval = 1;
+    double laneDischargeInterval = 1.0;
 
     string baseDir;
     string sumoNetPath;
@@ -19,6 +19,7 @@ struct RunConfig {
     string predictionTripinfoOutputPath;
     bool evalSplitExtreme = false;
     bool evalExtremeTimeline = false;
+    bool evalTrajectoryDetails = false;
     double evalExtremeRelativeDurationThreshold = 3.0;
     string bjPath;
     string bjMinTravelTimePath;
@@ -33,6 +34,10 @@ struct RunConfig {
     int modelPort = 9000;
     bool fallbackToSpeedNet = true;
     bool verboseTravelTimePrediction = false;
+    double speedNetHeadway = 0.8;
+    double speedNetDelayMax = 6.0;
+    bool speedNetUseAcceleration = true;
+    bool speedNetUseFollowing = true;
     double kinematicCongestionAlpha = 1.0;
 
     bool useSumoSetByCli = false;
@@ -84,6 +89,44 @@ string tt_fallback_to_string(bool fallbackToSpeedNet) {
     return fallbackToSpeedNet ? "speed-net" : "min-time";
 }
 
+void parse_speed_net_components(
+        const string& value,
+        bool& useAcceleration,
+        bool& useFollowing) {
+    if (value == "none") {
+        useAcceleration = false;
+        useFollowing = false;
+        return;
+    }
+    if (value == "acceleration") {
+        useAcceleration = true;
+        useFollowing = false;
+        return;
+    }
+    if (value == "following") {
+        useAcceleration = false;
+        useFollowing = true;
+        return;
+    }
+    if (value == "both") {
+        useAcceleration = true;
+        useFollowing = true;
+        return;
+    }
+    throw runtime_error(
+            "Invalid speed-net components: " + value +
+            " (expected none, acceleration, following, or both)");
+}
+
+string speed_net_components_to_string(
+        bool useAcceleration,
+        bool useFollowing) {
+    if (useAcceleration && useFollowing) return "both";
+    if (useAcceleration) return "acceleration";
+    if (useFollowing) return "following";
+    return "none";
+}
+
 void print_sumo_sample_signal_states(Graph &g) {
     if (g.movements.empty()) return;
 
@@ -129,6 +172,8 @@ void print_usage(const char* programName) {
          << "  --eval-split-extreme  Write all/non-extreme/extreme-only SUMO evaluation metrics.\n"
          << "  --eval-extreme-timeline\n"
          << "                         Record and write per-road/per-movement diagnostics for extreme vehicles.\n"
+         << "  --eval-trajectory-details\n"
+         << "                         Write full vehicle trajectories and downstream-release competition labels.\n"
          << "  --eval-extreme-relative-threshold <value>\n"
          << "                         Relative duration error threshold for extreme vehicles (default: 3.0).\n"
          << "  --bj <path>            Legacy BJ graph path.\n"
@@ -143,6 +188,13 @@ void print_usage(const char* programName) {
          << "                         Single-road travel-time predictor (default: min-time).\n"
          << "  --travel-time-table <path>\n"
          << "                         Table dictionary path for --travel-time-mode table.\n"
+         << "  --speed-net-components <none|acceleration|following|both>\n"
+         << "                         Optional speed-net corrections (default: both).\n"
+         << "                         none reproduces length / cruise-speed behavior.\n"
+         << "  --speed-net-headway <seconds>\n"
+         << "                         Per-vehicle same-lane following delay for speed-net (default: 0.8; must be >= 0).\n"
+         << "  --speed-net-delay-max <seconds>\n"
+         << "                         Maximum same-lane following delay for speed-net (default: 6.0; must be >= 0).\n"
          << "  --kinematic-congestion-alpha <value>\n"
          << "                         Congestion multiplier for --travel-time-mode kinematic (default: 1.0; negative clamps to 0).\n"
          << "  --model-host <host>    External model host for future model mode (default: 127.0.0.1).\n"
@@ -154,15 +206,15 @@ void print_usage(const char* programName) {
          << "  --read-num <n>         Number of query/route/time records to read (default: 192484).\n"
          << "  --cut                  Cut route/query/time data before simulation (default: false).\n"
          << "  --avg-length <n>       Average length used when --cut is enabled (default: 30).\n"
-         << "  --lane-discharge-interval <k>\n"
-         << "                         Global seconds per movement lane-discharge slot (default: 1; <=0 clamps to 1).\n\n"
+         << "  --lane-discharge-interval <seconds>\n"
+         << "                         Minimum floating-point headway per movement capacity lane (default: 1.0; must be > 0).\n\n"
          << "Environment fallback (lower priority than command-line args):\n"
          << "  USE_SUMO_NET=1 SUMO_NET_PATH=test.net.xml " << programName << "\n";
 }
 
 // Parse CLI/config: this only resolves runtime options and paths.
 // --travel-time-mode selects the single-road travel-time predictor, while
-// --lane-discharge-interval controls movement capacity slots in the simulator.
+// --lane-discharge-interval controls the per-capacity-lane discharge headway.
 RunConfig parse_args(int argc, char** argv) {
     RunConfig cfg;
 
@@ -185,6 +237,7 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--prediction-tripinfo-output") cfg.predictionTripinfoOutputPath = require_value(argc, argv, i, arg);
         else if (arg == "--eval-split-extreme") cfg.evalSplitExtreme = true;
         else if (arg == "--eval-extreme-timeline") cfg.evalExtremeTimeline = true;
+        else if (arg == "--eval-trajectory-details") cfg.evalTrajectoryDetails = true;
         else if (arg == "--eval-extreme-relative-threshold") {
             cfg.evalExtremeRelativeDurationThreshold = parse_double_value(require_value(argc, argv, i, arg), arg);
             if (cfg.evalExtremeRelativeDurationThreshold <= 0.0) {
@@ -197,8 +250,38 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--query") cfg.queryPath = require_value(argc, argv, i, arg);
         else if (arg == "--route") cfg.routePath = require_value(argc, argv, i, arg);
         else if (arg == "--time") cfg.timePath = require_value(argc, argv, i, arg);
-        else if (arg == "--travel-time-mode") cfg.travelTimeMode = parseTravelTimeMode(require_value(argc, argv, i, arg));
+        else if (arg == "--travel-time-mode") {
+            string value = require_value(argc, argv, i, arg);
+            if (value == "speed-net-legacy") {
+                cfg.travelTimeMode = TravelTimeMode::SPEED_NET;
+                cfg.speedNetUseAcceleration = false;
+                cfg.speedNetUseFollowing = false;
+                cout << "[Config Warning] speed-net-legacy is deprecated; using "
+                     << "--travel-time-mode speed-net "
+                     << "--speed-net-components none." << endl;
+            } else {
+                cfg.travelTimeMode = parseTravelTimeMode(value);
+            }
+        }
         else if (arg == "--travel-time-table") cfg.travelTimeTablePath = require_value(argc, argv, i, arg);
+        else if (arg == "--speed-net-components") {
+            parse_speed_net_components(
+                    require_value(argc, argv, i, arg),
+                    cfg.speedNetUseAcceleration,
+                    cfg.speedNetUseFollowing);
+        }
+        else if (arg == "--speed-net-headway") {
+            cfg.speedNetHeadway = parse_double_value(require_value(argc, argv, i, arg), arg);
+            if (!std::isfinite(cfg.speedNetHeadway) || cfg.speedNetHeadway < 0.0) {
+                throw runtime_error("--speed-net-headway must be finite and >= 0");
+            }
+        }
+        else if (arg == "--speed-net-delay-max") {
+            cfg.speedNetDelayMax = parse_double_value(require_value(argc, argv, i, arg), arg);
+            if (!std::isfinite(cfg.speedNetDelayMax) || cfg.speedNetDelayMax < 0.0) {
+                throw runtime_error("--speed-net-delay-max must be finite and >= 0");
+            }
+        }
         else if (arg == "--kinematic-congestion-alpha") {
             cfg.kinematicCongestionAlpha = parse_double_value(require_value(argc, argv, i, arg), arg);
             if (cfg.kinematicCongestionAlpha < 0.0) cfg.kinematicCongestionAlpha = 0.0;
@@ -211,11 +294,9 @@ RunConfig parse_args(int argc, char** argv) {
         else if (arg == "--cut") cfg.cut = true;
         else if (arg == "--avg-length") cfg.avgLength = parse_int_value(require_value(argc, argv, i, arg), arg);
         else if (arg == "--lane-discharge-interval") {
-            int parsedInterval = parse_int_value(require_value(argc, argv, i, arg), arg);
-            if (parsedInterval <= 0) {
-                cout << "[Config Warning] --lane-discharge-interval=" << parsedInterval
-                     << " is invalid; clamping to 1." << endl;
-                parsedInterval = 1;
+            double parsedInterval = parse_double_value(require_value(argc, argv, i, arg), arg);
+            if (!std::isfinite(parsedInterval) || parsedInterval <= 0.0) {
+                throw runtime_error("--lane-discharge-interval must be finite and > 0");
             }
             cfg.laneDischargeInterval = parsedInterval;
         }
@@ -248,6 +329,7 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     if (!cfg.predictionTripinfoOutputPath.empty()) g.predictionTripinfoOutputPath = cfg.predictionTripinfoOutputPath;
     g.evalSplitExtreme = cfg.evalSplitExtreme;
     g.evalExtremeTimeline = cfg.evalExtremeTimeline;
+    g.evalTrajectoryDetails = cfg.evalTrajectoryDetails;
     g.evalExtremeRelativeDurationThreshold = cfg.evalExtremeRelativeDurationThreshold;
 
     g.travelTimeMode = cfg.travelTimeMode;
@@ -256,8 +338,12 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     g.modelPort = cfg.modelPort;
     g.fallbackToSpeedNet = cfg.fallbackToSpeedNet;
     g.verboseTravelTimePrediction = cfg.verboseTravelTimePrediction;
+    g.speedNetHeadway = cfg.speedNetHeadway;
+    g.speedNetDelayMax = cfg.speedNetDelayMax;
+    g.speedNetUseAcceleration = cfg.speedNetUseAcceleration;
+    g.speedNetUseFollowing = cfg.speedNetUseFollowing;
     g.kinematicCongestionAlpha = max(0.0, cfg.kinematicCongestionAlpha);
-    g.defaultDischargeInterval = max(1, cfg.laneDischargeInterval);
+    g.defaultDischargeInterval = cfg.laneDischargeInterval;
     g.modelWarningPrinted = false;
     g.travelTimeTableHit = 0;
     g.travelTimeTableMiss = 0;
@@ -288,6 +374,7 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
         if (!g.predictionTripinfoOutputPath.empty()) cout << "[Config] Prediction tripinfo output: " << g.predictionTripinfoOutputPath << endl;
         cout << "[Config] Eval split extreme: " << g.evalSplitExtreme << endl;
         cout << "[Config] Eval extreme timeline: " << g.evalExtremeTimeline << endl;
+        cout << "[Config] Eval trajectory details: " << g.evalTrajectoryDetails << endl;
         cout << "[Config] Eval extreme relative threshold: " << g.evalExtremeRelativeDurationThreshold << endl;
     }
     else {
@@ -302,9 +389,16 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
     cout << "[Config] Cut: " << cfg.cut << endl;
     cout << "[Config] Avg length: " << cfg.avgLength << endl;
     cout << "[Config] Evaluation: " << cfg.runEvaluation << endl;
-    cout << "[Config] Lane discharge interval: " << max(1, g.defaultDischargeInterval) << "s" << endl;
+    cout << "[Config] Lane discharge interval: " << g.defaultDischargeInterval << "s" << endl;
     cout << "[Config] Travel time mode: " << travelTimeModeToString(g.travelTimeMode) << endl;
     cout << "[Config] Travel time table: " << g.travelTimeTablePath << endl;
+    cout << "[Config] Speed-net components: "
+         << speed_net_components_to_string(
+                    g.speedNetUseAcceleration,
+                    g.speedNetUseFollowing)
+         << endl;
+    cout << "[Config] Speed-net headway: " << g.speedNetHeadway << "s" << endl;
+    cout << "[Config] Speed-net delay max: " << g.speedNetDelayMax << "s" << endl;
     cout << "[Config] Kinematic congestion alpha: " << g.kinematicCongestionAlpha << endl;
     cout << "[Config] TT fallback: " << tt_fallback_to_string(g.fallbackToSpeedNet) << endl;
     cout << "[Config] Model host/port: " << g.modelHost << ":" << g.modelPort << endl;
@@ -358,7 +452,7 @@ int main(int argc, char** argv) {
             // Run cycle-aware simulation: movement dispatch is independent from travel-time-mode selection.
             cout << "\nStep: Cycle-Aware SUMO Simulation" << endl;
             cout << "-------------------------------------" << endl;
-            vector<vector<pair<int, float>>> ETA =
+            vector<vector<pair<int, double>>> ETA =
                     g.cycle_aware_signal_driven_records(g.queryDataRaw, g.routeRoadID);
 
             cout << "SUMO cycle-aware simulation done." << endl;
@@ -420,7 +514,7 @@ int main(int argc, char** argv) {
 
         vector<vector<int>> queryData;
         vector<vector<int>> routeData;
-        vector<vector<int>> timeData;
+        vector<vector<double>> timeData;
 
         if (cfg.cut) {
             routeData = g.cut_route_data(g.routeDataRaw, cfg.avgLength);
@@ -454,7 +548,7 @@ int main(int argc, char** argv) {
         cout << "-------------------------------------" << endl;
 
         // Run cycle-aware simulation over the prepared legacy graph.
-        vector<vector<pair<int, float>>> ETA =
+        vector<vector<pair<int, double>>> ETA =
                 g.cycle_aware_signal_driven_records(queryData, g.routeRoadID);
 
         cout << "Cycle-aware simulation done." << endl;
@@ -476,7 +570,7 @@ int main(int argc, char** argv) {
         if (cfg.runEvaluation) {
             cout << "\nStep 5: Evaluation" << endl;
             cout << "-------------------------------------" << endl;
-            float MSE = g.MSE_estimation_cycle_aware_total(timeData, ETA);
+            double MSE = g.MSE_estimation_cycle_aware_total(timeData, ETA);
             cout << "Cycle-aware total travel-time MSE: " << MSE << endl;
         } else {
             cout << "\nStep 5: Evaluation skipped (--no-eval)" << endl;

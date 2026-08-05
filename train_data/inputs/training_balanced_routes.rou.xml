@@ -1,0 +1,186 @@
+<?xml version='1.0' encoding='utf-8'?>
+<routes>
+    <!-- Equal-weight, capacity-balanced training catalog. Use route='train_balanced_all' for probabilistic sampling. -->
+    <route id="train_balanced_od_001" edges="-E19 -E16 E11 -E10" />
+    <route id="train_balanced_od_002" edges="-E19 -E20 -E14" />
+    <route id="train_balanced_od_003" edges="-E19 -E16 -E17" />
+    <route id="train_balanced_od_004" edges="-E19 -E16 -E18" />
+    <route id="train_balanced_od_005" edges="-E19 -E20 E12 -E9" />
+    <route id="train_balanced_od_006" edges="-E19 E15 -E0 E2" />
+    <route id="train_balanced_od_007" edges="-E19 E15 E3" />
+    <route id="train_balanced_od_008" edges="-E19 E15 E4" />
+    <route id="train_balanced_od_009" edges="-E19 -E20 E13 E5" />
+    <route id="train_balanced_od_010" edges="-E2 -E13 E12 -E10" />
+    <route id="train_balanced_od_011" edges="-E2 -E13 -E14" />
+    <route id="train_balanced_od_012" edges="-E2 E0 -E15 -E16 -E17" />
+    <route id="train_balanced_od_013" edges="-E2 -E13 E12 -E11 -E18" />
+    <route id="train_balanced_od_014" edges="-E2 -E13 E12 -E9" />
+    <route id="train_balanced_od_015" edges="-E2 E0 -E15 E19" />
+    <route id="train_balanced_od_016" edges="-E2 E0 E3" />
+    <route id="train_balanced_od_017" edges="-E2 E0 E4" />
+    <route id="train_balanced_od_018" edges="-E2 E5" />
+    <route id="train_balanced_od_019" edges="-E3 -E0 -E13 E12 -E10" />
+    <route id="train_balanced_od_020" edges="-E3 -E0 -E13 -E14" />
+    <route id="train_balanced_od_021" edges="-E3 -E15 -E16 -E17" />
+    <route id="train_balanced_od_022" edges="-E3 -E15 -E16 -E18" />
+    <route id="train_balanced_od_023" edges="-E3 -E0 -E13 E12 -E9" />
+    <route id="train_balanced_od_024" edges="-E3 -E15 E19" />
+    <route id="train_balanced_od_025" edges="-E3 -E0 E2" />
+    <route id="train_balanced_od_026" edges="-E3 E4" />
+    <route id="train_balanced_od_027" edges="-E3 -E0 E5" />
+    <route id="train_balanced_od_028" edges="-E4 -E15 -E20 E12 -E10" />
+    <route id="train_balanced_od_029" edges="-E4 -E15 -E20 -E14" />
+    <route id="train_balanced_od_030" edges="-E4 -E15 -E16 -E17" />
+    <route id="train_balanced_od_031" edges="-E4 -E15 -E16 -E18" />
+    <route id="train_balanced_od_032" edges="-E4 -E15 -E20 E12 -E9" />
+    <route id="train_balanced_od_033" edges="-E4 -E15 E19" />
+    <route id="train_balanced_od_034" edges="-E4 -E0 E2" />
+    <route id="train_balanced_od_035" edges="-E4 E3" />
+    <route id="train_balanced_od_036" edges="-E4 -E0 E5" />
+    <route id="train_balanced_od_037" edges="-E5 -E13 E20 -E16 E11 -E10" />
+    <route id="train_balanced_od_038" edges="-E5 -E13 -E14" />
+    <route id="train_balanced_od_039" edges="-E5 E0 -E15 -E16 -E17" />
+    <route id="train_balanced_od_040" edges="-E5 -E13 E12 -E11 -E18" />
+    <route id="train_balanced_od_041" edges="-E5 -E13 E20 -E16 E11 -E9" />
+    <route id="train_balanced_od_042" edges="-E5 -E13 E20 E19" />
+    <route id="train_balanced_od_043" edges="-E5 E2" />
+    <route id="train_balanced_od_044" edges="-E5 E0 E3" />
+    <route id="train_balanced_od_045" edges="-E5 E0 E4" />
+    <route id="train_balanced_od_046" edges="E10 -E12 -E14" />
+    <route id="train_balanced_od_047" edges="E10 -E11 -E17" />
+    <route id="train_balanced_od_048" edges="E10 -E11 -E18" />
+    <route id="train_balanced_od_049" edges="E10 -E9" />
+    <route id="train_balanced_od_050" edges="E10 -E11 E16 E19" />
+    <route id="train_balanced_od_051" edges="E10 -E11 E16 E15 -E0 E2" />
+    <route id="train_balanced_od_052" edges="E10 -E12 E13 E0 E3" />
+    <route id="train_balanced_od_053" edges="E10 -E11 E16 E15 E4" />
+    <route id="train_balanced_od_054" edges="E10 -E12 E13 E5" />
+    <route id="train_balanced_od_055" edges="E14 E12 -E10" />
+    <route id="train_balanced_od_056" edges="E14 E20 -E16 -E17" />
+    <route id="train_balanced_od_057" edges="E14 E12 -E11 -E18" />
+    <route id="train_balanced_od_058" edges="E14 E12 -E9" />
+    <route id="train_balanced_od_059" edges="E14 E20 E19" />
+    <route id="train_balanced_od_060" edges="E14 E13 E2" />
+    <route id="train_balanced_od_061" edges="E14 E20 E15 E3" />
+    <route id="train_balanced_od_062" edges="E14 E13 E0 E4" />
+    <route id="train_balanced_od_063" edges="E14 E13 E5" />
+    <route id="train_balanced_od_064" edges="E17 E11 -E10" />
+    <route id="train_balanced_od_065" edges="E17 E11 -E12 -E14" />
+    <route id="train_balanced_od_066" edges="E17 -E18" />
+    <route id="train_balanced_od_067" edges="E17 E11 -E9" />
+    <route id="train_balanced_od_068" edges="E17 E16 E19" />
+    <route id="train_balanced_od_069" edges="E17 E16 E15 -E0 E2" />
+    <route id="train_balanced_od_070" edges="E17 E16 E15 E3" />
+    <route id="train_balanced_od_071" edges="E17 E16 E15 E4" />
+    <route id="train_balanced_od_072" edges="E17 E16 -E20 E13 E5" />
+    <route id="train_balanced_od_073" edges="E18 E11 -E10" />
+    <route id="train_balanced_od_074" edges="E18 E16 -E20 -E14" />
+    <route id="train_balanced_od_075" edges="E18 -E17" />
+    <route id="train_balanced_od_076" edges="E18 E11 -E9" />
+    <route id="train_balanced_od_077" edges="E18 E16 E19" />
+    <route id="train_balanced_od_078" edges="E18 E16 -E20 E13 E2" />
+    <route id="train_balanced_od_079" edges="E18 E11 -E12 E13 E0 E3" />
+    <route id="train_balanced_od_080" edges="E18 E16 E15 E4" />
+    <route id="train_balanced_od_081" edges="E18 E11 -E12 E13 E5" />
+    <route id="train_balanced_od_082" edges="E9 -E10" />
+    <route id="train_balanced_od_083" edges="E9 -E12 -E14" />
+    <route id="train_balanced_od_084" edges="E9 -E11 -E17" />
+    <route id="train_balanced_od_085" edges="E9 -E11 -E18" />
+    <route id="train_balanced_od_086" edges="E9 -E12 E20 E19" />
+    <route id="train_balanced_od_087" edges="E9 -E12 E13 E2" />
+    <route id="train_balanced_od_088" edges="E9 -E12 E20 E15 E3" />
+    <route id="train_balanced_od_089" edges="E9 -E12 E20 E15 E4" />
+    <route id="train_balanced_od_090" edges="E9 -E12 E13 E5" />
+    <routeDistribution id="train_balanced_all">
+        <route refId="train_balanced_od_001" probability="1" />
+        <route refId="train_balanced_od_002" probability="1" />
+        <route refId="train_balanced_od_003" probability="1" />
+        <route refId="train_balanced_od_004" probability="1" />
+        <route refId="train_balanced_od_005" probability="1" />
+        <route refId="train_balanced_od_006" probability="1" />
+        <route refId="train_balanced_od_007" probability="1" />
+        <route refId="train_balanced_od_008" probability="1" />
+        <route refId="train_balanced_od_009" probability="1" />
+        <route refId="train_balanced_od_010" probability="1" />
+        <route refId="train_balanced_od_011" probability="1" />
+        <route refId="train_balanced_od_012" probability="1" />
+        <route refId="train_balanced_od_013" probability="1" />
+        <route refId="train_balanced_od_014" probability="1" />
+        <route refId="train_balanced_od_015" probability="1" />
+        <route refId="train_balanced_od_016" probability="1" />
+        <route refId="train_balanced_od_017" probability="1" />
+        <route refId="train_balanced_od_018" probability="1" />
+        <route refId="train_balanced_od_019" probability="1" />
+        <route refId="train_balanced_od_020" probability="1" />
+        <route refId="train_balanced_od_021" probability="1" />
+        <route refId="train_balanced_od_022" probability="1" />
+        <route refId="train_balanced_od_023" probability="1" />
+        <route refId="train_balanced_od_024" probability="1" />
+        <route refId="train_balanced_od_025" probability="1" />
+        <route refId="train_balanced_od_026" probability="1" />
+        <route refId="train_balanced_od_027" probability="1" />
+        <route refId="train_balanced_od_028" probability="1" />
+        <route refId="train_balanced_od_029" probability="1" />
+        <route refId="train_balanced_od_030" probability="1" />
+        <route refId="train_balanced_od_031" probability="1" />
+        <route refId="train_balanced_od_032" probability="1" />
+        <route refId="train_balanced_od_033" probability="1" />
+        <route refId="train_balanced_od_034" probability="1" />
+        <route refId="train_balanced_od_035" probability="1" />
+        <route refId="train_balanced_od_036" probability="1" />
+        <route refId="train_balanced_od_037" probability="1" />
+        <route refId="train_balanced_od_038" probability="1" />
+        <route refId="train_balanced_od_039" probability="1" />
+        <route refId="train_balanced_od_040" probability="1" />
+        <route refId="train_balanced_od_041" probability="1" />
+        <route refId="train_balanced_od_042" probability="1" />
+        <route refId="train_balanced_od_043" probability="1" />
+        <route refId="train_balanced_od_044" probability="1" />
+        <route refId="train_balanced_od_045" probability="1" />
+        <route refId="train_balanced_od_046" probability="1" />
+        <route refId="train_balanced_od_047" probability="1" />
+        <route refId="train_balanced_od_048" probability="1" />
+        <route refId="train_balanced_od_049" probability="1" />
+        <route refId="train_balanced_od_050" probability="1" />
+        <route refId="train_balanced_od_051" probability="1" />
+        <route refId="train_balanced_od_052" probability="1" />
+        <route refId="train_balanced_od_053" probability="1" />
+        <route refId="train_balanced_od_054" probability="1" />
+        <route refId="train_balanced_od_055" probability="1" />
+        <route refId="train_balanced_od_056" probability="1" />
+        <route refId="train_balanced_od_057" probability="1" />
+        <route refId="train_balanced_od_058" probability="1" />
+        <route refId="train_balanced_od_059" probability="1" />
+        <route refId="train_balanced_od_060" probability="1" />
+        <route refId="train_balanced_od_061" probability="1" />
+        <route refId="train_balanced_od_062" probability="1" />
+        <route refId="train_balanced_od_063" probability="1" />
+        <route refId="train_balanced_od_064" probability="1" />
+        <route refId="train_balanced_od_065" probability="1" />
+        <route refId="train_balanced_od_066" probability="1" />
+        <route refId="train_balanced_od_067" probability="1" />
+        <route refId="train_balanced_od_068" probability="1" />
+        <route refId="train_balanced_od_069" probability="1" />
+        <route refId="train_balanced_od_070" probability="1" />
+        <route refId="train_balanced_od_071" probability="1" />
+        <route refId="train_balanced_od_072" probability="1" />
+        <route refId="train_balanced_od_073" probability="1" />
+        <route refId="train_balanced_od_074" probability="1" />
+        <route refId="train_balanced_od_075" probability="1" />
+        <route refId="train_balanced_od_076" probability="1" />
+        <route refId="train_balanced_od_077" probability="1" />
+        <route refId="train_balanced_od_078" probability="1" />
+        <route refId="train_balanced_od_079" probability="1" />
+        <route refId="train_balanced_od_080" probability="1" />
+        <route refId="train_balanced_od_081" probability="1" />
+        <route refId="train_balanced_od_082" probability="1" />
+        <route refId="train_balanced_od_083" probability="1" />
+        <route refId="train_balanced_od_084" probability="1" />
+        <route refId="train_balanced_od_085" probability="1" />
+        <route refId="train_balanced_od_086" probability="1" />
+        <route refId="train_balanced_od_087" probability="1" />
+        <route refId="train_balanced_od_088" probability="1" />
+        <route refId="train_balanced_od_089" probability="1" />
+        <route refId="train_balanced_od_090" probability="1" />
+    </routeDistribution>
+</routes>
