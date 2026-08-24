@@ -4,6 +4,7 @@ import os
 import sys
 import types
 import unittest
+from unittest import mock
 
 
 os.environ.setdefault("SUMO_HOME", "/tmp")
@@ -37,6 +38,16 @@ def cycle(cycle_id=1, start=0.0, blocked=False):
     if blocked:
         result.downstream_blocked_vehicle_ids.add("v")
     return result
+
+
+def network_info(movement_lane="a_1"):
+    return cams.NetworkInfo(
+        edge_lanes={"a": ["a_0", "a_1"]},
+        lane_lengths={"a_0": 100.0, "a_1": 120.0},
+        connection_dirs={("a", "b"): "s"},
+        edge_speed_limits={"a": 13.89},
+        movement_from_lanes={("tls", 1, "a", "b"): (movement_lane,)},
+    )
 
 
 class MissedGreenTests(unittest.TestCase):
@@ -99,6 +110,71 @@ class MissedGreenTests(unittest.TestCase):
         active = cycle()
         self.assertEqual(e.missed_green_rounds, 0)
         self.assertIsNone(active.green_end_time)
+
+
+class MovementLaneFeatureTests(unittest.TestCase):
+    def setUp(self):
+        self.original_compute_flow_snapshot = cams.compute_flow_snapshot
+
+    def tearDown(self):
+        cams.compute_flow_snapshot = self.original_compute_flow_snapshot
+
+    def test_lane_flow_uses_next_movement_from_lane(self):
+        cams.compute_flow_snapshot = lambda _network: (
+            {"a": 4},
+            {"a_0": 2, "a_1": 2},
+            {"a_0": 15.0, "a_1": 14.0},
+        )
+        s = snapshot()
+        e = event()
+
+        cams.sample_training_features(e, s, network_info("a_1"), {}, config())
+
+        self.assertEqual(e.lane_index, 1)
+        # Two vehicles are physically on a_1; the sampled vehicle still on
+        # a_0 is included once in its planned movement lane, matching C++.
+        self.assertEqual(e.lane_flow, 3)
+        self.assertEqual(e.road_flow, 4)
+        self.assertEqual(e.road_length, 120.0)
+        self.assertEqual(e.lane_occupied_length, 21.5)
+
+    def test_vehicle_is_not_double_counted_when_already_on_target_lane(self):
+        cams.compute_flow_snapshot = lambda _network: (
+            {"a": 4},
+            {"a_0": 2, "a_1": 2},
+            {"a_0": 15.0, "a_1": 14.0},
+        )
+        s = snapshot()
+        e = event()
+
+        cams.sample_training_features(e, s, network_info("a_0"), {}, config())
+
+        self.assertEqual(e.lane_index, 0)
+        self.assertEqual(e.lane_flow, 2)
+        self.assertEqual(e.lane_occupied_length, 15.0)
+
+    def test_network_parser_maps_controlled_link_to_from_lane(self):
+        network_xml = """\
+<net>
+  <edge id="a">
+    <lane id="a_0" index="0" speed="10" length="100"/>
+    <lane id="a_1" index="1" speed="10" length="120"/>
+  </edge>
+  <edge id="b">
+    <lane id="b_0" index="0" speed="10" length="100"/>
+  </edge>
+  <connection from="a" to="b" fromLane="1" toLane="0"
+              tl="tls" linkIndex="1" dir="s"/>
+</net>
+"""
+        network_tree = cams.ET.ElementTree(cams.ET.fromstring(network_xml))
+        with mock.patch.object(cams.ET, "parse", return_value=network_tree):
+            parsed = cams.parse_network_info("lane_mapping.net.xml")
+
+        self.assertEqual(
+            parsed.movement_from_lanes[("tls", 1, "a", "b")],
+            ("a_1",),
+        )
 
 
 if __name__ == "__main__":

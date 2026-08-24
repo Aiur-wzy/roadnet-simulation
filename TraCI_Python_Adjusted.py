@@ -183,6 +183,12 @@ class NetworkInfo:
     lane_lengths: Dict[str, float]
     connection_dirs: Dict[Tuple[str, str], str]
     edge_speed_limits: Dict[str, float]
+    # Exact source lane(s) of the next signalized movement.  The key includes
+    # the TLS link index so different lane-level connections between the same
+    # pair of edges remain distinguishable.
+    movement_from_lanes: Dict[
+        Tuple[str, int, str, str], Tuple[str, ...]
+    ] = field(default_factory=dict)
 
 
 @dataclass
@@ -463,14 +469,18 @@ def parse_args() -> CamsConfig:
 
 
 def parse_network_info(file_path: str) -> NetworkInfo:
-    """Parse lane lists, lane lengths, and connection directions from net.xml."""
+    """Parse lane and lane-level movement information from net.xml."""
 
     tree = ET.parse(file_path)
     root = tree.getroot()
     edge_lanes: Dict[str, List[str]] = {}
     lane_lengths: Dict[str, float] = {}
+    edge_lane_ids_by_index: Dict[Tuple[str, int], str] = {}
     connection_dirs: Dict[Tuple[str, str], str] = {}
     edge_speed_limits: Dict[str, float] = {}
+    movement_from_lane_lists: Dict[
+        Tuple[str, int, str, str], List[str]
+    ] = {}
 
     for edge in root.findall("edge"):
         if "function" in edge.attrib:
@@ -478,11 +488,16 @@ def parse_network_info(file_path: str) -> NetworkInfo:
         edge_id = edge.attrib["id"]
         edge_lanes[edge_id] = []
         lane_speeds: List[float] = []
-        for lane in edge.findall("lane"):
+        for lane_position, lane in enumerate(edge.findall("lane")):
             lane_id = lane.attrib["id"]
             edge_lanes[edge_id].append(lane_id)
             lane_lengths[lane_id] = float(lane.attrib.get("length", 0.0))
             lane_speeds.append(float(lane.attrib.get("speed", 0.0)))
+            try:
+                lane_index = int(lane.attrib.get("index", lane_position))
+            except ValueError:
+                lane_index = lane_position
+            edge_lane_ids_by_index[(edge_id, lane_index)] = lane_id
         edge_speed_limits[edge_id] = sum(lane_speeds) / len(lane_speeds) if lane_speeds else 0.0
 
     for connection in root.findall("connection"):
@@ -492,11 +507,33 @@ def parse_network_info(file_path: str) -> NetworkInfo:
             continue
         connection_dirs[(from_edge, to_edge)] = connection.attrib.get("dir", "unknown")
 
+        tls_id = connection.attrib.get("tl")
+        link_index_text = connection.attrib.get("linkIndex")
+        from_lane_text = connection.attrib.get("fromLane")
+        if tls_id is None or link_index_text is None or from_lane_text is None:
+            continue
+        try:
+            link_index = int(link_index_text)
+            from_lane_index = int(from_lane_text)
+        except ValueError:
+            continue
+        from_lane_id = edge_lane_ids_by_index.get((from_edge, from_lane_index))
+        if from_lane_id is None:
+            continue
+        movement_key = (tls_id, link_index, from_edge, to_edge)
+        movement_lanes = movement_from_lane_lists.setdefault(movement_key, [])
+        if from_lane_id not in movement_lanes:
+            movement_lanes.append(from_lane_id)
+
     return NetworkInfo(
         edge_lanes=edge_lanes,
         lane_lengths=lane_lengths,
         connection_dirs=connection_dirs,
         edge_speed_limits=edge_speed_limits,
+        movement_from_lanes={
+            key: tuple(lanes)
+            for key, lanes in movement_from_lane_lists.items()
+        },
     )
 
 
@@ -528,6 +565,41 @@ def lane_index_from_id(lane_id: str) -> Optional[int]:
         return None
 
 
+def select_movement_from_lane(
+    snapshot: VehicleSnapshot,
+    network_info: NetworkInfo,
+) -> str:
+    """Select the lane used by the current road's outgoing movement.
+
+    A vehicle may enter the road on the previous movement's ``toLane`` and then
+    make a necessary lane change.  The road travel-time label mostly describes
+    motion after that transition, so lane-dependent entry features must refer
+    to the next movement's ``fromLane`` instead of the transient entry lane.
+    """
+
+    lanes = network_info.edge_lanes.get(snapshot.from_edge, [])
+    movement_lanes = network_info.movement_from_lanes.get(
+        (
+            snapshot.tls_id,
+            snapshot.link_index,
+            snapshot.from_edge,
+            snapshot.to_edge,
+        ),
+        (),
+    )
+    if len(movement_lanes) == 1:
+        return movement_lanes[0]
+    if snapshot.lane_id in movement_lanes:
+        return snapshot.lane_id
+    if movement_lanes:
+        # Multiple source lanes sharing one controlled link are unusual.  Keep
+        # the choice deterministic when SUMO has not yet entered one of them.
+        return movement_lanes[0]
+    if snapshot.lane_id in lanes:
+        return snapshot.lane_id
+    return lanes[0] if lanes else snapshot.lane_id
+
+
 def compute_flow_snapshot(network_info: NetworkInfo) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, float]]:
     """Count vehicles and occupied length on each normal edge/lane."""
 
@@ -557,17 +629,25 @@ def sample_training_features(
     previous_release_waiting: Dict[str, Tuple[int, float]],
     config: CamsConfig,
 ) -> None:
-    """Sample road-model features immediately when an event starts."""
+    """Sample road-model features immediately when an event starts.
+
+    ``lane_flow`` and the other lane-specific fields use the next movement's
+    ``fromLane``.  When the vehicle is still physically on the previous
+    movement's ``toLane``, it is added once to the selected lane's conceptual
+    load.  This preserves the simulator contract that lane flow includes the
+    vehicle whose travel time is being predicted.
+    """
 
     road_flow, lane_flow, lane_occupied_length = compute_flow_snapshot(network_info)
     lanes = network_info.edge_lanes.get(snapshot.from_edge, [])
-    selected_lane = snapshot.lane_id if snapshot.lane_id in lanes else (lanes[0] if lanes else snapshot.lane_id)
-    selected_lane_flow = lane_flow.get(selected_lane)
-    if selected_lane_flow is None and lanes:
-        selected_lane_flow = max((lane_flow.get(lane, 0) for lane in lanes), default=0)
+    selected_lane = select_movement_from_lane(snapshot, network_info)
+    selected_lane_flow = lane_flow.get(selected_lane, 0)
     lane_length = network_info.lane_lengths.get(selected_lane, 0.0)
     min_gap = snapshot.vehicle_min_gap or 2.5
     occupied_length = lane_occupied_length.get(selected_lane, 0.0)
+    if selected_lane != snapshot.lane_id:
+        selected_lane_flow += 1
+        occupied_length += snapshot.vehicle_length + min_gap
     has_waiting, waiting_duration = previous_release_waiting.pop(snapshot.vehicle_id, (0, 0.0))
 
     event.sampled_time = event.edge_enter_time
@@ -1259,6 +1339,7 @@ def main():
     print(f"queue_speed_threshold={config.queue_speed_threshold} m/s")
     print(f"min_green_opportunity_time={config.min_green_opportunity_time} s")
     print(f"downstream_block_occupancy_threshold={config.downstream_block_occupancy_threshold}%")
+    print("lane_flow_reference=next_movement_from_lane (sampled vehicle included)")
 
     active_events: Dict[str, VehicleMovementEvent] = {}
     completed_events: List[VehicleMovementEvent] = []

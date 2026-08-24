@@ -988,7 +988,7 @@ static void write_full_trajectory_diagnostics(
     }
     roadOut << setprecision(15);
     roadOut << "vehicleID,vehicleIndex,routeRoadIndex,roadID,roadEdge,enteringMovementID,"
-            << "enteringMovementEdge,nextMovementID,nextMovementEdge,laneIndex,enterTime,"
+            << "enteringMovementEdge,nextMovementID,nextMovementEdge,laneIndex,intersectionCrossingTime,enterTime,"
             << "arrivalAtRoadEndTime,roadTravelTime\n";
     for (int vehicleIndex = 0;
          vehicleIndex < static_cast<int>(g.vehicleRoadTimeline.size());
@@ -1004,6 +1004,7 @@ static void write_full_trajectory_diagnostics(
                     << trace.nextMovementID << ','
                     << csv_escape(movement_debug_name(g, trace.nextMovementID)) << ','
                     << trace.laneIndex << ','
+                    << trace.intersectionCrossingTime << ','
                     << trace.enterTime << ','
                     << trace.arrivalAtRoadEndTime << ','
                     << trace.roadTravelTime << '\n';
@@ -1869,7 +1870,7 @@ double Graph::evaluate_sumo_tripinfo_truth(
             if (evalExtremeTimeline) {
                 ofstream roadTl(roadTimelinePath.c_str());
                 if (!roadTl) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open road timeline output '" + roadTimelinePath + "'");
-                roadTl << "vehicleID,routeRoadIndex,roadID,roadEdge,enteringMovementID,enteringMovementEdge,nextMovementID,nextMovementEdge,laneIndex,enterTime,arrivalAtRoadEndTime,roadTravelTime,predDuration,truthDuration,relativeDurationError,routeRoadEdges,routeMovementEdges\n";
+                roadTl << "vehicleID,routeRoadIndex,roadID,roadEdge,enteringMovementID,enteringMovementEdge,nextMovementID,nextMovementEdge,laneIndex,intersectionCrossingTime,enterTime,arrivalAtRoadEndTime,roadTravelTime,predDuration,truthDuration,relativeDurationError,routeRoadEdges,routeMovementEdges\n";
                 ofstream movTl(movementTimelinePath.c_str());
                 if (!movTl) throw runtime_error("evaluate_sumo_tripinfo_truth: cannot open movement timeline output '" + movementTimelinePath + "'");
                 movTl << "vehicleID,routeMovementIndex,movementID,movementEdge,fromRoadID,fromEdge,toRoadID,toEdge,turn,chosenLane,arrivalAtWaitingBufferTime,dischargeTime,movementWaitingTime,predDuration,truthDuration,relativeDurationError,routeRoadEdges,routeMovementEdges\n";
@@ -1883,11 +1884,11 @@ double Graph::evaluate_sumo_tripinfo_truth(
                     const string routeMovementEdges = join_movement_debug_names(*this, r.routeMovementIDs);
                     if (r.vehicleIndex >= 0 && r.vehicleIndex < static_cast<int>(vehicleRoadTimeline.size())) for (const auto& tr : vehicleRoadTimeline[r.vehicleIndex]) {
                         roadAll[tr.roadID].push_back(tr.roadTravelTime); if (!isExtreme) roadNon[tr.roadID].push_back(tr.roadTravelTime);
-                        if (isExtreme) { roadExtreme[tr.roadID].push_back(tr.roadTravelTime); if (roadSamples[tr.roadID].size() < 10) roadSamples[tr.roadID].push_back(r.vehicleIndex); roadTl << csv_escape(r.vehicleID) << ',' << tr.routeRoadIndex << ',' << tr.roadID << ',' << csv_escape(road_debug_name(*this, tr.roadID)) << ',' << tr.enteringMovementID << ',' << csv_escape(movement_debug_name(*this, tr.enteringMovementID)) << ',' << tr.nextMovementID << ',' << csv_escape(movement_debug_name(*this, tr.nextMovementID)) << ',' << tr.laneIndex << ',' << tr.enterTime << ',' << tr.arrivalAtRoadEndTime << ',' << tr.roadTravelTime << ',' << r.predDuration << ',' << r.truthDuration << ',' << r.relativeDurationError << ',' << csv_escape(routeRoadEdges) << ',' << csv_escape(routeMovementEdges) << '\n'; }
+                        if (isExtreme) { roadExtreme[tr.roadID].push_back(tr.roadTravelTime); if (roadSamples[tr.roadID].size() < 10) roadSamples[tr.roadID].push_back(r.vehicleIndex); roadTl << csv_escape(r.vehicleID) << ',' << tr.routeRoadIndex << ',' << tr.roadID << ',' << csv_escape(road_debug_name(*this, tr.roadID)) << ',' << tr.enteringMovementID << ',' << csv_escape(movement_debug_name(*this, tr.enteringMovementID)) << ',' << tr.nextMovementID << ',' << csv_escape(movement_debug_name(*this, tr.nextMovementID)) << ',' << tr.laneIndex << ',' << tr.intersectionCrossingTime << ',' << tr.enterTime << ',' << tr.arrivalAtRoadEndTime << ',' << tr.roadTravelTime << ',' << r.predDuration << ',' << r.truthDuration << ',' << r.relativeDurationError << ',' << csv_escape(routeRoadEdges) << ',' << csv_escape(routeMovementEdges) << '\n'; }
                     }
                     if (r.vehicleIndex >= 0 && r.vehicleIndex < static_cast<int>(vehicleMovementTimeline.size())) for (const auto& tr : vehicleMovementTimeline[r.vehicleIndex]) {
                         movAll[tr.movementID].push_back(tr.movementWaitingTime); if (!isExtreme) movNon[tr.movementID].push_back(tr.movementWaitingTime);
-                        double downstream = 0.0; if (r.vehicleIndex < static_cast<int>(vehicleRoadTimeline.size())) for (const auto& rt : vehicleRoadTimeline[r.vehicleIndex]) if (rt.enteringMovementID == tr.movementID) { downstream = rt.roadTravelTime; break; }
+                        double downstream = 0.0; if (r.vehicleIndex < static_cast<int>(vehicleRoadTimeline.size())) for (const auto& rt : vehicleRoadTimeline[r.vehicleIndex]) if (rt.enteringMovementID == tr.movementID) { downstream = rt.intersectionCrossingTime + rt.roadTravelTime; break; }
                         const double transition = tr.movementWaitingTime + downstream; transAll[tr.movementID].push_back(transition); if (!isExtreme) transNon[tr.movementID].push_back(transition);
                         if (isExtreme) { movExtreme[tr.movementID].push_back(tr.movementWaitingTime); transExtreme[tr.movementID].push_back(transition); if (movSamples[tr.movementID].size() < 10) movSamples[tr.movementID].push_back(r.vehicleIndex); if (transSamples[tr.movementID].size() < 10) transSamples[tr.movementID].push_back(r.vehicleIndex); string turn = (tr.movementID >= 0 && tr.movementID < static_cast<int>(movements.size())) ? turn_dir_to_string(movements[tr.movementID].turn) : "Unknown"; movTl << csv_escape(r.vehicleID) << ',' << tr.routeMovementIndex << ',' << tr.movementID << ',' << csv_escape(movement_debug_name(*this, tr.movementID)) << ',' << tr.fromRoadID << ',' << csv_escape(road_debug_name(*this, tr.fromRoadID)) << ',' << tr.toRoadID << ',' << csv_escape(road_debug_name(*this, tr.toRoadID)) << ',' << turn << ',' << tr.chosenLane << ',' << tr.arrivalAtWaitingBufferTime << ',' << tr.dischargeTime << ',' << tr.movementWaitingTime << ',' << r.predDuration << ',' << r.truthDuration << ',' << r.relativeDurationError << ',' << csv_escape(routeRoadEdges) << ',' << csv_escape(routeMovementEdges) << '\n'; }
                     }
@@ -2212,7 +2213,7 @@ bool Graph::validateRoadLaneFlows() const {
 // 2) advance time through signal/departure windows;
 // 3) inside each stable signal window, dispatch movement candidates from the PQ;
 // 4) keep real vehicle FIFO order in WaitingBuffer;
-// 5) preserve movementTimeLabel across windows so discharge interval constraints survive.
+// 5) preserve per-capacity-lane timestamps across windows so discharge headways survive.
 vector<vector<pair<int, double>>> Graph::cycle_aware_signal_driven_records(
         vector<vector<int>> &Q, vector<vector<int>> &routeRoadIDInput) {
     // Initialization: clear per-run runtime state; static graph structures stay intact.
@@ -2227,6 +2228,7 @@ vector<vector<pair<int, double>>> Graph::cycle_aware_signal_driven_records(
     movementInDispatchPQ.assign(movements.size(), false);
     while (!signalEventPQ.empty()) signalEventPQ.pop();
     while (!departurePQ.empty()) departurePQ.pop();
+    while (!finalRoadExitPQ.empty()) finalRoadExitPQ.pop();
     while (!dispatchPQ.empty()) dispatchPQ.pop();
     entryLaneDepartureQueues.clear();
 
@@ -2264,6 +2266,9 @@ vector<vector<pair<int, double>>> Graph::cycle_aware_signal_driven_records(
         const int finishedBeforeWindow = finishedVehicleCount;
         bool processedBoundaryEvent = false;
 
+        if (processFinalRoadExitsUntil(windowStart)) {
+            processedBoundaryEvent = true;
+        }
         if (processScheduledDeparturesUntil(windowStart)) {
             processedBoundaryEvent = true;
         }
@@ -2289,6 +2294,10 @@ vector<vector<pair<int, double>>> Graph::cycle_aware_signal_driven_records(
                 departurePQ.top().time < boundary - TIME_EPSILON) {
                 boundary = max(cursor, departurePQ.top().time);
             }
+            if (!finalRoadExitPQ.empty() &&
+                finalRoadExitPQ.top().time < boundary - TIME_EPSILON) {
+                boundary = max(cursor, finalRoadExitPQ.top().time);
+            }
             if (!signalEventPQ.empty() &&
                 signalEventPQ.top().time < boundary - TIME_EPSILON) {
                 boundary = max(cursor, signalEventPQ.top().time);
@@ -2302,6 +2311,10 @@ vector<vector<pair<int, double>>> Graph::cycle_aware_signal_driven_records(
             if (cursor >= windowEnd - TIME_EPSILON) break;
 
             bool handledAtCursor = false;
+            if (processFinalRoadExitsUntil(cursor)) {
+                handledAtCursor = true;
+                processedBoundaryEvent = true;
+            }
             if (processScheduledDeparturesUntil(cursor)) {
                 processEntryDepartureQueuesAtTime(cursor);
                 handledAtCursor = true;
@@ -2362,6 +2375,7 @@ void Graph::initialize_cycle_aware_vehicles(vector<vector<int>>& Q, vector<vecto
     movementBlockedByDownstream.assign(movements.size(), false);
     movementInDispatchPQ.assign(movements.size(), false);
     while (!departurePQ.empty()) departurePQ.pop();
+    while (!finalRoadExitPQ.empty()) finalRoadExitPQ.pop();
     while (!dispatchPQ.empty()) dispatchPQ.pop();
 
     for (auto &b : waitingBuffers) {
@@ -2513,6 +2527,80 @@ bool Graph::processScheduledDeparturesUntil(double t) {
     return processed;
 }
 
+void Graph::scheduleFinalRoadExit(int vehicleID, double exitTime) {
+    if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) {
+        throw runtime_error("scheduleFinalRoadExit: invalid vehicle ID");
+    }
+
+    VehicleLabel& vehicle = vehicles[vehicleID];
+    if (!vehicle.valid || vehicle.finished) {
+        throw runtime_error("scheduleFinalRoadExit: vehicle is invalid or already finished");
+    }
+    if (vehicle.queuedForFinalExit) {
+        throw runtime_error("scheduleFinalRoadExit: duplicate final-road exit event");
+    }
+    if (vehicle.occupiedRoadID < 0 || vehicle.occupiedLaneIndex < 0) {
+        throw runtime_error("scheduleFinalRoadExit: vehicle has no final-road occupancy");
+    }
+    if (!std::isfinite(exitTime)) {
+        throw runtime_error("scheduleFinalRoadExit: exit time is not finite");
+    }
+
+    vehicle.arrivalTime = exitTime;
+    vehicle.state = VehicleState::RunningOnRoad;
+    vehicle.queuedForFinalExit = true;
+    finalRoadExitPQ.push({
+        exitTime,
+        vehicleID,
+        vehicle.occupiedRoadID,
+        vehicle.occupiedLaneIndex
+    });
+}
+
+bool Graph::processFinalRoadExitsUntil(double t) {
+    bool processed = false;
+    while (!finalRoadExitPQ.empty() &&
+           finalRoadExitPQ.top().time <= t + TIME_EPSILON) {
+        const FinalRoadExitEvent event = finalRoadExitPQ.top();
+        finalRoadExitPQ.pop();
+
+        if (event.vehicleID < 0 || event.vehicleID >= static_cast<int>(vehicles.size())) {
+            throw runtime_error("processFinalRoadExitsUntil: invalid vehicle ID");
+        }
+
+        VehicleLabel& vehicle = vehicles[event.vehicleID];
+        if (!vehicle.valid || vehicle.finished || !vehicle.queuedForFinalExit ||
+            vehicle.state != VehicleState::RunningOnRoad) {
+            throw runtime_error("processFinalRoadExitsUntil: stale or inconsistent final-road exit event");
+        }
+        if (vehicle.occupiedRoadID != event.roadID ||
+            vehicle.occupiedLaneIndex != event.laneIndex) {
+            throw runtime_error("processFinalRoadExitsUntil: final-road occupancy does not match event");
+        }
+        if (std::abs(vehicle.arrivalTime - event.time) > TIME_EPSILON) {
+            throw runtime_error("processFinalRoadExitsUntil: final ETA does not match event time");
+        }
+
+        vehicle.queuedForFinalExit = false;
+        debugCurrentTime = event.time;
+        releaseLaneOccupancy(event.vehicleID);
+        recordFinalETA(event.vehicleID, event.time);
+
+        // A final-road exit frees storage exactly like a successful downstream
+        // movement discharge: admit any external departure first, then wake
+        // movements that were deactivated because this road was full.
+        processEntryDepartureQueueForRoadAtTime(event.roadID, event.time);
+        reactivateMovementsBlockedByRoad(
+            event.roadID,
+            event.time,
+            event.laneIndex,
+            event.vehicleID,
+            -1);
+        processed = true;
+    }
+    return processed;
+}
+
 bool Graph::enqueueDepartingVehicle(int vehicleID, double scheduledTime) {
     if (vehicleID < 0 || vehicleID >= static_cast<int>(vehicles.size())) return false;
     VehicleLabel &v = vehicles[vehicleID];
@@ -2614,23 +2702,27 @@ bool Graph::tryStartVehicleFromEntryQueue(int vehicleID, double actualDepartTime
     v.arrivalTime = actualDepartTime + predictRoadTravelTime(firstRoad, vehicleID, firstMovement, actualDepartTime, laneIndex);
     if ((evalExtremeTimeline || evalTrajectoryDetails)
             && vehicleID >= 0 && vehicleID < static_cast<int>(vehicleRoadTimeline.size())) {
-        vehicleRoadTimeline[vehicleID].push_back({vehicleID, 0, firstRoad, -1, firstMovement, laneIndex,
+        vehicleRoadTimeline[vehicleID].push_back({vehicleID, 0, firstRoad, -1, firstMovement, laneIndex, 0.0,
                                                   static_cast<double>(actualDepartTime), static_cast<double>(v.arrivalTime),
                                                   static_cast<double>(v.arrivalTime - actualDepartTime)});
     }
 
     if (v.routeRoadIDs.size() == 1) {
-        releaseLaneOccupancy(vehicleID);
-        recordFinalETA(vehicleID, v.arrivalTime);
-        reactivateMovementsBlockedByRoad(firstRoad, actualDepartTime, -1, vehicleID, -1);
+        // A one-road route still physically occupies its entry/final road until
+        // the predicted road traversal completes. The final-road exit event is
+        // the only path that releases this storage and marks the vehicle done.
+        v.currentMovementID = -1;
+        v.currentBufferID = -1;
+        scheduleFinalRoadExit(vehicleID, v.arrivalTime);
         return true;
     }
 
     v.state = VehicleState::WaitingAtIntersection;
     insertVehicleToBufferOrdered(firstBuffer, vehicleID);
-    scheduleMovementCandidate(
+    scheduleInsertedVehicleIfMovementFront(
             firstMovement,
-            computeMovementAttemptTime(firstMovement, actualDepartTime));
+            vehicleID,
+            actualDepartTime);
     return true;
 }
 
@@ -2871,11 +2963,15 @@ void Graph::handleSuccessfulDischargePostUpdate(
         scheduleMovementCandidate(movementID, computeMovementAttemptTime(movementID, nextT));
     }
 
-    // Vehicle entered a downstream road and will next wait on its next movement.
+    // Vehicle entered a downstream road and was inserted into the next movement's
+    // configured buffer order. A follower must not change that movement's first label or
+    // invalidate the existing front-vehicle candidate. Only a vehicle that became
+    // the actual buffer front may establish a new candidate.
     if (!result.finished && result.nextMovementID >= 0) {
-        double nextT = max(movementTimeLabel[result.nextMovementID], result.newArrivalTime);
-        scheduleMovementCandidate(result.nextMovementID,
-                                  computeMovementAttemptTime(result.nextMovementID, nextT));
+        scheduleInsertedVehicleIfMovementFront(
+                result.nextMovementID,
+                result.vehicleID,
+                t);
     }
 
     // A queued external departure may enter immediately at this exact floating
@@ -3006,23 +3102,32 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, double dischargeTime)
     result.toRoadID = m.toRoadID;
     result.dischargeTime = dischargeTime;
 
+    // The downstream lane is reserved at discharge time to prevent storage
+    // over-subscription while the vehicle is traversing the intersection. Road
+    // travel itself starts only after the configured crossing time has elapsed.
+    const double downstreamEnterTime = dischargeTime + intersectionCrossingTime;
+
     // The model turn_type for an entered road is the movement that led into that road.
     // A future model can add next-movement features without changing this call shape.
     if (v.roadIndex >= static_cast<int>(v.routeRoadIDs.size()) - 1) {
-        // ETA update section: final road prediction completes the route.
-        v.arrivalTime = dischargeTime + predictRoadTravelTimeWithEnteringVehicle(
-                m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
+        // The final road uses the same occupancy lifecycle as every preceding
+        // road. Completion is deferred until its exact FinalRoadExitEvent time.
+        reserveLaneOccupancy(vehicleID, m.toRoadID, chosenLane);
+        v.arrivalTime = downstreamEnterTime + predictRoadTravelTime(
+                m.toRoadID, vehicleID, movementID, downstreamEnterTime, chosenLane);
         if ((evalExtremeTimeline || evalTrajectoryDetails)
                 && vehicleID >= 0 && vehicleID < static_cast<int>(vehicleRoadTimeline.size())) {
             vehicleRoadTimeline[vehicleID].push_back({vehicleID, v.roadIndex, m.toRoadID, movementID, -1, chosenLane,
-                                                      static_cast<double>(dischargeTime), static_cast<double>(v.arrivalTime),
-                                                      static_cast<double>(v.arrivalTime - dischargeTime)});
+                                                      static_cast<double>(intersectionCrossingTime),
+                                                      static_cast<double>(downstreamEnterTime), static_cast<double>(v.arrivalTime),
+                                                      static_cast<double>(v.arrivalTime - downstreamEnterTime)});
         }
         result.newArrivalTime = v.arrivalTime;
         v.currentMovementID = -1;
         v.currentBufferID = -1;
-        result.finished = true;
-        recordFinalETA(vehicleID, v.arrivalTime);
+        v.state = VehicleState::RunningOnRoad;
+        result.finished = false;
+        scheduleFinalRoadExit(vehicleID, v.arrivalTime);
         return result;
     }
 
@@ -3037,12 +3142,14 @@ DischargeResult Graph::dischargeOneVehicle(int movementID, double dischargeTime)
             // Choose/reserve downstream lane storage before computing the next arrival label.
             reserveLaneOccupancy(vehicleID, m.toRoadID, chosenLane);
             // ETA update section for the next waiting buffer.
-            v.arrivalTime = dischargeTime + predictRoadTravelTime(m.toRoadID, vehicleID, movementID, dischargeTime, chosenLane);
+            v.arrivalTime = downstreamEnterTime + predictRoadTravelTime(
+                    m.toRoadID, vehicleID, movementID, downstreamEnterTime, chosenLane);
             if ((evalExtremeTimeline || evalTrajectoryDetails)
                     && vehicleID >= 0 && vehicleID < static_cast<int>(vehicleRoadTimeline.size())) {
                 vehicleRoadTimeline[vehicleID].push_back({vehicleID, v.roadIndex, m.toRoadID, movementID, nextMovementID, chosenLane,
-                                                          static_cast<double>(dischargeTime), static_cast<double>(v.arrivalTime),
-                                                          static_cast<double>(v.arrivalTime - dischargeTime)});
+                                                          static_cast<double>(intersectionCrossingTime),
+                                                          static_cast<double>(downstreamEnterTime), static_cast<double>(v.arrivalTime),
+                                                          static_cast<double>(v.arrivalTime - downstreamEnterTime)});
             }
             result.newArrivalTime = v.arrivalTime;
             insertVehicleToBufferOrdered(nextBufferID, vehicleID);
@@ -3124,19 +3231,20 @@ int Graph::getFrontVehicleForMovement(int movementID) const {
     return vehicleID;
 }
 
-// Compute the earliest useful retry time by combining movement label, front-vehicle
-// arrival, next green, and earliest capacity-lane timestamp.
+// Compute the first label from the current configured buffer front and service constraints.
+// movementTimeLabel is a cache of the current candidate, not an independent lower
+// bound: a stale label that belonged to a different front must not delay the new
+// front. Capacity timestamps preserve discharge headway across candidate rebuilds.
 double Graph::computeMovementAttemptTime(int movementID, double lowerBoundTime) {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return INF;
-    if (movementTimeLabel.size() != movements.size()) movementTimeLabel.assign(movements.size(), 0.0);
-    double t = max(movementTimeLabel[movementID], lowerBoundTime);
     int vehicleID = getFrontVehicleForMovement(movementID);
-    if (vehicleID >= 0) t = max(t, vehicles[vehicleID].arrivalTime);
+    if (vehicleID < 0) return INF;
+
+    double t = max(lowerBoundTime, vehicles[vehicleID].arrivalTime);
+    t = nextAvailableCapacityTime(movementID, t);
     double greenT = nextGreenTimeForMovement(movementID, t);
     if (greenT >= INF) return INF;
-    t = max(t, greenT);
-    t = nextAvailableCapacityTime(movementID, t);
-    return t;
+    return nextAvailableCapacityTime(movementID, greenT);
 }
 
 // Signal-state helper: jump to next green rather than repeatedly retrying each second.
@@ -3203,7 +3311,7 @@ DischargeBlockReason Graph::getDischargeBlockReason(int movementID, double t, in
     if (waitingBuffers[bufferID].vehicleQueue.empty()) return DischargeBlockReason::EmptyBuffer;
     frontVehicleID = getFrontVehicleForMovement(movementID);
     if (frontVehicleID < 0) return DischargeBlockReason::Invalid;
-    // NotArrived: the FIFO front has not reached its waiting-buffer label time.
+    // NotArrived: the configured queue front has not reached its waiting-buffer label time.
     if (vehicles[frontVehicleID].arrivalTime > t + TIME_EPSILON) return DischargeBlockReason::NotArrived;
     // RedSignal: signal state blocks this movement at time t.
     if (!isMovementActive(movementID, t)) return DischargeBlockReason::RedSignal;
@@ -3214,9 +3322,9 @@ DischargeBlockReason Graph::getDischargeBlockReason(int movementID, double t, in
     return DischargeBlockReason::None;
 }
 
-// Movement-based scheduler: update movementTimeLabel and push a candidate label.
-// version implements lazy invalidation for std::priority_queue. No vehicle is bound
-// here and no WaitingBuffer is mutated.
+// Movement-based scheduler: replace the cached first label with the candidate
+// derived for the current FIFO front. version implements lazy invalidation for
+// std::priority_queue. No WaitingBuffer is mutated here.
 void Graph::scheduleMovementCandidate(int movementID, double time) {
     if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return;
     if (time >= INF) return;
@@ -3234,7 +3342,7 @@ void Graph::scheduleMovementCandidate(int movementID, double time) {
     int frontVehicleID = getFrontVehicleForMovement(movementID);
     if (frontVehicleID < 0) return;
 
-    double label = max(movementTimeLabel[movementID], time);
+    double label = time;
     movementTimeLabel[movementID] = label;
     double firstCarArriveTime = vehicles[frontVehicleID].arrivalTime;
     int version = ++movementPQVersion[movementID];
@@ -3249,6 +3357,27 @@ void Graph::scheduleMovementCandidate(int movementID, double time) {
              << " frontVehicle=" << frontVehicleID
              << " version=" << version << endl;
     }
+}
+
+// A newly inserted vehicle affects the outer movement priority queue only when it
+// is now the configured buffer front. Followers remain in WaitingBuffer and leave the
+// existing front candidate, first label, and candidate version untouched.
+bool Graph::scheduleInsertedVehicleIfMovementFront(
+        int movementID,
+        int insertedVehicleID,
+        double currentTime) {
+    if (movementID < 0 || movementID >= static_cast<int>(movements.size())) return false;
+    if (insertedVehicleID < 0 || insertedVehicleID >= static_cast<int>(vehicles.size())) return false;
+    if (getFrontVehicleForMovement(movementID) != insertedVehicleID) return false;
+    if (movementBlockedByDownstream.size() == movements.size()
+            && movementBlockedByDownstream[movementID]) {
+        return false;
+    }
+
+    const double candidateTime = computeMovementAttemptTime(movementID, currentTime);
+    if (candidateTime >= INF) return false;
+    scheduleMovementCandidate(movementID, candidateTime);
+    return true;
 }
 
 void Graph::deactivateMovementForDownstreamBlock(int movementID) {
@@ -3470,30 +3599,6 @@ BasicRoadModelFeatures Graph::buildBasicRoadModelFeatures(
     return features;
 }
 
-BasicRoadModelFeatures Graph::buildBasicRoadModelFeaturesWithEnteringVehicle(
-        int roadID,
-        int vehicleID,
-        int movementID,
-        double currentTime,
-        int preferredLaneIndex) const {
-    BasicRoadModelFeatures features = buildBasicRoadModelFeatures(
-            roadID, vehicleID, movementID, currentTime, preferredLaneIndex);
-
-    features.road_flow += 1;
-    features.lane_flow += 1;
-
-    if (verboseTravelTimePrediction) {
-        cout << "[TravelTime FinalRoad] vehicle=" << vehicleID
-             << " road=" << roadID
-             << " lane=" << preferredLaneIndex
-             << " adjustedRoadFlow=" << features.road_flow
-             << " adjustedLaneFlow=" << features.lane_flow
-             << endl;
-    }
-
-    return features;
-}
-
 double Graph::predictRoadTravelTimeFromFeatures(
         int roadID,
         const BasicRoadModelFeatures& features) {
@@ -3530,17 +3635,6 @@ double Graph::predictRoadTravelTime(
     return predictRoadTravelTimeFromFeatures(roadID, features);
 }
 
-double Graph::predictRoadTravelTimeWithEnteringVehicle(
-        int roadID,
-        int vehicleID,
-        int movementID,
-        double currentTime,
-        int preferredLaneIndex) {
-    BasicRoadModelFeatures features = buildBasicRoadModelFeaturesWithEnteringVehicle(
-            roadID, vehicleID, movementID, currentTime, preferredLaneIndex);
-    return predictRoadTravelTimeFromFeatures(roadID, features);
-}
-
 double Graph::predictRoadTravelTime(int roadID, int vehicleID) {
     return predictRoadTravelTime(roadID, vehicleID, -1, 0.0, -1);
 }
@@ -3573,8 +3667,8 @@ double Graph::predictRoadTravelTimeSpeedNet(const BasicRoadModelFeatures& featur
         }
     }
 
-    // lane_flow already includes the vehicle being predicted on normal road entry.
-    // Final-road feature construction explicitly adds that entering vehicle as well.
+    // lane_flow includes the vehicle being predicted because every road,
+    // including the final road, reserves lane occupancy before prediction.
     const int sameLaneVehiclesAhead = max(0, features.lane_flow - 1);
     const double headway = max(0.0, speedNetHeadway);
     const double delayMax = max(0.0, speedNetDelayMax);
@@ -3827,17 +3921,35 @@ void Graph::insertVehicleToBufferOrdered(int bufferID, int vehicleID) {
     if (bufferID < 0 || bufferID >= waitingBuffers.size()) return;
     if (vehicleID < 0 || vehicleID >= vehicles.size()) return;
     auto &q = waitingBuffers[bufferID].vehicleQueue;
-    double at = vehicles[vehicleID].arrivalTime;
-    auto pos = q.end();
-    for (auto it = q.begin(); it != q.end(); ++it) {
-        if (vehicles[*it].arrivalTime > at) {
-            pos = it;
-            break;
+
+    // Vehicles are enqueued when they enter the upstream road. Strict FIFO keeps
+    // that physical entry/discharge order even when predicted road travel times
+    // fluctuate. Arrival time is still read from q.front() by the outer movement PQ.
+    string orderNote;
+    if (movementQueueOrder == MovementQueueOrder::StrictFIFO) {
+        q.push_back(vehicleID);
+        orderNote = "insertVehicleToBufferOrdered:fifo";
+    } else {
+        double at = vehicles[vehicleID].arrivalTime;
+        auto pos = q.end();
+        for (auto it = q.begin(); it != q.end(); ++it) {
+            if (vehicles[*it].arrivalTime > at) {
+                pos = it;
+                break;
+            }
         }
+        q.insert(pos, vehicleID);
+        orderNote = "insertVehicleToBufferOrdered:arrival-time";
     }
-    q.insert(pos, vehicleID);
     int movementID = waitingBuffers[bufferID].movementID;
-    debugMovement53Event(vehicles[vehicleID].arrivalTime, "BUFFER_INSERT", movementID, vehicleID, -1, "", "insertVehicleToBufferOrdered");
+    debugMovement53Event(
+            vehicles[vehicleID].arrivalTime,
+            "BUFFER_INSERT",
+            movementID,
+            vehicleID,
+            -1,
+            "",
+            orderNote);
 }
 
 void Graph::handle_signal_change_event(const SignalEvent& e) {

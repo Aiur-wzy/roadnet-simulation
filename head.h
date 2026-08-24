@@ -10,6 +10,7 @@
 
 #include<iostream>
 #include<fstream>
+#include <cmath>
 #include<math.h>
 #include <chrono>
 #include <unordered_map>
@@ -145,6 +146,11 @@ enum class VehicleState {
     RunningOnRoad,
     WaitingAtIntersection,
     Finished
+};
+
+enum class MovementQueueOrder {
+    ArrivalTime,
+    StrictFIFO
 };
 
 enum class TravelTimeMode {
@@ -454,6 +460,7 @@ struct VehicleLabel {
     int assignedEntryRoadID = -1;
     int assignedEntryLaneIndex = -1;
     bool queuedForEntry = false;
+    bool queuedForFinalExit = false;
 
     // Waiting state from the most recent movement discharge. These values describe
     // whether the vehicle waited before entering its current road, so downstream
@@ -478,21 +485,30 @@ struct VehicleLabel {
     bool valid = true;
 };
 
-// Event stream 1/3: signal phase transitions.
-// Separate from DepartureEvent (vehicle entry) and DispatchCandidate (movement discharge attempt).
+// Event stream 1/4: signal phase transitions.
+// Separate from vehicle entry/exit and movement-dispatch events.
 struct SignalEvent {
     double time = 0.0;
     int signalID = -1;
 };
 
-// Event stream 2/3: vehicle departures into the simulated road network.
-// Separate from SignalEvent and movement-based DispatchCandidate.
+// Event stream 2/4: vehicle departures into the simulated road network.
 struct DepartureEvent {
     double time = 0.0;
     int vehicleID = -1;
 };
 
-// Event stream 3/3: movement-based dispatch attempt, not vehicle-based.
+// Event stream 3/4: a vehicle physically leaves its final road and the network.
+// roadID/laneIndex bind the event to the occupancy reserved when the vehicle
+// entered that final road, so stale or inconsistent events can be detected.
+struct FinalRoadExitEvent {
+    double time = 0.0;
+    int vehicleID = -1;
+    int roadID = -1;
+    int laneIndex = -1;
+};
+
+// Event stream 4/4: movement-based dispatch attempt, not vehicle-based.
 // timeLabel is the next attempt time for movementID. firstCarArriveTime and
 // frontVehicleID bind the candidate to the current FIFO front for fair ordering
 // and stale-candidate detection. version supports lazy invalidation because
@@ -504,6 +520,7 @@ struct VehicleRoadTimelineRecord {
     int enteringMovementID = -1;
     int nextMovementID = -1;
     int laneIndex = -1;
+    double intersectionCrossingTime = 0.0;
     double enterTime = 0.0;
     double arrivalAtRoadEndTime = 0.0;
     double roadTravelTime = 0.0;
@@ -608,6 +625,13 @@ struct SignalEventCompare {
 
 struct DepartureEventCompare {
     bool operator()(const DepartureEvent& a, const DepartureEvent& b) const {
+        if (a.time != b.time) return a.time > b.time;
+        return a.vehicleID > b.vehicleID;
+    }
+};
+
+struct FinalRoadExitEventCompare {
+    bool operator()(const FinalRoadExitEvent& a, const FinalRoadExitEvent& b) const {
         if (a.time != b.time) return a.time > b.time;
         return a.vehicleID > b.vehicleID;
     }
@@ -811,6 +835,7 @@ public:
     vector<VehicleLabel> vehicles;
     priority_queue<SignalEvent, vector<SignalEvent>, SignalEventCompare> signalEventPQ;
     priority_queue<DepartureEvent, vector<DepartureEvent>, DepartureEventCompare> departurePQ;
+    priority_queue<FinalRoadExitEvent, vector<FinalRoadExitEvent>, FinalRoadExitEventCompare> finalRoadExitPQ;
     priority_queue<DispatchCandidate, vector<DispatchCandidate>, DispatchCandidateCompare> dispatchPQ;
     vector<vector<pair<int, double>>> ETA_result_cycle_aware;
     vector<vector<VehicleRoadTimelineRecord>> vehicleRoadTimeline;
@@ -820,6 +845,8 @@ public:
     int finishedVehicleCount = 0;
     int invalidVehicleCount = 0;
     double defaultDischargeInterval = 1.0;
+    double intersectionCrossingTime = 0.0;
+    MovementQueueOrder movementQueueOrder = MovementQueueOrder::ArrivalTime;
     vector<vector<double>> movementLaneNextAvailableTime;
     vector<double> movementTimeLabel;
     vector<int> movementPQVersion;
@@ -875,6 +902,8 @@ public:
     void initializeEntryLaneDepartureQueues();
     bool hasPendingEntryDepartureQueues() const;
     bool processScheduledDeparturesUntil(double t);
+    void scheduleFinalRoadExit(int vehicleID, double exitTime);
+    bool processFinalRoadExitsUntil(double t);
     bool enqueueDepartingVehicle(int vehicleID, double scheduledTime);
     bool tryStartVehicleFromEntryQueue(int vehicleID, double actualDepartTime, int firstRoad, int laneIndex);
     void processEntryDepartureQueueForRoadAtTime(int roadID, double t);
@@ -892,6 +921,10 @@ public:
     double nextGreenTimeForMovement(int movementID, double t);
     DischargeBlockReason getDischargeBlockReason(int movementID, double t, int &frontVehicleID, int &chosenLane);
     void scheduleMovementCandidate(int movementID, double time);
+    bool scheduleInsertedVehicleIfMovementFront(
+            int movementID,
+            int insertedVehicleID,
+            double currentTime);
     void deactivateMovementForDownstreamBlock(int movementID);
     void reactivateMovementsBlockedByRoad(
             int freedRoadID,
@@ -922,26 +955,12 @@ public:
             double currentTime,
             int preferredLaneIndex = -1
     ) const;
-    BasicRoadModelFeatures buildBasicRoadModelFeaturesWithEnteringVehicle(
-            int roadID,
-            int vehicleID,
-            int movementID,
-            double currentTime,
-            int preferredLaneIndex = -1
-    ) const;
     int encodeTurnDirForModel(TurnDir turn) const;
     double predictRoadTravelTimeFromFeatures(
             int roadID,
             const BasicRoadModelFeatures& features
     );
     double predictRoadTravelTime(
-            int roadID,
-            int vehicleID,
-            int movementID,
-            double currentTime,
-            int preferredLaneIndex = -1
-    );
-    double predictRoadTravelTimeWithEnteringVehicle(
             int roadID,
             int vehicleID,
             int movementID,

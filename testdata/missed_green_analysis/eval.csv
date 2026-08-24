@@ -1,0 +1,6 @@
+vehicleID,predDuration,truthDuration,truthWaitingTime,validVehicle
+a,10,8,2,true
+b,8,10,4,true
+c,20,10,6,true
+invalid,1,100,0,false
+missing,5,5,0,true

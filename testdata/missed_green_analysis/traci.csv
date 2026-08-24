@@ -1,0 +1,5 @@
+vehicle_id,missed_green_rounds,successful_green_rounds,total_green_rounds,vehicle_teleported
+a,0,2,2,0
+b,0,3,3,0
+c,2,1,3,1
+extra,1,1,2,0

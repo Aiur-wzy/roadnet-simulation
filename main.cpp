@@ -10,6 +10,8 @@ struct RunConfig {
     int readNum = 192484;
     int avgLength = 30;
     double laneDischargeInterval = 1.0;
+    double intersectionCrossingTime = 0.0;
+    MovementQueueOrder movementQueueOrder = MovementQueueOrder::ArrivalTime;
 
     string baseDir;
     string sumoNetPath;
@@ -87,6 +89,18 @@ bool parse_tt_fallback(const string& value) {
 
 string tt_fallback_to_string(bool fallbackToSpeedNet) {
     return fallbackToSpeedNet ? "speed-net" : "min-time";
+}
+
+MovementQueueOrder parse_movement_queue_order(const string& value) {
+    if (value == "arrival-time") return MovementQueueOrder::ArrivalTime;
+    if (value == "fifo") return MovementQueueOrder::StrictFIFO;
+    throw runtime_error(
+            "Invalid movement queue order: " + value +
+            " (expected arrival-time or fifo)");
+}
+
+string movement_queue_order_to_string(MovementQueueOrder order) {
+    return order == MovementQueueOrder::StrictFIFO ? "fifo" : "arrival-time";
 }
 
 void parse_speed_net_components(
@@ -207,14 +221,20 @@ void print_usage(const char* programName) {
          << "  --cut                  Cut route/query/time data before simulation (default: false).\n"
          << "  --avg-length <n>       Average length used when --cut is enabled (default: 30).\n"
          << "  --lane-discharge-interval <seconds>\n"
-         << "                         Minimum floating-point headway per movement capacity lane (default: 1.0; must be > 0).\n\n"
+         << "                         Minimum floating-point headway per movement capacity lane (default: 1.0; must be > 0).\n"
+         << "  --intersection-crossing-time <seconds>\n"
+         << "                         Time from movement discharge to downstream-road entry (default: 0.0; must be >= 0).\n"
+         << "  --movement-queue-order <arrival-time|fifo>\n"
+         << "                         Within-movement queue policy (default: arrival-time).\n"
+         << "                         fifo preserves road-entry order despite prediction fluctuations.\n\n"
          << "Environment fallback (lower priority than command-line args):\n"
          << "  USE_SUMO_NET=1 SUMO_NET_PATH=test.net.xml " << programName << "\n";
 }
 
 // Parse CLI/config: this only resolves runtime options and paths.
 // --travel-time-mode selects the single-road travel-time predictor, while
-// --lane-discharge-interval controls the per-capacity-lane discharge headway.
+// --lane-discharge-interval controls the per-capacity-lane discharge headway;
+// --intersection-crossing-time controls one vehicle's travel through the junction.
 RunConfig parse_args(int argc, char** argv) {
     RunConfig cfg;
 
@@ -300,6 +320,17 @@ RunConfig parse_args(int argc, char** argv) {
             }
             cfg.laneDischargeInterval = parsedInterval;
         }
+        else if (arg == "--intersection-crossing-time") {
+            double parsedCrossingTime = parse_double_value(require_value(argc, argv, i, arg), arg);
+            if (!std::isfinite(parsedCrossingTime) || parsedCrossingTime < 0.0) {
+                throw runtime_error("--intersection-crossing-time must be finite and >= 0");
+            }
+            cfg.intersectionCrossingTime = parsedCrossingTime;
+        }
+        else if (arg == "--movement-queue-order") {
+            cfg.movementQueueOrder = parse_movement_queue_order(
+                    require_value(argc, argv, i, arg));
+        }
         else if (arg == "--no-eval") cfg.runEvaluation = false;
         else throw runtime_error("Unknown option: " + arg);
     }
@@ -310,7 +341,7 @@ RunConfig parse_args(int argc, char** argv) {
 
 // Apply parsed config to Graph without building data structures yet.
 // Travel-time settings affect predictRoadTravelTime; dispatch scheduling still uses
-// movement labels, signal state, FIFO buffers, and discharge capacity.
+// movement labels, signal state, configured waiting-buffer order, and discharge capacity.
 void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     if (!cfg.baseDir.empty()) g.set_base_path(cfg.baseDir);
 
@@ -344,6 +375,8 @@ void apply_config_to_graph(Graph& g, const RunConfig& cfg) {
     g.speedNetUseFollowing = cfg.speedNetUseFollowing;
     g.kinematicCongestionAlpha = max(0.0, cfg.kinematicCongestionAlpha);
     g.defaultDischargeInterval = cfg.laneDischargeInterval;
+    g.intersectionCrossingTime = cfg.intersectionCrossingTime;
+    g.movementQueueOrder = cfg.movementQueueOrder;
     g.modelWarningPrinted = false;
     g.travelTimeTableHit = 0;
     g.travelTimeTableMiss = 0;
@@ -390,6 +423,9 @@ void print_resolved_config(const Graph& g, const RunConfig& cfg) {
     cout << "[Config] Avg length: " << cfg.avgLength << endl;
     cout << "[Config] Evaluation: " << cfg.runEvaluation << endl;
     cout << "[Config] Lane discharge interval: " << g.defaultDischargeInterval << "s" << endl;
+    cout << "[Config] Intersection crossing time: " << g.intersectionCrossingTime << "s" << endl;
+    cout << "[Config] Movement queue order: "
+         << movement_queue_order_to_string(g.movementQueueOrder) << endl;
     cout << "[Config] Travel time mode: " << travelTimeModeToString(g.travelTimeMode) << endl;
     cout << "[Config] Travel time table: " << g.travelTimeTablePath << endl;
     cout << "[Config] Speed-net components: "
