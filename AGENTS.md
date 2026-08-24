@@ -28,3 +28,7 @@ This checkout contains no Git history, so no repository-specific message pattern
 ## Configuration & Reproducibility
 
 Set `SUMO_HOME` and add its `bin` directory to `PATH` before TraCI work. Prefer explicit relative CLI paths and deterministic seeds; never commit machine-specific absolute paths.
+Only the `free`, `tight`, and `congested` baselines listed in `data/README.md`
+are versioned under `data/`; other generated scenarios remain local. Lookup-table
+exports in `catch/` are intentionally versioned and must stay paired with their
+feature schema and training threshold.

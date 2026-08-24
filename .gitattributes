@@ -7,8 +7,18 @@
 *.sh text eol=lf
 *.md text eol=lf
 *.txt text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
 *.xml text eol=lf
 *.sumocfg text eol=lf
+.gitignore text eol=lf
+
+# Large reproducible artifacts are intentionally versioned but should be
+# collapsed by default in GitHub diffs.
+catch/*.txt linguist-generated=true
+catch/*.csv linguist-generated=true
+data/route/*.rou.xml linguist-generated=true
+data/tripinfo/*.xml linguist-generated=true
 
 # Binary artifacts and documents must never be line-ending normalized.
 *.docx binary

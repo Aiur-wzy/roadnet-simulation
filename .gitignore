@@ -4,6 +4,8 @@ Thumbs.db
 .idea/
 .vscode/
 .agents/
+.codex_tmp/
+.workbuddy/
 
 # Python caches and local environments
 __pycache__/
@@ -31,25 +33,60 @@ compile_commands.json
 
 # Runtime logs and temporary diagnostics
 *.log
+*.pid
 diag_*/
 /garbage/
-/data/--*
-/data/1.txt
-/data/*.net.xml
-/data/*.rou.xml
-/data/*.sumocfg
-/data/TraCI_output*.csv
-/data/tripinfo*.xml
+/Testing/
+/outputs/
+/models/
+/models_v1/
+/training_logs/
 
-# Reproducible experiment outputs (keep locally, regenerate from configs)
+# Reproducible experiment outputs (keep locally, regenerate from configs).
 /eval/
 /eval_results/single_group/
-/data/traci/
-/data/tripinfo/
+/tripinfo*.xml
+
+# Canonical SUMO baselines. Everything else below data/ stays local. Keep this
+# whitelist synchronized with data/README.md.
+/data/*
+!/data/README.md
+!/data/net/
+!/data/route/
+!/data/sumocfg/
+!/data/tripinfo/
+/data/net/*
+!/data/net/test_new.net.xml
+/data/route/*
+!/data/route/free.rou.xml
+!/data/route/tight.rou.xml
+!/data/route/congested.rou.xml
+!/data/route/experiment_profiles_free_tight_congested.csv
+/data/sumocfg/*
+!/data/sumocfg/free.sumocfg
+!/data/sumocfg/tight.sumocfg
+!/data/sumocfg/congested.sumocfg
+/data/tripinfo/*
+!/data/tripinfo/tripinfo_free.xml
+!/data/tripinfo/tripinfo_tight.xml
+!/data/tripinfo/tripinfo_congested.xml
+
+# Training recipes remain versioned; generated episodes and TraCI runs do not.
+/train_data/inputs/
+/train_data/manifests/
 /train_data/outputs/
 /train_data/routes/
+/train_data/sumocfg/
 /train_data/variants/
-/tripinfo*.xml
+/train_data/*.csv
+/train_data/*.rou.xml
+/train_data/*_audit.json
+
+# Superseded local compatibility datasets.
+/Manhattan_Data/
+/high.rou.xml
+/sumo_visual.sumocfg
+/test.net.xml
 
 # Model and notebook caches
 .ipynb_checkpoints/

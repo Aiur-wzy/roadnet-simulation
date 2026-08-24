@@ -47,6 +47,9 @@ cams_movement_cycle_summary.csv
 | `TraCI_Python_Adjusted.py` | TraCI-based data collector for the slim training CSV, the fuller CAMS debug/training-compatible CSV, vehicle movement records, and cycle summaries. |
 | `model_training_sumo_v1.py` | Active AutoGluon training script for the slim SUMO/CAMS v1 feature schema. |
 | `model_catching_sumo_v1.py` | Active lookup-table builder that enumerates SUMO/CAMS v1 features and catches AutoGluon predictions into a space-separated table. |
+| `data/` | Versioned `free`, `tight`, and `congested` SUMO baselines plus `test_new.net.xml`; see `data/README.md`. |
+| `catch/` | Versioned lookup-table exports and their feature-combination/mapping metadata. |
+| `eval/`, `train_data/variants/` | Regenerable local experiment outputs; intentionally excluded from Git. |
 | `config_defaults.h` | Default relative paths used when command-line arguments are omitted. Prefer explicit CLI paths for reproducible experiments. |
 | `CMakeLists.txt` | C++ build configuration for the `Simulation_Prediction` executable. |
 | `README.md` | This end-to-end experiment pipeline guide. |
