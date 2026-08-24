@@ -1,0 +1,29 @@
+# RoadNet / CAMS Python dependencies.
+# See docs/environment.md for the full environment specification
+# (Python version policy, SUMO/TraCI, C++ toolchain, GPU notes).
+#
+# Python 3.10-3.12 recommended (AutoGluon 1.x constraint).
+
+# --- Core data handling (TraCI collectors, training, catching, analysis) ---
+pandas>=1.5
+numpy>=1.23
+
+# --- Model training and lookup-table export ---
+# Used by model_training_sumo_v1/v2.py, model_catching_sumo_v1.py,
+# model_evaluation_v1*.py, vehicle_feature_pipeline/*.
+autogluon.tabular>=1.1
+scikit-learn>=1.0
+
+# --- Optional: evaluation plots (model_evaluation_v1*.py only) ---
+matplotlib>=3.7
+
+# --- Optional: balanced-route MILP tool ---
+# Only needed by train_data/build_balanced_training_routes.py
+# (scipy.optimize.milp requires SciPy >= 1.9).
+scipy>=1.9
+
+# --- NOT on pip ---
+# `traci` ships with SUMO. Install SUMO >= 1.20 and make
+# $SUMO_HOME/tools importable, e.g.:
+#   export SUMO_HOME=/usr/share/sumo
+#   export PATH=$SUMO_HOME/bin:$PATH

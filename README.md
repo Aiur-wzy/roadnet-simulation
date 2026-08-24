@@ -53,6 +53,10 @@ cams_movement_cycle_summary.csv
 
 ## 3. Environment Setup
 
+The pinned dependency matrix (Python version, pip packages, SUMO, C++ toolchain)
+lives in [docs/environment.md](docs/environment.md); pip-installable packages
+are listed in [requirements.txt](requirements.txt).
+
 ### 3.1 C++ build dependencies
 
 Required tools/libraries:
