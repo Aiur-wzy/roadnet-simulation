@@ -1,4 +1,7 @@
-# Operating-system and editor metadata
+# Public repository: source, tests, usage documentation and small fixtures only.
+# Ignoring a path does not remove local data. Never use git clean -fdx here.
+
+# Operating-system, editor and agent metadata
 .DS_Store
 Thumbs.db
 .idea/
@@ -6,21 +9,36 @@ Thumbs.db
 .agents/
 .codex_tmp/
 .workbuddy/
+~$*
 
-# Python caches and local environments
+# Credentials and local environment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python caches, environments and temporary test workspaces
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .venv/
 venv/
+.ipynb_checkpoints/
+/.test_*/
+/tests/batch_script_tests/
 
-# CMake and compiler outputs
+# CMake and compiler outputs; existing binaries stay in place
 /build/
+/build_*/
 /cmake-build-*/
 /.cmake/
 /cmake_install.cmake
 /Makefile
+/Testing/
 CMakeCache.txt
 CMakeFiles/
 compile_commands.json
@@ -31,67 +49,56 @@ compile_commands.json
 *.dll
 *.exe
 
-# Runtime logs and temporary diagnostics
+# Runtime products and local experiment dependencies
 *.log
 *.pid
 diag_*/
 /garbage/
-/Testing/
 /outputs/
-/models/
-/models_v1/
-/training_logs/
-
-# Reproducible experiment outputs (keep locally, regenerate from configs).
 /eval/
-/eval_results/single_group/
-/tripinfo*.xml
-
-# Canonical SUMO baselines. Everything else below data/ stays local. Keep this
-# whitelist synchronized with data/README.md.
-/data/*
-!/data/README.md
-!/data/net/
-!/data/route/
-!/data/sumocfg/
-!/data/tripinfo/
-/data/net/*
-!/data/net/test_new.net.xml
-/data/route/*
-!/data/route/free.rou.xml
-!/data/route/tight.rou.xml
-!/data/route/congested.rou.xml
-!/data/route/experiment_profiles_free_tight_congested.csv
-/data/sumocfg/*
-!/data/sumocfg/free.sumocfg
-!/data/sumocfg/tight.sumocfg
-!/data/sumocfg/congested.sumocfg
-/data/tripinfo/*
-!/data/tripinfo/tripinfo_free.xml
-!/data/tripinfo/tripinfo_tight.xml
-!/data/tripinfo/tripinfo_congested.xml
-
-# Training recipes remain versioned; generated episodes and TraCI runs do not.
-/train_data/inputs/
-/train_data/manifests/
-/train_data/outputs/
-/train_data/routes/
-/train_data/sumocfg/
-/train_data/variants/
-/train_data/*.csv
-/train_data/*.rou.xml
-/train_data/*_audit.json
-
-# Superseded local compatibility datasets.
+/eval_results/
+/models/
+/models_*/
+/training_logs/
+/logs/
+/tmp/
+/baselines/
 /Manhattan_Data/
-/high.rou.xml
-/sumo_visual.sumocfg
-/test.net.xml
-
-# Model and notebook caches
-.ipynb_checkpoints/
+/train_data/
+/command/
+/tools/maintenance/native_v2_continue_20261004/
+/tools/maintenance/native_v2_home_recovery_20261006/
 *.pkl
 *.joblib
 
-# A nested repository is not part of the top-level project history.
+# Generated tables are separate from the catching/ source package
+/catch/*
+!/catch/README.md
+
+# Only the small static network is a public data fixture
+/data/*
+!/data/README.md
+!/data/net/
+/data/net/*
+!/data/net/test_new.net.xml
+/high.rou.xml
+/test.net.xml
+/sumo_visual.sumocfg
+/manhattan*.sumocfg
+/tripinfo*.xml
+
+# Local research notebook, reports, papers and office documents
+/PROJECT_MANUAL.md
+/Traci.txt
+/PROJECT_MILESTONE*.md
+/ADVISOR_REPORT*.md
+/*.pdf
+/*.docx
+/docs/*
+!/docs/environment.md
+!/docs/project_layout.md
+!/docs/source_layout.json
+!/docs/usage.md
+
+# A nested repository is never imported into this repository
 /data/.git/

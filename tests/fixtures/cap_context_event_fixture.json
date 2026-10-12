@@ -1,0 +1,19 @@
+{
+  "schema": "cap-context-shared-events-v1",
+  "events": [
+    {"op":"reserve","vehicle_id":0,"route_index":0,"planned_enter_time":10,"distance":105,"free_speed_cap":10},
+    {"op":"query","name":"p_boundary","vehicle_id":10,"route_index":0,"planned_enter_time":10,"distance":100,"free_speed_cap":10,"decision_time":10,"expected_context":2,"expected_P":0.05,"expected_E":1,"expected_eligible":1},
+    {"op":"reserve","vehicle_id":1,"route_index":0,"planned_enter_time":10,"distance":105,"free_speed_cap":10},
+    {"op":"query","name":"e_boundary","vehicle_id":10,"route_index":0,"planned_enter_time":10,"distance":100,"free_speed_cap":10,"decision_time":10,"expected_context":3,"expected_P":0.05,"expected_E":2,"expected_eligible":2},
+    {"op":"release","vehicle_id":0,"route_index":0},
+    {"op":"query","name":"after_remove","vehicle_id":10,"route_index":0,"planned_enter_time":10,"distance":100,"free_speed_cap":10,"decision_time":10,"expected_context":2,"expected_P":0.05,"expected_E":1,"expected_eligible":1},
+    {"op":"reserve","vehicle_id":2,"route_index":0,"planned_enter_time":11,"distance":200,"free_speed_cap":10},
+    {"op":"query","name":"pending_at_d","vehicle_id":10,"route_index":0,"planned_enter_time":13,"distance":100,"free_speed_cap":10,"decision_time":10,"expected_context":0,"expected_P":0,"expected_E":0,"expected_eligible":1},
+    {"op":"query","name":"eligible_exact_enter","vehicle_id":10,"route_index":0,"planned_enter_time":13,"distance":100,"free_speed_cap":10,"decision_time":11,"expected_context":2,"expected_P":0.8,"expected_E":1,"expected_eligible":2},
+    {"op":"release","vehicle_id":1,"route_index":0},
+    {"op":"release","vehicle_id":2,"route_index":0},
+    {"op":"query","name":"empty_after_exits","vehicle_id":10,"route_index":0,"planned_enter_time":13,"distance":100,"free_speed_cap":10,"decision_time":11,"expected_context":0,"expected_P":0,"expected_E":0,"expected_eligible":0},
+    {"op":"reserve","vehicle_id":3,"route_index":0,"planned_enter_time":13,"distance":104,"free_speed_cap":10},
+    {"op":"query","name":"weak_context","vehicle_id":10,"route_index":0,"planned_enter_time":13,"distance":100,"free_speed_cap":10,"decision_time":13,"expected_context":1,"expected_P":0.04,"expected_E":1,"expected_eligible":1}
+  ]
+}

@@ -9,16 +9,16 @@ pandas>=1.5
 numpy>=1.23
 
 # --- Model training and lookup-table export ---
-# Used by model_training_sumo_v1/v2.py, model_catching_sumo_v1.py,
-# model_evaluation_v1*.py, vehicle_feature_pipeline/*.
+# Used by training/, catching/ and legacy model workflows.
+# Consult docs/environment.md and docs/usage.md for workflow-specific requirements.
 autogluon.tabular>=1.1
 scikit-learn>=1.0
 
-# --- Optional: evaluation plots (model_evaluation_v1*.py only) ---
+# --- Optional: evaluation plots (legacy/evaluation/model_evaluation_v1*.py) ---
 matplotlib>=3.7
 
 # --- Optional: balanced-route MILP tool ---
-# Only needed by train_data/build_balanced_training_routes.py
+# Only needed by data_generation/build_balanced_training_routes.py
 # (scipy.optimize.milp requires SciPy >= 1.9).
 scipy>=1.9
 

@@ -1,10 +1,11 @@
-# Lookup-Table Artifacts
+# 导出表存放目录
 
-This directory intentionally keeps all exported catch results in Git.
+`catch/` 存放模型导出的实验表；生成代码在 `catching/`。表数据不随当前源码公开，本地有效基线、历史对照表和未完成检查点均保留原位置。
 
-- `*.txt` files contain simulator lookup tables.
-- `unique_feature_combinations_*.csv` files record enumerated feature keys.
-- `turn_type_mapping_*.json` files preserve categorical encoding metadata.
+- 表文件必须与模型合同、标签阈值、量化节点及来源哈希成组使用。
+- native-v2 按需表使用 `.demand`；旧 ABC_RG 的 RLE/TXT 与它不是同一个合同。
+- 未完成的按需缓存不能冒充零缺键的完整表。使用公式补缺时必须单独标注混合评价。
+- 全量 catch 的分片索引不能直接作为当前 C++ 的单文件输入，需在可部署规模内完成合并。
+- 不覆盖旧表，不按目录日期自动选择“最新模型”，不改写冻结 manifest。
 
-Treat these files as immutable model artifacts. When replacing a table, retain
-its feature-combination and turn-mapping metadata under the same threshold name.
+生成和恢复说明见 [流水线使用说明](../docs/usage.md)。

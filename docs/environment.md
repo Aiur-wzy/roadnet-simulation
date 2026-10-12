@@ -1,96 +1,61 @@
-# Environment and Dependency Specification
+# 运行环境
 
-This document pins down the runtime, build, and package requirements for the
-RoadNet / CAMS pipeline. It was derived from the actual imports and build
-configuration in this repository (see `requirements.txt` for the pip-installable
-subset).
+## C++ 仿真
 
-## 1. Python
-
-| Item | Requirement | Notes |
-| --- | --- | --- |
-| Recommended version | **3.10 – 3.12** | Practical floor set by AutoGluon 1.x. Local dev verified on 3.10.11. |
-| Syntax floor | 3.7 | The code itself only needs `dataclasses` and `from __future__ import annotations`; no walrus/match/3.10-only syntax. AutoGluon is what forces 3.9+. |
-
-### Pip packages
-
-| Package | Min version | Used by | Verified version (local dev) |
-| --- | --- | --- | --- |
-| pandas | >= 1.5 | TraCI collectors, training, catching, all analysis scripts | 2.3.3 |
-| numpy | >= 1.23 | Training, catching, analysis | 2.2.6 |
-| autogluon.tabular | >= 1.1 | `model_training_sumo_v1/v2.py`, `model_catching_sumo_v1.py`, `vehicle_feature_pipeline/*` | (server-side) |
-| scikit-learn | >= 1.0 | Training/eval splits and metrics, feature analysis | (server-side) |
-| matplotlib | >= 3.7 | `model_evaluation_v1*.py` only — optional | 3.10.8 |
-| scipy | >= 1.9 | `train_data/build_balanced_training_routes.py` only (`scipy.optimize.milp`) — optional | 1.15.3 |
-
-Everything else imported by the Python code is standard library
-(`argparse, csv, math, os, re, statistics, json, glob, bisect, collections,
-dataclasses, pathlib, random, shutil, sys, tempfile, types, typing, unittest,
-warnings, xml.*, importlib.util`).
-
-### TraCI (not a pip package)
-
-`traci` and `traci.constants` are imported by `TraCI_Python_Adjusted.py`,
-`TraCI_Python_Threshold_Sweep.py`, and `vehicle_feature_pipeline/traci_vehicle_features.py`.
-They ship with SUMO, not PyPI:
+需要 CMake 3.20+ 和 C++14 编译器；当前构建不需要额外的第三方 C++ 库。Linux 可使用 GCC，Windows 可使用 MinGW 或相应的 CMake 生成器。
 
 ```bash
-export SUMO_HOME=/usr/share/sumo
-export PATH=$SUMO_HOME/bin:$PATH
-python -c "import os, sys; sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools')); import traci; print('traci ok')"
+cmake -S . -B build_current
+cmake --build build_current -j2
+ctest --test-dir build_current --output-on-failure
 ```
 
-## 2. SUMO
+已有实验的构建目录不能覆盖。Windows 下建议使用不含非 ASCII 字符的新构建路径；多配置生成器须在构建和 CTest 中选择一致的配置。
 
-| Item | Requirement |
+## Python
+
+推荐 Python 3.10–3.12，在独立虚拟环境中安装所需依赖。`requirements.txt` 是依赖范围清单，不是可复现环境锁文件。
+
+| 工作 | 依赖 |
 | --- | --- |
-| Version | **>= 1.20** — the bundled networks (`test.net.xml`, `train_data/variants/new4x/inputs/test_new.net.xml`) are net-file format `version="1.20"`; older SUMO releases cannot read them. |
-| Components | `sumo` binary on `PATH`; `tools/` importable by Python for TraCI. |
+| 数据处理、当前道路训练与 catch | NumPy、pandas |
+| 真实模型拟合和推理 | AutoGluon Tabular；原模型需要匹配其训练环境 |
+| 部分历史评价与绘图 | scikit-learn、matplotlib |
+| 平衡需求 MILP 工具 | SciPy 1.9+ |
+| 放车序列统计表训练 | Python 标准库 |
 
-## 3. C++ simulator
+完整依赖可用 `python -m pip install -r requirements.txt` 安装。低流量加权训练另有明确的 AutoGluon 1.6.1 版本检查，不能仅凭最低版本要求认定兼容。
 
-| Item | Requirement | Notes |
-| --- | --- | --- |
-| CMake | >= 3.20 | From `cmake_minimum_required(VERSION 3.20)`. |
-| Language standard | C++14 (required) | `CMAKE_CXX_STANDARD 14`, `CXX_STANDARD_REQUIRED ON`. |
-| Compiler (Linux) | g++ >= 5 | Any compiler with full C++14 support. |
-| Compiler (macOS) | clang >= 3.4 (Xcode 8+) | |
-| Compiler (Windows) | MSVC >= 19.14 (VS 2017 15.7) | |
-| Third-party C++ libraries | **None** | Sources include only the C++ standard library and POSIX `sys/types.h`. No Boost, no threads: the README's `-lpthread`/Boost notes are legacy; the current `CMakeLists.txt` links nothing extra. |
-
-Build and smoke test:
+训练参数是 `--num-gpus`。CPU 模式可用；申请 GPU 数不得超过当前进程实际可见设备，也不保证所有候选模型使用 GPU。GPU 与 bagging/stacking 环境检查入口为：
 
 ```bash
-cmake -S . -B build
-cmake --build build -j2
-./build/Simulation_Prediction --use-sumo --sumo-net test.net.xml --smoke-test
+python -m tools.environment.check_autogluon_gpu --help
 ```
 
-## 4. Shell tooling
+## SUMO 和 TraCI
 
-`run_all_training_traci.sh` and the wrappers under `train_data/variants/*/commands/`
-require `bash` plus standard GNU userland tools (`awk`, coreutils). No `jq`,
-`sed` beyond coreutils, or other external tools are used.
+安装能够读取输入路网版本的 SUMO，确保 `sumo`/`netconvert` 可执行文件以及与之匹配的 TraCI 可用。随仓库附带的小路网格式为 1.20；真实实验还应冻结 SUMO 版本、随机种子、步长、车型、变道和 teleport 配置。
 
-## 5. GPU (optional)
-
-Training scripts accept `--num_gpus`. CPU-only AutoGluon works fine; GPU
-acceleration additionally needs a CUDA-enabled PyTorch build (and, for the
-`best_quality` preset, GPU builds of LightGBM/XGBoost/CatBoost help but are not
-required). This only affects training speed, not correctness.
-
-## 6. Verification checklist
+例如使用 SUMO 安装目录的工具包：
 
 ```bash
-python --version                                  # 3.10-3.12
-pip install -r requirements.txt
-python -c "import pandas, numpy, sklearn; print('core ok')"
-python -c "from autogluon.tabular import TabularPredictor; print('autogluon ok')"
-sumo --version                                    # >= 1.20
-python -c "import os, sys; sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools')); import traci; print('traci ok')"
-cmake --version                                   # >= 3.20
-g++ --version                                     # >= 5
-cmake -S . -B build && cmake --build build -j2
-./build/Simulation_Prediction --use-sumo --sumo-net test.net.xml --smoke-test
-python -m unittest test_missed_green.py
+export SUMO_HOME=/path/to/sumo
+export PATH="$SUMO_HOME/bin:$PATH"
+export PYTHONPATH="$SUMO_HOME/tools${PYTHONPATH:+:$PYTHONPATH}"
+sumo --version
+python -c "import traci; print(traci.__file__)"
 ```
+
+native-v2 道路采集当前面向无内部道路的 Euler 域；不能自动外推到 Ballistic、不同 action 步长或有内部道路的配置。
+
+## 测试与可选依赖
+
+单元测试的轻量环境至少安装 `numpy pandas scikit-learn`；历史训练模块的导入也需要 scikit-learn。mock 训练测试不进行真实 AutoGluon 拟合，不能据此认定模型环境可用。
+
+```bash
+python -m tools.validation.run_python_tests --list
+python -m tools.validation.run_python_tests
+python -m tools.validation.run_python_tests --include-sumo
+```
+
+最后一项在独立 Python 进程执行真实 SUMO 小样例，不启动全量采集。Bash 编排测试需要 Bash 与相应 Unix 工具；历史数据、真实模型或工具缺失的跳过项不能当作已验证。C++ 读表联动测试可通过 `ROADNET_TEST_BUILD_DIR` 指向新构建。

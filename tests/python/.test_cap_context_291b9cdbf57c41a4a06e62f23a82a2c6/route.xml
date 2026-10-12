@@ -1,0 +1,1 @@
+<routes><vType id="car" length="5" maxSpeed="10"/><vehicle id="leader" type="car" departPos="base" speedFactor="0.5" /><vehicle id="ego" type="car" departPos="base" speedFactor="1.0" /><vehicle id="alpha" type="car" departPos="base" speedFactor="0.5" /><vehicle id="zulu" type="car" departPos="base" speedFactor="1.0" /></routes>

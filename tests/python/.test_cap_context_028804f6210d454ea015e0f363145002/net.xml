@@ -1,0 +1,1 @@
+<net><edge id="a"><lane id="a_0" index="0" length="100" speed="10"/></edge><edge id="b"><lane id="b_0" index="0" length="100" speed="10"/></edge><edge id="c"><lane id="c_0" index="0" length="100" speed="10"/></edge><connection from="a" to="b" fromLane="0" toLane="0"/><connection from="b" to="c" fromLane="0" toLane="0"/></net>

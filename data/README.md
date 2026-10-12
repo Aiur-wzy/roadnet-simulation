@@ -1,21 +1,12 @@
-# Versioned SUMO Baselines
+# 数据目录
 
-Git retains three canonical scenarios on `test_new.net.xml`:
-
-| Scenario | Vehicles | Demand | SUMO configuration | Ground truth |
-| --- | ---: | --- | --- | --- |
-| `free` | 7,778 | `route/free.rou.xml` | `sumocfg/free.sumocfg` | `tripinfo/tripinfo_free.xml` |
-| `tight` | 17,778 | `route/tight.rou.xml` | `sumocfg/tight.sumocfg` | `tripinfo/tripinfo_tight.xml` |
-| `congested` | 19,444 | `route/congested.rou.xml` | `sumocfg/congested.sumocfg` | `tripinfo/tripinfo_congested.xml` |
-
-`route/experiment_profiles_free_tight_congested.csv` records the generation
-profile. Each configuration references `net/test_new.net.xml`, its matching
-route, and its matching SUMO `tripinfo` output.
-
-Other networks, routes, TraCI exports, and tripinfo files are local experiment
-artifacts. `.gitignore` excludes them without deleting them from the working
-directory. Reproduce a baseline with, for example:
+公开仓库只保留 `net/test_new.net.xml` 作为静态建图与测试 fixture：
 
 ```bash
-sumo -c data/sumocfg/free.sumocfg
+./build_current/Simulation_Prediction --use-sumo \
+  --sumo-net data/net/test_new.net.xml --smoke-test
 ```
+
+`route/`、`sumocfg/`、`tripinfo/`、`variants/` 等属于本地实验输入输出，不随当前源码发布。原 free/tight/congested 三组数据及其 truth 原位保留，不因取消 Git 跟踪而删除；旧提交中的公开副本仍可追溯。
+
+SUMO 重跑时请显式指定新的输出目录，避免覆盖已有 tripinfo。网络 fixture 不代表当前 native-v2 采集器已支持其中的内部道路。

@@ -1,4 +1,0 @@
-scenario,average_demand_vph,vehicles,seed,demand_profile
-free,2800,7778,20260764,10000s@2800veh/h
-tight,6400,17778,20261773,1200s@8100veh/h; 1200s@4700veh/h; 1200s@8100veh/h; 1200s@4700veh/h; 1200s@8100veh/h; 1200s@4700veh/h; 1200s@8100veh/h; 1200s@4700veh/h; 400s@6400veh/h
-congested,7000,19444,20262782,1500s@8100veh/h; 700s@4700veh/h; 1500s@8100veh/h; 700s@4700veh/h; 1500s@8100veh/h; 700s@4700veh/h; 1500s@8100veh/h; 700s@4700veh/h; 1200s@6866.67veh/h
